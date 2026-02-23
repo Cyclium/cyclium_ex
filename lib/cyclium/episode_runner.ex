@@ -3,10 +3,12 @@ defmodule Cyclium.EpisodeRunner do
   Executes the episode loop: calls strategy callbacks, enforces budgets,
   journals steps, and runs the post-converge sequence.
 
-  Phase 1 skeleton — structurally complete loop with budget checks and
-  step recording. Full wiring (ToolExec dispatch, synthesis integration,
-  output delivery) completed in later phases.
+  The post-converge pipeline (Phase 3) persists findings, delivers outputs
+  via `Cyclium.Output.Router`, and computes final episode status from
+  delivery outcomes.
   """
+
+  require Logger
 
   alias Cyclium.Schemas.{Episode, EpisodeStep}
 
@@ -110,30 +112,131 @@ defmodule Cyclium.EpisodeRunner do
 
     case strategy.converge(state, episode_ctx) do
       {:ok, converge_result} ->
-        journal_step!(episode, :episode_completed, %{
-          result_ref: %{
-            summary: converge_result.summary,
-            classification: converge_result.classification,
-            confidence: converge_result.confidence
-          }
-        })
-        Cyclium.Episodes.update_status(episode.id, :done,
-          summary: converge_result.summary,
-          classification: converge_result.classification,
-          confidence: converge_result.confidence
-        )
-        {:ok, converge_result}
+        post_converge(episode, converge_result)
 
       {:partial, converge_result, _failures} ->
-        journal_step!(episode, :episode_failed, %{
-          result_ref: %{summary: converge_result.summary},
-          error_class: "partial_failure"
-        })
-        Cyclium.Episodes.update_status(episode.id, :partially_failed,
-          summary: converge_result.summary
-        )
-        {:partial, converge_result}
+        post_converge(episode, converge_result)
     end
+  end
+
+  defp post_converge(episode, converge_result) do
+    # Step 1+2+3: Persist findings, publish Bus events, journal steps
+    persist_findings(episode, converge_result.findings || [])
+
+    # Step 4: Deliver outputs via OutputRouter
+    output_results =
+      (converge_result.outputs || [])
+      |> Enum.map(fn proposal ->
+        Cyclium.Output.Router.route(proposal, episode, build_episode_ctx(episode))
+      end)
+
+    # Step 5: Compute final episode status from delivery outcomes
+    final_status = compute_episode_status(output_results)
+
+    # Step 6: Journal and set episode status
+    step_kind = if final_status in [:done, :partially_failed], do: :episode_completed, else: :episode_failed
+
+    journal_step!(episode, step_kind, %{
+      result_ref: %{
+        summary: converge_result.summary,
+        classification: converge_result.classification,
+        confidence: converge_result.confidence,
+        outputs_delivered: count_outcomes(output_results, :ok),
+        outputs_failed: count_outcomes(output_results, :error),
+        outputs_duped: count_outcomes(output_results, :duplicate)
+      },
+      error_class: if(final_status == :failed, do: "all_outputs_failed")
+    })
+
+    Cyclium.Episodes.update_status(episode.id, final_status,
+      summary: converge_result.summary,
+      classification: converge_result.classification,
+      confidence: converge_result.confidence
+    )
+
+    # Step 7: Bus event + telemetry
+    bus_event = if final_status == :failed, do: "episode.failed", else: "episode.completed"
+    Cyclium.Bus.broadcast(bus_event, %{
+      episode_id: episode.id,
+      actor_id: episode.actor_id,
+      status: final_status
+    })
+
+    :telemetry.execute(
+      [:cyclium, :episode, if(final_status == :failed, do: :failed, else: :completed)],
+      %{count: 1},
+      %{
+        episode_id: episode.id,
+        actor_id: episode.actor_id,
+        output_count: length(converge_result.outputs || []),
+        finding_count: length(converge_result.findings || [])
+      }
+    )
+
+    if final_status == :failed do
+      {:error, :all_outputs_failed}
+    else
+      {:ok, converge_result}
+    end
+  end
+
+  defp persist_findings(episode, findings) do
+    Enum.each(findings, fn action ->
+      case Cyclium.Findings.persist_finding(action, episode) do
+        {:ok, finding} ->
+          bus_event = finding_bus_event(action)
+          Cyclium.Bus.broadcast(bus_event, %{
+            episode_id: episode.id,
+            finding_id: finding.id,
+            finding_key: finding.finding_key,
+            actor_id: finding.actor_id
+          })
+          journal_finding_step!(episode, action, finding)
+
+        :ok ->
+          # Idempotent clear — nothing to broadcast
+          :ok
+
+        {:error, reason} ->
+          Logger.warning("[Cyclium] Failed to persist finding #{inspect(action)}: #{inspect(reason)}")
+      end
+    end)
+  end
+
+  defp compute_episode_status(output_results) do
+    successes = Enum.count(output_results, &match?({:ok, _}, &1)) +
+                Enum.count(output_results, &match?({:duplicate, _}, &1))
+    failures = Enum.count(output_results, &match?({:error, _}, &1))
+    total = length(output_results)
+
+    cond do
+      total == 0     -> :done
+      failures == 0  -> :done
+      successes == 0 -> :failed
+      true           -> :partially_failed
+    end
+  end
+
+  defp count_outcomes(results, :ok), do: Enum.count(results, &match?({:ok, _}, &1))
+  defp count_outcomes(results, :error), do: Enum.count(results, &match?({:error, _}, &1))
+  defp count_outcomes(results, :duplicate), do: Enum.count(results, &match?({:duplicate, _}, &1))
+
+  defp finding_bus_event({:raise, _}), do: "finding.raised"
+  defp finding_bus_event({:update, _, _}), do: "finding.updated"
+  defp finding_bus_event({:clear, _}), do: "finding.cleared"
+  defp finding_bus_event({:clear, _, _}), do: "finding.cleared"
+
+  defp journal_finding_step!(episode, action, finding) do
+    kind = case action do
+      {:raise, _}     -> :finding_raised
+      {:update, _, _} -> :finding_updated
+      {:clear, _}     -> :finding_cleared
+      {:clear, _, _}  -> :finding_cleared
+    end
+
+    journal_step!(episode, kind, %{
+      result_ref: %{finding_id: finding.id, finding_key: finding.finding_key}
+    })
   end
 
   defp abort_episode(episode, reason) do

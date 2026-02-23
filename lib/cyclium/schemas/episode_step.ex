@@ -10,7 +10,7 @@ defmodule Cyclium.Schemas.EpisodeStep do
     :output_proposed, :output_delivered, :output_failed,
     :approval_requested, :approval_resolved,
     :wait_started, :wait_resolved,
-    :finding_raised, :finding_cleared,
+    :finding_raised, :finding_updated, :finding_cleared,
     :episode_completed, :episode_failed
   ]
 
