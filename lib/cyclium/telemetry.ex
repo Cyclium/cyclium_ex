@@ -51,6 +51,16 @@ defmodule Cyclium.Telemetry do
 
       [:cyclium, :guardrail, :triggered]  — %{rule, episode_id, actor_id, detail}
 
+  ### Workflow events
+
+      [:cyclium, :workflow, :started]        — %{workflow_id, instance_id}
+      [:cyclium, :workflow, :step_started]   — %{workflow_id, instance_id, step_id, episode_id}
+      [:cyclium, :workflow, :step_completed] — %{workflow_id, instance_id, step_id}
+      [:cyclium, :workflow, :step_failed]    — %{workflow_id, instance_id, step_id}
+      [:cyclium, :workflow, :step_retried]   — %{workflow_id, instance_id, step_id, attempt}
+      [:cyclium, :workflow, :completed]      — %{workflow_id, instance_id}
+      [:cyclium, :workflow, :failed]         — %{workflow_id, instance_id, step_id}
+
   ## Usage
 
       # Attach a simple logger for development
@@ -91,7 +101,15 @@ defmodule Cyclium.Telemetry do
     # Phase
     [:cyclium, :phase, :changed],
     # Guardrails
-    [:cyclium, :guardrail, :triggered]
+    [:cyclium, :guardrail, :triggered],
+    # Workflows
+    [:cyclium, :workflow, :started],
+    [:cyclium, :workflow, :step_started],
+    [:cyclium, :workflow, :step_completed],
+    [:cyclium, :workflow, :step_failed],
+    [:cyclium, :workflow, :step_retried],
+    [:cyclium, :workflow, :completed],
+    [:cyclium, :workflow, :failed]
   ]
 
   @doc "Returns the list of all Cyclium telemetry event names."

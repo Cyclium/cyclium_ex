@@ -29,6 +29,13 @@ defmodule Cyclium.Supervisor do
         []
       end
 
-    reconciler
+    workflow_engine =
+      if Application.get_env(:cyclium, :workflows, []) != [] do
+        [Cyclium.WorkflowEngine]
+      else
+        []
+      end
+
+    reconciler ++ workflow_engine
   end
 end

@@ -13,7 +13,8 @@ defmodule Cyclium.Migrations do
 
   @versions %{
     1 => Cyclium.Migrations.V1,
-    2 => Cyclium.Migrations.V2
+    2 => Cyclium.Migrations.V2,
+    3 => Cyclium.Migrations.V3
   }
 
   def up(opts) do

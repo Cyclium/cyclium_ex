@@ -20,7 +20,8 @@ defmodule Cyclium.Bus do
     "approval.requested", "approval.resolved",
     "spec.updated", "agent.state_changed",
     "episode.completed", "episode.failed", "episode.queued",
-    "episode.dropped", "episode.canceled"
+    "episode.dropped", "episode.canceled",
+    "workflow.started", "workflow.completed", "workflow.failed"
   ]
 
   def runtime_events, do: @runtime_events

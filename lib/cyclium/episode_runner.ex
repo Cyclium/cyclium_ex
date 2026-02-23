@@ -168,7 +168,9 @@ defmodule Cyclium.EpisodeRunner do
     Cyclium.Bus.broadcast(bus_event, %{
       episode_id: episode.id,
       actor_id: episode.actor_id,
-      status: final_status
+      status: final_status,
+      workflow_instance_id: episode.workflow_instance_id,
+      workflow_step_id: episode.workflow_step_id
     })
 
     :telemetry.execute(
@@ -251,6 +253,15 @@ defmodule Cyclium.EpisodeRunner do
   defp abort_episode(episode, reason) do
     journal_step!(episode, :episode_failed, %{error_class: "abort", error_detail: %{reason: inspect(reason)}})
     Cyclium.Episodes.update_status(episode.id, :failed, error_class: "abort")
+
+    Cyclium.Bus.broadcast("episode.failed", %{
+      episode_id: episode.id,
+      actor_id: episode.actor_id,
+      status: :failed,
+      workflow_instance_id: episode.workflow_instance_id,
+      workflow_step_id: episode.workflow_step_id
+    })
+
     {:error, reason}
   end
 
