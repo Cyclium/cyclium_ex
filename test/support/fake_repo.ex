@@ -76,6 +76,21 @@ defmodule Cyclium.FakeRepo do
     end
   end
 
+  def get(schema, id) do
+    Agent.get(__MODULE__, fn state ->
+      Enum.find(state.records, fn r ->
+        r.__struct__ == schema && Map.get(r, :id) == id
+      end)
+    end)
+  end
+
+  def get!(schema, id) do
+    case get(schema, id) do
+      nil -> raise Ecto.NoResultsError, queryable: schema
+      record -> record
+    end
+  end
+
   def get_by(schema, clauses) do
     Agent.get(__MODULE__, fn state ->
       Enum.find(state.records, fn r ->

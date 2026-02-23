@@ -17,7 +17,7 @@ defmodule Cyclium.EpisodeTask do
     state =
       case {opts[:resume], load_checkpoint(episode_id)} do
         {true, {:ok, checkpoint}} ->
-          checkpoint.state
+          migrate_checkpoint(episode, strategy, checkpoint)
 
         _ ->
           trigger = deserialize_trigger(episode.trigger_type, episode.trigger_ref)
@@ -26,6 +26,32 @@ defmodule Cyclium.EpisodeTask do
       end
 
     Cyclium.EpisodeRunner.execute_loop(episode, strategy, state)
+  end
+
+  defp migrate_checkpoint(episode, strategy, checkpoint) do
+    case resolve_checkpoint_schema(episode) do
+      nil ->
+        # No schema registered — use raw state
+        checkpoint.state
+
+      schema ->
+        case schema.migrate_to_current(checkpoint.schema_version, checkpoint.state) do
+          {:ok, migrated} ->
+            migrated
+
+          {:error, _reason} ->
+            # Migration failed — fall back to fresh init
+            trigger = deserialize_trigger(episode.trigger_type, episode.trigger_ref)
+            {:ok, initial_state} = strategy.init(episode, trigger)
+            initial_state
+        end
+    end
+  end
+
+  defp resolve_checkpoint_schema(episode) do
+    schemas = Application.get_env(:cyclium, :checkpoint_schemas, %{})
+    key = {episode.actor_id, episode.expectation_id}
+    Map.get(schemas, key) || Map.get(schemas, episode.actor_id)
   end
 
   defp resolve_strategy(episode) do

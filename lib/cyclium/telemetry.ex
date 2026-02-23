@@ -4,35 +4,52 @@ defmodule Cyclium.Telemetry do
 
   ## Events
 
+  ### Episode lifecycle
+
+      [:cyclium, :episode, :started]      — %{episode_id, actor_id}
+      [:cyclium, :episode, :completed]    — %{episode_id, actor_id, output_count, finding_count}
+      [:cyclium, :episode, :failed]       — %{episode_id, actor_id, error_class}
+      [:cyclium, :episode, :blocked]      — %{episode_id, actor_id}
+      [:cyclium, :episode, :resumed]      — %{episode_id, actor_id}
+      [:cyclium, :episode, :dropped]      — %{actor_id, expectation_id}
+      [:cyclium, :episode, :queued]       — %{episode_id, actor_id}
+      [:cyclium, :episode, :canceled]     — %{episode_id, actor_id, reason}
+
+  ### Step events
+
+      [:cyclium, :step, :tool_call]       — %{tool, action, episode_id}
+      [:cyclium, :step, :synthesis]       — %{episode_id}
+      [:cyclium, :step, :output]          — %{type, status, episode_id}
+      [:cyclium, :step, :observation]     — %{actor_id, episode_id}
+
+  ### Budget events
+
+      [:cyclium, :budget, :tokens]        — %{episode_id, used, max, pct}
+      [:cyclium, :budget, :turns]         — %{episode_id, used, max, pct}
+
+  ### Actor events
+
+      [:cyclium, :actor, :event_received] — %{actor_id, event_type}
+      [:cyclium, :actor, :overflow]       — %{actor_id, policy, expectation_id}
+
   ### Output events
 
-      [:cyclium, :output, :delivered]
-        metadata: %{type, dedupe_key, ref}
-
-      [:cyclium, :output, :failed]
-        metadata: %{type, dedupe_key, reason}
-
-      [:cyclium, :output, :deduplicated]
-        metadata: %{type, dedupe_key}
+      [:cyclium, :output, :delivered]     — %{type, dedupe_key, ref}
+      [:cyclium, :output, :failed]        — %{type, dedupe_key, reason}
+      [:cyclium, :output, :deduplicated]  — %{type, dedupe_key}
 
   ### Finding events
 
-      [:cyclium, :finding, :raised]
-        metadata: %{finding_key, actor_id, class}
+      [:cyclium, :finding, :raised]       — %{finding_key, actor_id, class}
+      [:cyclium, :finding, :cleared]      — %{finding_key, actor_id, class}
 
-      [:cyclium, :finding, :cleared]
-        metadata: %{finding_key, actor_id, class}
+  ### Phase events
 
-  ### Episode events
+      [:cyclium, :phase, :changed]        — %{from, to, episode_id, actor_id}
 
-      [:cyclium, :episode, :completed]
-        metadata: %{episode_id, actor_id, output_count, finding_count}
+  ### Guardrail events
 
-      [:cyclium, :episode, :failed]
-        metadata: %{episode_id, actor_id, error_class}
-
-      [:cyclium, :episode, :dropped]
-        metadata: %{actor_id, expectation_id}
+      [:cyclium, :guardrail, :triggered]  — %{rule, episode_id, actor_id, detail}
 
   ## Usage
 
@@ -44,14 +61,37 @@ defmodule Cyclium.Telemetry do
   """
 
   @events [
+    # Episode lifecycle
+    [:cyclium, :episode, :started],
+    [:cyclium, :episode, :completed],
+    [:cyclium, :episode, :failed],
+    [:cyclium, :episode, :blocked],
+    [:cyclium, :episode, :resumed],
+    [:cyclium, :episode, :dropped],
+    [:cyclium, :episode, :queued],
+    [:cyclium, :episode, :canceled],
+    # Steps
+    [:cyclium, :step, :tool_call],
+    [:cyclium, :step, :synthesis],
+    [:cyclium, :step, :output],
+    [:cyclium, :step, :observation],
+    # Budget
+    [:cyclium, :budget, :tokens],
+    [:cyclium, :budget, :turns],
+    # Actor
+    [:cyclium, :actor, :event_received],
+    [:cyclium, :actor, :overflow],
+    # Outputs
     [:cyclium, :output, :delivered],
     [:cyclium, :output, :failed],
     [:cyclium, :output, :deduplicated],
+    # Findings
     [:cyclium, :finding, :raised],
     [:cyclium, :finding, :cleared],
-    [:cyclium, :episode, :completed],
-    [:cyclium, :episode, :failed],
-    [:cyclium, :episode, :dropped]
+    # Phase
+    [:cyclium, :phase, :changed],
+    # Guardrails
+    [:cyclium, :guardrail, :triggered]
   ]
 
   @doc "Returns the list of all Cyclium telemetry event names."

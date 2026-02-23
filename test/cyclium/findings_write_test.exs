@@ -44,15 +44,12 @@ defmodule Cyclium.FindingsWriteTest do
 
     test "emits :raised telemetry", %{episode: episode} do
       ref = make_ref()
-      test_pid = self()
 
       :telemetry.attach(
         "test-finding-raised-#{inspect(ref)}",
         [:cyclium, :finding, :raised],
-        fn event, measurements, metadata, _ ->
-          send(test_pid, {:telemetry, event, measurements, metadata})
-        end,
-        nil
+        &Cyclium.TelemetryHelper.handle_event/4,
+        %{test_pid: self()}
       )
 
       params = %{

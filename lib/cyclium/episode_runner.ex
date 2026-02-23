@@ -51,6 +51,9 @@ defmodule Cyclium.EpisodeRunner do
           run_converge(episode, strategy, state)
 
         {:tool_call, capability, action, args} ->
+          :telemetry.execute([:cyclium, :step, :tool_call], %{count: 1},
+            %{tool: capability, action: action, episode_id: episode.id})
+
           step = journal_step!(episode, :tool_call, %{
             tool_name: "#{capability}.#{action}",
             args_redacted: args
@@ -66,10 +69,16 @@ defmodule Cyclium.EpisodeRunner do
           end
 
         {:synthesize, prompt_ctx} ->
+          :telemetry.execute([:cyclium, :step, :synthesis], %{count: 1},
+            %{episode_id: episode.id})
+
           step = journal_step!(episode, :synthesis, %{args_redacted: prompt_ctx})
           handle_strategy_result(episode, strategy, state, step, {:ok, %{pending: true}}, started_at)
 
         {:observe, data} ->
+          :telemetry.execute([:cyclium, :step, :observation], %{count: 1},
+            %{actor_id: episode.actor_id, episode_id: episode.id})
+
           journal_step!(episode, :observation, %{result_ref: data})
           case strategy.handle_result(state, %EpisodeStep{kind: :observation}, {:ok, data}) do
             {:ok, new_state} -> do_loop(episode, strategy, new_state, started_at)

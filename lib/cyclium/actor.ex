@@ -69,7 +69,12 @@ defmodule Cyclium.Actor do
         Cyclium.Actor.Server.handle_info(msg, state)
       end
 
-      defoverridable child_spec: 1, init: 1, handle_info: 2
+      @impl true
+      def handle_cast(msg, state) do
+        Cyclium.Actor.Server.handle_cast(msg, state)
+      end
+
+      defoverridable child_spec: 1, init: 1, handle_info: 2, handle_cast: 2
     end
   end
 
@@ -214,6 +219,9 @@ defmodule Cyclium.Actor.Server do
   end
 
   def handle_info({:bus, event_type, payload}, state) do
+    :telemetry.execute([:cyclium, :actor, :event_received], %{count: 1},
+      %{actor_id: state.actor_id, event_type: event_type})
+
     state =
       state.expectations
       |> Enum.filter(fn {_id, exp} -> event_matches?(exp, event_type, payload) end)
@@ -241,6 +249,63 @@ defmodule Cyclium.Actor.Server do
 
   def handle_info(_msg, state) do
     {:noreply, state}
+  end
+
+  def handle_cast({:reconcile, new_config, new_expectations}, state) do
+    {:noreply, reconcile_state(state, new_config, new_expectations)}
+  end
+
+  def handle_cast(_msg, state) do
+    {:noreply, state}
+  end
+
+  # --- Reconciliation ---
+
+  defp reconcile_state(state, new_config, raw_expectations) do
+    new_expectations =
+      raw_expectations
+      |> Enum.map(fn {id, opts} -> {id, build_expectation(id, new_config, opts)} end)
+      |> Map.new()
+
+    old_ids = Map.keys(state.expectations) |> MapSet.new()
+    new_ids = Map.keys(new_expectations) |> MapSet.new()
+
+    removed = MapSet.difference(old_ids, new_ids)
+    added = MapSet.difference(new_ids, old_ids)
+
+    # Cancel timers for removed expectations
+    state = Enum.reduce(removed, state, fn id, acc ->
+      acc = cancel_timer(acc, id)
+      cancel_debounce(acc, id)
+    end)
+
+    # Update state with new config and expectations
+    state = %{state |
+      config: new_config,
+      expectations: new_expectations,
+      cooldowns: Map.drop(state.cooldowns, MapSet.to_list(removed))
+    }
+
+    # Start timers for newly added schedule expectations
+    Enum.reduce(added, state, fn id, acc ->
+      case Map.get(new_expectations, id) do
+        %{trigger: {:schedule, interval_ms}} when is_integer(interval_ms) ->
+          ref = Process.send_after(self(), {:schedule_fire, id}, interval_ms)
+          put_in(acc.timers[id], ref)
+
+        _ ->
+          acc
+      end
+    end)
+  end
+
+  defp cancel_timer(state, expectation_id) do
+    case Map.get(state.timers, expectation_id) do
+      nil -> state
+      ref ->
+        Process.cancel_timer(ref)
+        %{state | timers: Map.delete(state.timers, expectation_id)}
+    end
   end
 
   # --- Private ---
@@ -424,6 +489,8 @@ defmodule Cyclium.Actor.Server do
   end
 
   defp drop_episode(state, params) do
+    :telemetry.execute([:cyclium, :actor, :overflow], %{count: 1},
+      %{actor_id: state.actor_id, policy: :drop, expectation_id: params.expectation_id})
     :telemetry.execute([:cyclium, :episode, :dropped], %{count: 1}, %{
       actor_id: state.actor_id,
       expectation_id: params.expectation_id

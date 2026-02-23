@@ -11,12 +11,24 @@ defmodule Cyclium.Supervisor do
       Application.put_env(:cyclium, :pubsub, pubsub)
     end
 
-    children = [
-      {DynamicSupervisor, name: Cyclium.ActorSupervisor, strategy: :one_for_one},
-      {DynamicSupervisor, name: Cyclium.EpisodeSupervisor, strategy: :one_for_one},
-      {Task.Supervisor, name: Cyclium.TaskSupervisor}
-    ]
+    children =
+      [
+        {DynamicSupervisor, name: Cyclium.ActorSupervisor, strategy: :one_for_one},
+        {DynamicSupervisor, name: Cyclium.EpisodeSupervisor, strategy: :one_for_one},
+        {Task.Supervisor, name: Cyclium.TaskSupervisor}
+      ] ++ optional_children()
 
     Supervisor.init(children, strategy: :one_for_one)
+  end
+
+  defp optional_children do
+    reconciler =
+      if Application.get_env(:cyclium, :reconciler, false) do
+        [Cyclium.Reconciler]
+      else
+        []
+      end
+
+    reconciler
   end
 end

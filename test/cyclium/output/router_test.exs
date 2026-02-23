@@ -99,15 +99,12 @@ defmodule Cyclium.Output.RouterTest do
       Application.put_env(:cyclium, :output_adapters, %{email: SuccessAdapter})
 
       ref = make_ref()
-      test_pid = self()
 
       :telemetry.attach(
         "test-delivered-#{inspect(ref)}",
         [:cyclium, :output, :delivered],
-        fn event, measurements, metadata, _ ->
-          send(test_pid, {:telemetry, event, measurements, metadata})
-        end,
-        nil
+        &Cyclium.TelemetryHelper.handle_event/4,
+        %{test_pid: self()}
       )
 
       proposal = %OutputProposal{
@@ -128,15 +125,12 @@ defmodule Cyclium.Output.RouterTest do
       Application.put_env(:cyclium, :output_adapters, %{email: SuccessAdapter})
 
       ref = make_ref()
-      test_pid = self()
 
       :telemetry.attach(
         "test-dedup-#{inspect(ref)}",
         [:cyclium, :output, :deduplicated],
-        fn event, measurements, metadata, _ ->
-          send(test_pid, {:telemetry, event, measurements, metadata})
-        end,
-        nil
+        &Cyclium.TelemetryHelper.handle_event/4,
+        %{test_pid: self()}
       )
 
       dedupe_key = "email:dedup-telemetry:#{Ecto.UUID.generate()}"
