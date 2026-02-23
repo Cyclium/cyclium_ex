@@ -12,6 +12,8 @@ defmodule Cyclium.Supervisor do
     end
 
     children = [
+      {DynamicSupervisor, name: Cyclium.ActorSupervisor, strategy: :one_for_one},
+      {DynamicSupervisor, name: Cyclium.EpisodeSupervisor, strategy: :one_for_one},
       {Task.Supervisor, name: Cyclium.TaskSupervisor}
     ]
 

@@ -155,11 +155,11 @@ defmodule Cyclium.EpisodeRunner do
     end
   end
 
-  defp increment_budget(%Episode{} = episode, token_cost) do
+  defp increment_budget(%Episode{} = episode, token_cost) when is_integer(token_cost) do
     import Ecto.Query
 
     from(e in Episode, where: e.id == ^episode.id)
-    |> repo().update_all(inc: [turns_used: 1, tokens_used: token_cost || 0])
+    |> repo().update_all(inc: [turns_used: 1, tokens_used: token_cost])
   end
 
   defp save_checkpoint(episode, phase_name, state) do

@@ -7,7 +7,11 @@ defmodule Cyclium.MixProject do
       version: "0.1.0",
       elixir: "~> 1.19",
       start_permanent: Mix.env() == :prod,
-      deps: deps()
+      deps: deps(),
+      dialyzer: [
+        plt_add_apps: [:ecto, :ecto_sql, :phoenix_pubsub],
+        plt_file: {:no_warn, "priv/plts/dialyzer.plt"}
+      ]
     ]
   end
 
@@ -21,7 +25,9 @@ defmodule Cyclium.MixProject do
     [
       {:ecto, "~> 3.10"},
       {:ecto_sql, "~> 3.10"},
-      {:jason, "~> 1.2"}
+      {:jason, "~> 1.2"},
+      {:phoenix_pubsub, "~> 2.1"},
+      {:dialyxir, "~> 1.4", only: [:dev, :test], runtime: false}
     ]
   end
 end

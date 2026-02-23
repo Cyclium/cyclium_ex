@@ -4,9 +4,7 @@ defmodule Cyclium.EpisodeRunner.Strategy do
   for a specific expectation — how to gather data, classify, and produce outputs.
   """
 
-  alias Cyclium.Schemas.{Episode, EpisodeStep}
-
-  @callback init(episode :: Episode.t(), trigger :: Cyclium.Trigger.t()) ::
+  @callback init(episode :: %Cyclium.Schemas.Episode{}, trigger :: Cyclium.Trigger.t()) ::
               {:ok, state :: map()}
 
   @callback next_step(state :: map(), episode_ctx :: map()) ::
@@ -20,7 +18,7 @@ defmodule Cyclium.EpisodeRunner.Strategy do
               | :converge
               | :done
 
-  @callback handle_result(state :: map(), step :: EpisodeStep.t(), result :: term()) ::
+  @callback handle_result(state :: map(), step :: %Cyclium.Schemas.EpisodeStep{}, result :: term()) ::
               {:ok, new_state :: map()}
               | {:retry, new_state :: map()}
               | {:abort, reason :: term()}
