@@ -1,0 +1,46 @@
+defmodule Cyclium.Trigger do
+  @moduledoc """
+  Typed trigger ref structs — one per trigger_type.
+  Strategies pattern-match on trigger type in `init/2`.
+  """
+
+  defmodule Schedule do
+    @type t :: %__MODULE__{scheduled_at: DateTime.t()}
+    defstruct [:scheduled_at]
+  end
+
+  defmodule Event do
+    @type t :: %__MODULE__{
+            event_id: binary(),
+            event_type: binary(),
+            entity_id: binary() | nil,
+            payload: map()
+          }
+    defstruct [:event_id, :event_type, :entity_id, :payload]
+  end
+
+  defmodule Drift do
+    @type t :: %__MODULE__{
+            ref: binary(),
+            previous_signature: binary(),
+            current_signature: binary()
+          }
+    defstruct [:ref, :previous_signature, :current_signature]
+  end
+
+  defmodule Manual do
+    @type t :: %__MODULE__{requested_by: binary(), reason: binary()}
+    defstruct [:requested_by, :reason]
+  end
+
+  defmodule Workflow do
+    @type t :: %__MODULE__{
+            workflow_instance_id: binary(),
+            workflow_step_id: binary(),
+            input: map()
+          }
+    defstruct [:workflow_instance_id, :workflow_step_id, :input]
+  end
+
+  @type t :: Schedule.t() | Event.t() | Drift.t() | Manual.t() | Workflow.t()
+end

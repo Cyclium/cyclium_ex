@@ -1,0 +1,72 @@
+defmodule Cyclium.EpisodeTask do
+  @moduledoc """
+  Task wrapper for episode execution. Started by the OTP runner
+  under Cyclium.EpisodeSupervisor (DynamicSupervisor).
+  """
+
+  use Task, restart: :transient
+
+  def start_link(opts) do
+    Task.start_link(fn -> run(opts[:episode_id], opts[:opts] || []) end)
+  end
+
+  defp run(episode_id, opts) do
+    episode = Cyclium.Episodes.get!(episode_id)
+    strategy = resolve_strategy(episode)
+
+    state =
+      case {opts[:resume], load_checkpoint(episode_id)} do
+        {true, {:ok, checkpoint}} ->
+          checkpoint.state
+
+        _ ->
+          trigger = deserialize_trigger(episode.trigger_type, episode.trigger_ref)
+          {:ok, initial_state} = strategy.init(episode, trigger)
+          initial_state
+      end
+
+    Cyclium.EpisodeRunner.execute_loop(episode, strategy, state)
+  end
+
+  defp resolve_strategy(episode) do
+    registry = Application.get_env(:cyclium, :strategy_registry)
+
+    if registry do
+      registry.strategy_for(episode.actor_id, episode.expectation_id)
+    else
+      raise "No :strategy_registry configured for :cyclium"
+    end
+  end
+
+  defp load_checkpoint(episode_id) do
+    import Ecto.Query
+
+    case Cyclium.repo().one(
+           from(c in Cyclium.Schemas.EpisodeCheckpoint,
+             where: c.episode_id == ^episode_id,
+             order_by: [desc: c.checkpoint_no],
+             limit: 1
+           )
+         ) do
+      nil -> :none
+      checkpoint -> {:ok, checkpoint}
+    end
+  end
+
+  defp deserialize_trigger(:schedule, ref), do: struct(Cyclium.Trigger.Schedule, atomize(ref))
+  defp deserialize_trigger(:event, ref), do: struct(Cyclium.Trigger.Event, atomize(ref))
+  defp deserialize_trigger(:drift, ref), do: struct(Cyclium.Trigger.Drift, atomize(ref))
+  defp deserialize_trigger(:manual, ref), do: struct(Cyclium.Trigger.Manual, atomize(ref))
+  defp deserialize_trigger(:workflow, ref), do: struct(Cyclium.Trigger.Workflow, atomize(ref))
+  defp deserialize_trigger(type, ref) when is_binary(type) do
+    deserialize_trigger(String.to_existing_atom(type), ref)
+  end
+
+  defp atomize(nil), do: %{}
+  defp atomize(map) when is_map(map) do
+    Map.new(map, fn
+      {k, v} when is_binary(k) -> {String.to_existing_atom(k), v}
+      {k, v} -> {k, v}
+    end)
+  end
+end
