@@ -26,6 +26,15 @@ defmodule Cyclium.EpisodeTask do
       end
 
     Cyclium.EpisodeRunner.execute_loop(episode, strategy, state)
+  rescue
+    e ->
+      require Logger
+
+      Logger.error(
+        "[Cyclium.EpisodeTask] Episode #{episode_id} crashed: #{Exception.message(e)}\n#{Exception.format_stacktrace(__STACKTRACE__)}"
+      )
+
+      reraise e, __STACKTRACE__
   end
 
   defp migrate_checkpoint(episode, strategy, checkpoint) do
@@ -84,11 +93,13 @@ defmodule Cyclium.EpisodeTask do
   defp deserialize_trigger(:drift, ref), do: struct(Cyclium.Trigger.Drift, atomize(ref))
   defp deserialize_trigger(:manual, ref), do: struct(Cyclium.Trigger.Manual, atomize(ref))
   defp deserialize_trigger(:workflow, ref), do: struct(Cyclium.Trigger.Workflow, atomize(ref))
+
   defp deserialize_trigger(type, ref) when is_binary(type) do
     deserialize_trigger(String.to_existing_atom(type), ref)
   end
 
   defp atomize(nil), do: %{}
+
   defp atomize(map) when is_map(map) do
     Map.new(map, fn
       {k, v} when is_binary(k) -> {String.to_existing_atom(k), v}

@@ -50,11 +50,14 @@ defmodule Cyclium.Reconciler do
 
     # Send reconcile message to the actor GenServer
     actor_name = module
+
     try do
       GenServer.cast(actor_name, {:reconcile, new_config, new_expectations})
     catch
       :exit, _ ->
-        Logger.warning("[Cyclium.Reconciler] Actor #{inspect(module)} not running, skipping reconcile")
+        Logger.warning(
+          "[Cyclium.Reconciler] Actor #{inspect(module)} not running, skipping reconcile"
+        )
     end
 
     # Orphan cleanup: find blocked episodes for removed expectations
@@ -74,7 +77,10 @@ defmodule Cyclium.Reconciler do
         ep.expectation_id not in current_exp_ids
     end)
     |> Enum.each(fn ep ->
-      Logger.info("[Cyclium.Reconciler] Canceling orphaned episode #{ep.id} (expectation #{ep.expectation_id} removed)")
+      Logger.info(
+        "[Cyclium.Reconciler] Canceling orphaned episode #{ep.id} (expectation #{ep.expectation_id} removed)"
+      )
+
       Cyclium.Episodes.cancel(ep.id, "orphan_cleanup")
     end)
   end

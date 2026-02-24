@@ -33,12 +33,21 @@ defmodule Cyclium.Schemas.EpisodeStepTest do
 
   test "changeset accepts all step kinds" do
     kinds = [
-      :tool_call, :synthesis, :observation, :checkpoint,
-      :output_proposed, :output_delivered, :output_failed,
-      :approval_requested, :approval_resolved,
-      :wait_started, :wait_resolved,
-      :finding_raised, :finding_cleared,
-      :episode_completed, :episode_failed
+      :tool_call,
+      :synthesis,
+      :observation,
+      :checkpoint,
+      :output_proposed,
+      :output_delivered,
+      :output_failed,
+      :approval_requested,
+      :approval_resolved,
+      :wait_started,
+      :wait_resolved,
+      :finding_raised,
+      :finding_cleared,
+      :episode_completed,
+      :episode_failed
     ]
 
     for kind <- kinds do

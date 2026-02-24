@@ -75,26 +75,37 @@ defmodule Cyclium.Findings do
     finding_key = Map.fetch!(params, :finding_key)
 
     # Transaction-based upsert for SQL Server 2017 compatibility
-    result = repo().transaction(fn repo ->
-      case repo.get_by(Finding, finding_key: finding_key, status: :active) do
-        nil ->
-          attrs =
-            params
-            |> Map.put(:raised_by_episode_id, episode.id)
-            |> Map.put_new(:raised_at, now)
-            |> Map.put_new(:status, :active)
-            |> Map.put(:updated_at, now)
+    result =
+      repo().transaction(fn repo ->
+        case repo.get_by(Finding, finding_key: finding_key, status: :active) do
+          nil ->
+            attrs =
+              params
+              |> Map.put(:raised_by_episode_id, episode.id)
+              |> Map.put_new(:raised_at, now)
+              |> Map.put_new(:status, :active)
+              |> Map.put(:updated_at, now)
 
-          repo.insert!(Finding.changeset(%Finding{}, attrs))
+            repo.insert!(Finding.changeset(%Finding{}, attrs))
 
-        existing ->
-          mutable = Map.take(params, [:confidence, :severity, :evidence_refs, :summary,
-                                       :subject, :subject_kind, :subject_id])
-          changes = Map.put(mutable, :updated_at, now)
+          existing ->
+            mutable =
+              Map.take(params, [
+                :class,
+                :confidence,
+                :severity,
+                :evidence_refs,
+                :summary,
+                :subject,
+                :subject_kind,
+                :subject_id
+              ])
 
-          repo.update!(Finding.changeset(existing, changes))
-      end
-    end)
+            changes = Map.put(mutable, :updated_at, now)
+
+            repo.update!(Finding.changeset(existing, changes))
+        end
+      end)
 
     case result do
       {:ok, finding} ->

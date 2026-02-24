@@ -73,7 +73,10 @@ defmodule Cyclium.FindingsWriteTest do
   describe "persist_finding {:update, key, changes}" do
     test "returns :not_found when no active finding", %{episode: episode} do
       assert {:error, :not_found} =
-               Findings.persist_finding({:update, "nonexistent-key", %{confidence: 0.99}}, episode)
+               Findings.persist_finding(
+                 {:update, "nonexistent-key", %{confidence: 0.99}},
+                 episode
+               )
     end
   end
 

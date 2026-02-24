@@ -46,7 +46,12 @@ defmodule Cyclium.CheckpointSchema do
       Returns `{:ok, migrated_state}` or `{:error, reason}`.
       """
       def migrate_to_current(from_version, state) do
-        Cyclium.CheckpointSchema.chain_migrate(__MODULE__, from_version, @checkpoint_version, state)
+        Cyclium.CheckpointSchema.chain_migrate(
+          __MODULE__,
+          from_version,
+          @checkpoint_version,
+          state
+        )
       end
     end
   end

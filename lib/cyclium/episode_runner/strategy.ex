@@ -18,7 +18,11 @@ defmodule Cyclium.EpisodeRunner.Strategy do
               | :converge
               | :done
 
-  @callback handle_result(state :: map(), step :: %Cyclium.Schemas.EpisodeStep{}, result :: term()) ::
+  @callback handle_result(
+              state :: map(),
+              step :: %Cyclium.Schemas.EpisodeStep{},
+              result :: term()
+            ) ::
               {:ok, new_state :: map()}
               | {:retry, new_state :: map()}
               | {:abort, reason :: term()}

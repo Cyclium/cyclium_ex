@@ -62,11 +62,13 @@ defmodule Cyclium.Output.Router do
       mark_failed(output, "no_adapter", %{type: to_string(proposal.type)})
       journal_output_step!(episode, :output_failed, output, "no_adapter")
       emit_telemetry(:failed, proposal, %{reason: :no_adapter})
+
       Cyclium.Bus.broadcast("output.delivered", %{
         episode_id: episode.id,
         output_id: output.id,
         status: :failed
       })
+
       {:error, :no_adapter}
     else
       ctx = %{episode_id: episode.id}
@@ -76,10 +78,12 @@ defmodule Cyclium.Output.Router do
           {:ok, delivered} = mark_delivered(output, ref)
           journal_output_step!(episode, :output_delivered, output, nil)
           emit_telemetry(:delivered, proposal, %{ref: ref})
+
           Cyclium.Bus.broadcast("output.delivered", %{
             episode_id: episode.id,
             output_id: output.id
           })
+
           {:ok, delivered}
 
         {:error, reason} ->
@@ -127,11 +131,13 @@ defmodule Cyclium.Output.Router do
   end
 
   defp next_step_no(episode_id) do
-    (from(s in EpisodeStep,
-       where: s.episode_id == ^episode_id,
-       select: max(s.step_no))
-     |> repo().one()) || 0
-    |> Kernel.+(1)
+    from(s in EpisodeStep,
+      where: s.episode_id == ^episode_id,
+      select: max(s.step_no)
+    )
+    |> repo().one() ||
+      0
+      |> Kernel.+(1)
   end
 
   defp has_unique_error?(changeset, field) do

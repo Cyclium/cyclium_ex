@@ -45,7 +45,9 @@ defmodule Cyclium.WorkflowDSLTest do
     end
 
     test "input function receives prior results" do
-      result = TestWorkflows.TwoStep.__workflow_step_input__(:fulfill, %{}, %{validate: %{ok: true}})
+      result =
+        TestWorkflows.TwoStep.__workflow_step_input__(:fulfill, %{}, %{validate: %{ok: true}})
+
       assert result == %{validated: %{ok: true}}
     end
 

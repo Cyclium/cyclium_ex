@@ -140,6 +140,7 @@ defmodule Cyclium.LogProjector do
   end
 
   defp format_time(nil), do: "??:??"
+
   defp format_time(%DateTime{} = dt) do
     "#{pad(dt.hour)}:#{pad(dt.minute)}"
   end

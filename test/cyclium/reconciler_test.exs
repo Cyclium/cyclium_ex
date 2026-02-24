@@ -5,18 +5,20 @@ defmodule Cyclium.ReconcilerTest do
     use Cyclium.Actor
 
     actor do
-      domain :testing
-      capabilities [:read_test]
-      max_concurrent_episodes 2
-      episode_overflow :drop
+      domain(:testing)
+      capabilities([:read_test])
+      max_concurrent_episodes(2)
+      episode_overflow(:drop)
 
-      expectation :check_one,
+      expectation(:check_one,
         trigger: {:schedule, 5_000},
         description: "First check"
+      )
 
-      expectation :check_two,
+      expectation(:check_two,
         trigger: {:event, "test.event"},
         description: "Second check"
+      )
     end
   end
 
@@ -83,10 +85,11 @@ defmodule Cyclium.ReconcilerTest do
 
       # Reconcile with only check_two (remove check_one)
       reduced_expectations = [
-        {:check_two, [
-          trigger: {:event, "test.event"},
-          description: "Second check"
-        ]}
+        {:check_two,
+         [
+           trigger: {:event, "test.event"},
+           description: "Second check"
+         ]}
       ]
 
       GenServer.cast(pid, {:reconcile, TestActor.__cyclium_config__(), reduced_expectations})
@@ -104,12 +107,15 @@ defmodule Cyclium.ReconcilerTest do
       {:ok, pid} = TestActor.start_link(name: :test_actor_add_timer)
 
       # Add a new schedule expectation
-      new_expectations = TestActor.__cyclium_expectations__() ++ [
-        {:check_three, [
-          trigger: {:schedule, 10_000},
-          description: "New check"
-        ]}
-      ]
+      new_expectations =
+        TestActor.__cyclium_expectations__() ++
+          [
+            {:check_three,
+             [
+               trigger: {:schedule, 10_000},
+               description: "New check"
+             ]}
+          ]
 
       GenServer.cast(pid, {:reconcile, TestActor.__cyclium_config__(), new_expectations})
       :timer.sleep(10)

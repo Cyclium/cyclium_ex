@@ -9,34 +9,53 @@ defmodule Cyclium.Schemas.Finding do
   @severities [:low, :medium, :high, :critical]
 
   schema "cyclium_findings" do
-    field :actor_id, :string
-    field :finding_key, :string
-    field :status, Ecto.Enum, values: @statuses, default: :active
-    field :class, :string
-    field :severity, Ecto.Enum, values: @severities
-    field :confidence, :float
-    field :subject, :map
-    field :evidence_refs, :map
-    field :summary, :string
-    field :raised_by_episode_id, :binary_id
-    field :cleared_by_episode_id, :binary_id
-    field :raised_at, :utc_datetime
-    field :cleared_at, :utc_datetime
-    field :updated_at, :utc_datetime
+    field(:actor_id, :string)
+    field(:finding_key, :string)
+    field(:status, Ecto.Enum, values: @statuses, default: :active)
+    field(:class, :string)
+    field(:severity, Ecto.Enum, values: @severities)
+    field(:confidence, :float)
+    field(:subject, :map)
+    field(:evidence_refs, :map)
+    field(:summary, :string)
+    field(:raised_by_episode_id, :binary_id)
+    field(:cleared_by_episode_id, :binary_id)
+    field(:raised_at, :utc_datetime)
+    field(:cleared_at, :utc_datetime)
+    field(:updated_at, :utc_datetime)
     # Denormalized from subject map for SQL Server indexable queries
-    field :subject_kind, :string
-    field :subject_id, :string
+    field(:subject_kind, :string)
+    field(:subject_id, :string)
   end
 
   def changeset(finding, attrs) do
     finding
     |> cast(attrs, [
-      :actor_id, :finding_key, :status, :class, :severity, :confidence,
-      :subject, :evidence_refs, :summary, :raised_by_episode_id,
-      :cleared_by_episode_id, :raised_at, :cleared_at, :updated_at,
-      :subject_kind, :subject_id
+      :actor_id,
+      :finding_key,
+      :status,
+      :class,
+      :severity,
+      :confidence,
+      :subject,
+      :evidence_refs,
+      :summary,
+      :raised_by_episode_id,
+      :cleared_by_episode_id,
+      :raised_at,
+      :cleared_at,
+      :updated_at,
+      :subject_kind,
+      :subject_id
     ])
-    |> validate_required([:actor_id, :finding_key, :status, :class, :raised_by_episode_id, :raised_at])
+    |> validate_required([
+      :actor_id,
+      :finding_key,
+      :status,
+      :class,
+      :raised_by_episode_id,
+      :raised_at
+    ])
     |> maybe_denormalize_subject()
     |> unique_constraint([:finding_key, :status])
   end
@@ -47,7 +66,9 @@ defmodule Cyclium.Schemas.Finding do
         changeset |> put_change(:subject_kind, kind) |> put_change(:subject_id, id)
 
       %{kind: kind, id: id} ->
-        changeset |> put_change(:subject_kind, to_string(kind)) |> put_change(:subject_id, to_string(id))
+        changeset
+        |> put_change(:subject_kind, to_string(kind))
+        |> put_change(:subject_id, to_string(id))
 
       _ ->
         changeset

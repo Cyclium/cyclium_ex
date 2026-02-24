@@ -4,7 +4,7 @@ defmodule Cyclium.Episodes do
   """
 
   import Ecto.Query
-  alias Cyclium.Schemas.{Episode, EpisodeStep, Output}
+  alias Cyclium.Schemas.{Episode, EpisodeStep, EpisodeLog, Output}
 
   defp repo, do: Cyclium.repo()
 
@@ -20,6 +20,15 @@ defmodule Cyclium.Episodes do
 
   def get(id) do
     repo().get(Episode, id)
+  end
+
+  def list_steps(episode_id) do
+    from(s in EpisodeStep, where: s.episode_id == ^episode_id, order_by: [asc: s.step_no])
+    |> repo().all()
+  end
+
+  def get_log(episode_id) do
+    repo().get_by(EpisodeLog, episode_id: episode_id)
   end
 
   def list_by_status(statuses) when is_list(statuses) do
@@ -45,7 +54,8 @@ defmodule Cyclium.Episodes do
     |> repo().update()
   end
 
-  defp maybe_set_finished_at(attrs, status) when status in [:done, :failed, :partially_failed, :canceled] do
+  defp maybe_set_finished_at(attrs, status)
+       when status in [:done, :failed, :partially_failed, :canceled] do
     Map.put_new(attrs, :finished_at, DateTime.utc_now() |> DateTime.truncate(:second))
   end
 
@@ -105,10 +115,12 @@ defmodule Cyclium.Episodes do
   end
 
   defp next_step_no(episode_id) do
-    (from(s in EpisodeStep,
-       where: s.episode_id == ^episode_id,
-       select: max(s.step_no))
-     |> repo().one()) || 0
-    |> Kernel.+(1)
+    from(s in EpisodeStep,
+      where: s.episode_id == ^episode_id,
+      select: max(s.step_no)
+    )
+    |> repo().one() ||
+      0
+      |> Kernel.+(1)
   end
 end

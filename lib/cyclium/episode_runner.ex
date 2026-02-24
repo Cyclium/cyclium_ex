@@ -15,7 +15,8 @@ defmodule Cyclium.EpisodeRunner do
   defp repo, do: Cyclium.repo()
 
   def execute_loop(%Episode{} = episode, strategy, state) do
-    deadline_ref = Process.send_after(self(), :budget_wall_exceeded, episode.budget["max_wall_ms"] || 120_000)
+    deadline_ref =
+      Process.send_after(self(), :budget_wall_exceeded, episode.budget["max_wall_ms"] || 120_000)
 
     try do
       do_loop(episode, strategy, state, DateTime.utc_now())
@@ -28,10 +29,16 @@ defmodule Cyclium.EpisodeRunner do
     receive do
       :budget_wall_exceeded ->
         elapsed = DateTime.diff(DateTime.utc_now(), started_at, :millisecond)
+
         journal_step!(episode, :episode_failed, %{
           error_class: "budget_exceeded",
-          error_detail: %{kind: "wall_time", used_ms: elapsed, max_ms: episode.budget["max_wall_ms"]}
+          error_detail: %{
+            kind: "wall_time",
+            used_ms: elapsed,
+            max_ms: episode.budget["max_wall_ms"]
+          }
         })
+
         Cyclium.Episodes.update_status(episode.id, :failed, error_class: "budget_exceeded")
         {:error, :budget_exceeded}
     after
@@ -39,25 +46,31 @@ defmodule Cyclium.EpisodeRunner do
     end
 
     with :ok <- check_budget(episode) do
+      increment_turn(episode)
       episode_ctx = build_episode_ctx(episode)
 
       case strategy.next_step(state, episode_ctx) do
         :done ->
           journal_step!(episode, :episode_completed, %{})
           Cyclium.Episodes.update_status(episode.id, :done)
+          Cyclium.LogProjector.project(episode.id)
           {:ok, state}
 
         :converge ->
           run_converge(episode, strategy, state)
 
         {:tool_call, capability, action, args} ->
-          :telemetry.execute([:cyclium, :step, :tool_call], %{count: 1},
-            %{tool: capability, action: action, episode_id: episode.id})
-
-          step = journal_step!(episode, :tool_call, %{
-            tool_name: "#{capability}.#{action}",
-            args_redacted: args
+          :telemetry.execute([:cyclium, :step, :tool_call], %{count: 1}, %{
+            tool: capability,
+            action: action,
+            episode_id: episode.id
           })
+
+          step =
+            journal_step!(episode, :tool_call, %{
+              tool_name: "#{capability}.#{action}",
+              args_redacted: args
+            })
 
           case Cyclium.ToolExec.call(capability, action, args, %{episode: episode}) do
             {:ok, result, cost} ->
@@ -69,17 +82,27 @@ defmodule Cyclium.EpisodeRunner do
           end
 
         {:synthesize, prompt_ctx} ->
-          :telemetry.execute([:cyclium, :step, :synthesis], %{count: 1},
-            %{episode_id: episode.id})
+          :telemetry.execute([:cyclium, :step, :synthesis], %{count: 1}, %{episode_id: episode.id})
 
           step = journal_step!(episode, :synthesis, %{args_redacted: prompt_ctx})
-          handle_strategy_result(episode, strategy, state, step, {:ok, %{pending: true}}, started_at)
+
+          handle_strategy_result(
+            episode,
+            strategy,
+            state,
+            step,
+            {:ok, %{pending: true}},
+            started_at
+          )
 
         {:observe, data} ->
-          :telemetry.execute([:cyclium, :step, :observation], %{count: 1},
-            %{actor_id: episode.actor_id, episode_id: episode.id})
+          :telemetry.execute([:cyclium, :step, :observation], %{count: 1}, %{
+            actor_id: episode.actor_id,
+            episode_id: episode.id
+          })
 
           journal_step!(episode, :observation, %{result_ref: data})
+
           case strategy.handle_result(state, %EpisodeStep{kind: :observation}, {:ok, data}) do
             {:ok, new_state} -> do_loop(episode, strategy, new_state, started_at)
             {:abort, reason} -> abort_episode(episode, reason)
@@ -90,7 +113,11 @@ defmodule Cyclium.EpisodeRunner do
           do_loop(episode, strategy, state, started_at)
 
         {:output, type, payload} ->
-          journal_step!(episode, :output_proposed, %{tool_name: to_string(type), args_redacted: payload})
+          journal_step!(episode, :output_proposed, %{
+            tool_name: to_string(type),
+            args_redacted: payload
+          })
+
           do_loop(episode, strategy, state, started_at)
 
         {:approval, request} ->
@@ -143,7 +170,8 @@ defmodule Cyclium.EpisodeRunner do
     final_status = compute_episode_status(output_results)
 
     # Step 6: Journal and set episode status
-    step_kind = if final_status in [:done, :partially_failed], do: :episode_completed, else: :episode_failed
+    step_kind =
+      if final_status in [:done, :partially_failed], do: :episode_completed, else: :episode_failed
 
     journal_step!(episode, step_kind, %{
       result_ref: %{
@@ -163,8 +191,12 @@ defmodule Cyclium.EpisodeRunner do
       confidence: converge_result.confidence
     )
 
+    # Step 7b: Project log
+    Cyclium.LogProjector.project(episode.id)
+
     # Step 7: Bus event + telemetry
     bus_event = if final_status == :failed, do: "episode.failed", else: "episode.completed"
+
     Cyclium.Bus.broadcast(bus_event, %{
       episode_id: episode.id,
       actor_id: episode.actor_id,
@@ -196,12 +228,14 @@ defmodule Cyclium.EpisodeRunner do
       case Cyclium.Findings.persist_finding(action, episode) do
         {:ok, finding} ->
           bus_event = finding_bus_event(action)
+
           Cyclium.Bus.broadcast(bus_event, %{
             episode_id: episode.id,
             finding_id: finding.id,
             finding_key: finding.finding_key,
             actor_id: finding.actor_id
           })
+
           journal_finding_step!(episode, action, finding)
 
         :ok ->
@@ -209,22 +243,26 @@ defmodule Cyclium.EpisodeRunner do
           :ok
 
         {:error, reason} ->
-          Logger.warning("[Cyclium] Failed to persist finding #{inspect(action)}: #{inspect(reason)}")
+          Logger.warning(
+            "[Cyclium] Failed to persist finding #{inspect(action)}: #{inspect(reason)}"
+          )
       end
     end)
   end
 
   defp compute_episode_status(output_results) do
-    successes = Enum.count(output_results, &match?({:ok, _}, &1)) +
-                Enum.count(output_results, &match?({:duplicate, _}, &1))
+    successes =
+      Enum.count(output_results, &match?({:ok, _}, &1)) +
+        Enum.count(output_results, &match?({:duplicate, _}, &1))
+
     failures = Enum.count(output_results, &match?({:error, _}, &1))
     total = length(output_results)
 
     cond do
-      total == 0     -> :done
-      failures == 0  -> :done
+      total == 0 -> :done
+      failures == 0 -> :done
       successes == 0 -> :failed
-      true           -> :partially_failed
+      true -> :partially_failed
     end
   end
 
@@ -238,12 +276,13 @@ defmodule Cyclium.EpisodeRunner do
   defp finding_bus_event({:clear, _, _}), do: "finding.cleared"
 
   defp journal_finding_step!(episode, action, finding) do
-    kind = case action do
-      {:raise, _}     -> :finding_raised
-      {:update, _, _} -> :finding_updated
-      {:clear, _}     -> :finding_cleared
-      {:clear, _, _}  -> :finding_cleared
-    end
+    kind =
+      case action do
+        {:raise, _} -> :finding_raised
+        {:update, _, _} -> :finding_updated
+        {:clear, _} -> :finding_cleared
+        {:clear, _, _} -> :finding_cleared
+      end
 
     journal_step!(episode, kind, %{
       result_ref: %{finding_id: finding.id, finding_key: finding.finding_key}
@@ -251,7 +290,11 @@ defmodule Cyclium.EpisodeRunner do
   end
 
   defp abort_episode(episode, reason) do
-    journal_step!(episode, :episode_failed, %{error_class: "abort", error_detail: %{reason: inspect(reason)}})
+    journal_step!(episode, :episode_failed, %{
+      error_class: "abort",
+      error_detail: %{reason: inspect(reason)}
+    })
+
     Cyclium.Episodes.update_status(episode.id, :failed, error_class: "abort")
 
     Cyclium.Bus.broadcast("episode.failed", %{
@@ -278,11 +321,18 @@ defmodule Cyclium.EpisodeRunner do
     end
   end
 
+  defp increment_turn(%Episode{} = episode) do
+    import Ecto.Query
+
+    from(e in Episode, where: e.id == ^episode.id)
+    |> repo().update_all(inc: [turns_used: 1])
+  end
+
   defp increment_budget(%Episode{} = episode, token_cost) when is_integer(token_cost) do
     import Ecto.Query
 
     from(e in Episode, where: e.id == ^episode.id)
-    |> repo().update_all(inc: [turns_used: 1, tokens_used: token_cost])
+    |> repo().update_all(inc: [tokens_used: token_cost])
   end
 
   defp save_checkpoint(episode, phase_name, state) do
@@ -301,7 +351,11 @@ defmodule Cyclium.EpisodeRunner do
 
   defp count_checkpoints(episode_id) do
     import Ecto.Query
-    from(c in Cyclium.Schemas.EpisodeCheckpoint, where: c.episode_id == ^episode_id, select: count())
+
+    from(c in Cyclium.Schemas.EpisodeCheckpoint,
+      where: c.episode_id == ^episode_id,
+      select: count()
+    )
     |> repo().one()
   end
 
@@ -331,9 +385,10 @@ defmodule Cyclium.EpisodeRunner do
   defp next_step_no(episode_id) do
     import Ecto.Query
 
-    (from(s in EpisodeStep, where: s.episode_id == ^episode_id, select: max(s.step_no))
-     |> repo().one()) || 0
-    |> Kernel.+(1)
+    from(s in EpisodeStep, where: s.episode_id == ^episode_id, select: max(s.step_no))
+    |> repo().one() ||
+      0
+      |> Kernel.+(1)
   end
 
   defp build_episode_ctx(%Episode{} = episode) do

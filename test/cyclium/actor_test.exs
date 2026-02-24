@@ -6,23 +6,25 @@ defmodule Cyclium.ActorTest do
     use Cyclium.Actor
 
     actor do
-      domain :testing
-      capabilities [:read_test, :write_test]
-      max_concurrent_episodes 2
-      episode_overflow :drop
+      domain(:testing)
+      capabilities([:read_test, :write_test])
+      max_concurrent_episodes(2)
+      episode_overflow(:drop)
 
-      expectation :check_health,
+      expectation(:check_health,
         trigger: {:schedule, 100},
         description: "Periodic health check",
         outputs: [:slack],
         budget: %{max_turns: 5, max_tokens: 10_000, max_wall_ms: 30_000}
+      )
 
-      expectation :react_to_alert,
+      expectation(:react_to_alert,
         trigger: {:event, "alert.fired"},
         filter: %{severity: "high"},
         debounce_ms: 200,
         cooldown_ms: 1_000,
         description: "React to high-severity alerts"
+      )
     end
   end
 
@@ -98,7 +100,9 @@ defmodule Cyclium.ActorTest do
   describe "filter matching" do
     test "empty filter matches everything" do
       exp = %Cyclium.Expectation{
-        id: :test, actor_id: :a, domain: :d,
+        id: :test,
+        actor_id: :a,
+        domain: :d,
         trigger: {:event, "test"},
         subscribes_to: ["test"],
         filter: %{}
@@ -109,7 +113,9 @@ defmodule Cyclium.ActorTest do
 
     test "exact match filter works" do
       exp = %Cyclium.Expectation{
-        id: :test, actor_id: :a, domain: :d,
+        id: :test,
+        actor_id: :a,
+        domain: :d,
         trigger: {:event, "test"},
         subscribes_to: ["test"],
         filter: %{severity: "high"}
@@ -121,7 +127,9 @@ defmodule Cyclium.ActorTest do
 
     test "in-list filter works" do
       exp = %Cyclium.Expectation{
-        id: :test, actor_id: :a, domain: :d,
+        id: :test,
+        actor_id: :a,
+        domain: :d,
         trigger: {:event, "test"},
         subscribes_to: ["test"],
         filter: %{status: {:in, ["OPEN", "STALLED"]}}
@@ -140,9 +148,11 @@ defmodule Cyclium.ActorTest do
     end
 
     defp filter_matches?(filter, _payload) when filter == %{}, do: true
+
     defp filter_matches?(filter, payload) do
       Enum.all?(filter, fn {key, expected} ->
         actual = Map.get(payload, key) || Map.get(payload, to_string(key))
+
         case expected do
           {:in, values} -> actual in values
           value -> actual == value

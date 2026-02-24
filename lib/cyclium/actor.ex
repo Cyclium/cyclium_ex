@@ -86,7 +86,8 @@ defmodule Cyclium.Actor do
     overflow = Module.get_attribute(env.module, :cyclium_overflow) || :queue
     expectations = Module.get_attribute(env.module, :cyclium_expectations) || []
 
-    actor_id = env.module |> Module.split() |> List.last() |> Macro.underscore() |> String.to_atom()
+    actor_id =
+      env.module |> Module.split() |> List.last() |> Macro.underscore() |> String.to_atom()
 
     quote do
       def __cyclium_config__ do
@@ -219,9 +220,27 @@ defmodule Cyclium.Actor.Server do
   end
 
   def handle_info({:bus, event_type, payload}, state) do
-    :telemetry.execute([:cyclium, :actor, :event_received], %{count: 1},
-      %{actor_id: state.actor_id, event_type: event_type})
+    :telemetry.execute([:cyclium, :actor, :event_received], %{count: 1}, %{
+      actor_id: state.actor_id,
+      event_type: event_type
+    })
 
+    # Handle episode lifecycle events — free up active_episodes slots
+    state =
+      if event_type in ["episode.completed", "episode.failed", "episode.canceled"] do
+        episode_id = payload[:episode_id] || payload["episode_id"]
+        actor_id = payload[:actor_id] || payload["actor_id"]
+
+        if actor_id == to_string(state.actor_id) and episode_id do
+          handle_episode_done(state, episode_id)
+        else
+          state
+        end
+      else
+        state
+      end
+
+    # Match expectations that subscribe to this event
     state =
       state.expectations
       |> Enum.filter(fn {_id, exp} -> event_matches?(exp, event_type, payload) end)
@@ -245,6 +264,11 @@ defmodule Cyclium.Actor.Server do
 
   def handle_info({:episode_failed, episode_id}, state) do
     {:noreply, handle_episode_done(state, episode_id)}
+  end
+
+  # Task process exit — the linked Task finished (normal or crash)
+  def handle_info({:DOWN, _ref, :process, _pid, _reason}, state) do
+    {:noreply, state}
   end
 
   def handle_info(_msg, state) do
@@ -274,16 +298,18 @@ defmodule Cyclium.Actor.Server do
     added = MapSet.difference(new_ids, old_ids)
 
     # Cancel timers for removed expectations
-    state = Enum.reduce(removed, state, fn id, acc ->
-      acc = cancel_timer(acc, id)
-      cancel_debounce(acc, id)
-    end)
+    state =
+      Enum.reduce(removed, state, fn id, acc ->
+        acc = cancel_timer(acc, id)
+        cancel_debounce(acc, id)
+      end)
 
     # Update state with new config and expectations
-    state = %{state |
-      config: new_config,
-      expectations: new_expectations,
-      cooldowns: Map.drop(state.cooldowns, MapSet.to_list(removed))
+    state = %{
+      state
+      | config: new_config,
+        expectations: new_expectations,
+        cooldowns: Map.drop(state.cooldowns, MapSet.to_list(removed))
     }
 
     # Start timers for newly added schedule expectations
@@ -301,7 +327,9 @@ defmodule Cyclium.Actor.Server do
 
   defp cancel_timer(state, expectation_id) do
     case Map.get(state.timers, expectation_id) do
-      nil -> state
+      nil ->
+        state
+
       ref ->
         Process.cancel_timer(ref)
         %{state | timers: Map.delete(state.timers, expectation_id)}
@@ -322,7 +350,8 @@ defmodule Cyclium.Actor.Server do
       cooldown_ms: Keyword.get(opts, :cooldown_ms),
       resources: Keyword.get(opts, :resources, []),
       outputs: Keyword.get(opts, :outputs, []),
-      budget: Keyword.get(opts, :budget, %{max_turns: 12, max_tokens: 25_000, max_wall_ms: 120_000}),
+      budget:
+        Keyword.get(opts, :budget, %{max_turns: 12, max_tokens: 25_000, max_wall_ms: 120_000}),
       log_strategy: Keyword.get(opts, :log_strategy, :timeline),
       audit_level: Keyword.get(opts, :audit_level, :standard),
       retention_days: Keyword.get(opts, :retention_days, 30),
@@ -410,7 +439,9 @@ defmodule Cyclium.Actor.Server do
 
   defp cancel_debounce(state, expectation_id) do
     case Map.get(state.debounce_timers, expectation_id) do
-      nil -> state
+      nil ->
+        state
+
       ref ->
         Process.cancel_timer(ref)
         Map.update!(state, :debounce_timers, &Map.delete(&1, expectation_id))
@@ -459,11 +490,13 @@ defmodule Cyclium.Actor.Server do
     case Cyclium.Episodes.create(params) do
       {:ok, episode} ->
         runner().enqueue(episode.id)
+
         Bus.broadcast("expectation.triggered", %{
           actor_id: state.actor_id,
           expectation_id: params.expectation_id,
           episode_id: episode.id
         })
+
         Map.update!(state, :active_episodes, &MapSet.put(&1, episode.id))
 
       {:error, _} ->
@@ -481,6 +514,7 @@ defmodule Cyclium.Actor.Server do
           actor_id: state.actor_id,
           expectation_id: params.expectation_id
         })
+
         Map.update!(state, :queued_episodes, &:queue.in(episode.id, &1))
 
       {:error, _} ->
@@ -489,16 +523,22 @@ defmodule Cyclium.Actor.Server do
   end
 
   defp drop_episode(state, params) do
-    :telemetry.execute([:cyclium, :actor, :overflow], %{count: 1},
-      %{actor_id: state.actor_id, policy: :drop, expectation_id: params.expectation_id})
+    :telemetry.execute([:cyclium, :actor, :overflow], %{count: 1}, %{
+      actor_id: state.actor_id,
+      policy: :drop,
+      expectation_id: params.expectation_id
+    })
+
     :telemetry.execute([:cyclium, :episode, :dropped], %{count: 1}, %{
       actor_id: state.actor_id,
       expectation_id: params.expectation_id
     })
+
     Bus.broadcast("episode.dropped", %{
       actor_id: state.actor_id,
       expectation_id: params.expectation_id
     })
+
     state
   end
 
@@ -506,11 +546,13 @@ defmodule Cyclium.Actor.Server do
     case :queue.out(state.queued_episodes) do
       {{:value, oldest_id}, rest} ->
         Cyclium.Episodes.update_status(oldest_id, :canceled)
+
         Bus.broadcast("episode.canceled", %{
           episode_id: oldest_id,
           actor_id: state.actor_id,
           reason: :shed_oldest
         })
+
         state = %{state | queued_episodes: rest}
         enqueue_episode(state, params)
 
@@ -526,6 +568,7 @@ defmodule Cyclium.Actor.Server do
     case :queue.out(state.queued_episodes) do
       {{:value, queued_id}, rest} ->
         runner().enqueue(queued_id)
+
         state
         |> Map.put(:queued_episodes, rest)
         |> Map.update!(:active_episodes, &MapSet.put(&1, queued_id))
@@ -537,8 +580,12 @@ defmodule Cyclium.Actor.Server do
 
   defp set_cooldown(state, expectation) do
     case expectation.cooldown_ms do
-      nil -> state
-      0 -> state
+      nil ->
+        state
+
+      0 ->
+        state
+
       ms when is_integer(ms) ->
         expiry = DateTime.add(DateTime.utc_now(), ms, :millisecond)
         put_in(state.cooldowns[expectation.id], expiry)

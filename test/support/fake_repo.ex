@@ -30,10 +30,14 @@ defmodule Cyclium.FakeRepo do
           Agent.update(__MODULE__, fn state ->
             %{state | records: [record | state.records]}
           end)
+
           {:ok, record}
 
         {:error, field} ->
-          {:error, Ecto.Changeset.add_error(changeset, field, "has already been taken", constraint: :unique)}
+          {:error,
+           Ecto.Changeset.add_error(changeset, field, "has already been taken",
+             constraint: :unique
+           )}
       end
     else
       {:error, changeset}
@@ -50,9 +54,11 @@ defmodule Cyclium.FakeRepo do
 
       %{__struct__: _} = struct ->
         record = ensure_id(struct)
+
         Agent.update(__MODULE__, fn state ->
           %{state | records: [record | state.records]}
         end)
+
         record
     end
   end
@@ -60,16 +66,20 @@ defmodule Cyclium.FakeRepo do
   def update(changeset) do
     if changeset.valid? do
       record = Ecto.Changeset.apply_changes(changeset)
+
       Agent.update(__MODULE__, fn state ->
-        updated = Enum.map(state.records, fn r ->
-          if r.__struct__ == record.__struct__ && Map.get(r, :id) == Map.get(record, :id) do
-            record
-          else
-            r
-          end
-        end)
+        updated =
+          Enum.map(state.records, fn r ->
+            if r.__struct__ == record.__struct__ && Map.get(r, :id) == Map.get(record, :id) do
+              record
+            else
+              r
+            end
+          end)
+
         %{state | records: updated}
       end)
+
       {:ok, record}
     else
       {:error, changeset}
@@ -139,17 +149,19 @@ defmodule Cyclium.FakeRepo do
   defp ensure_id(record), do: record
 
   defp check_unique_constraints(changeset, record) do
-    constraints = changeset.constraints
-    |> Enum.filter(fn c -> c.type == :unique end)
+    constraints =
+      changeset.constraints
+      |> Enum.filter(fn c -> c.type == :unique end)
 
-    conflict = Enum.find(constraints, fn c ->
-      Agent.get(__MODULE__, fn state ->
-        Enum.any?(state.records, fn existing ->
-          existing.__struct__ == record.__struct__ &&
-            fields_match?(existing, record, c.field)
+    conflict =
+      Enum.find(constraints, fn c ->
+        Agent.get(__MODULE__, fn state ->
+          Enum.any?(state.records, fn existing ->
+            existing.__struct__ == record.__struct__ &&
+              fields_match?(existing, record, c.field)
+          end)
         end)
       end)
-    end)
 
     case conflict do
       nil -> :ok

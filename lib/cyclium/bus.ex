@@ -13,15 +13,26 @@ defmodule Cyclium.Bus do
   @topic "cyclium:events"
 
   @runtime_events [
-    "expectation.due", "expectation.triggered",
-    "finding.raised", "finding.updated", "finding.cleared",
+    "expectation.due",
+    "expectation.triggered",
+    "finding.raised",
+    "finding.updated",
+    "finding.cleared",
     "work.requested",
-    "output.proposed", "output.delivered",
-    "approval.requested", "approval.resolved",
-    "spec.updated", "agent.state_changed",
-    "episode.completed", "episode.failed", "episode.queued",
-    "episode.dropped", "episode.canceled",
-    "workflow.started", "workflow.completed", "workflow.failed"
+    "output.proposed",
+    "output.delivered",
+    "approval.requested",
+    "approval.resolved",
+    "spec.updated",
+    "agent.state_changed",
+    "episode.completed",
+    "episode.failed",
+    "episode.queued",
+    "episode.dropped",
+    "episode.canceled",
+    "workflow.started",
+    "workflow.completed",
+    "workflow.failed"
   ]
 
   def runtime_events, do: @runtime_events

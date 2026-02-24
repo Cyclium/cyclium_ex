@@ -188,7 +188,12 @@ defmodule Cyclium.WorkflowEngine do
   end
 
   defp maybe_handle_episode_terminal(event_type, payload, state)
-       when event_type in ["episode.completed", "episode.failed", "episode.canceled", "episode.dropped"] do
+       when event_type in [
+              "episode.completed",
+              "episode.failed",
+              "episode.canceled",
+              "episode.dropped"
+            ] do
     case payload do
       %{workflow_instance_id: wf_id, workflow_step_id: step_id}
       when is_binary(wf_id) and wf_id != "" and not is_nil(step_id) ->
@@ -373,7 +378,10 @@ defmodule Cyclium.WorkflowEngine do
         workflow_module.__workflow_step_input__(step_atom, fresh_instance.trigger_ref, prior)
       rescue
         e ->
-          Logger.warning("[Cyclium.WorkflowEngine] input_fn failed for step #{step_id}: #{inspect(e)}")
+          Logger.warning(
+            "[Cyclium.WorkflowEngine] input_fn failed for step #{step_id}: #{inspect(e)}"
+          )
+
           %{}
       end
 
@@ -403,6 +411,7 @@ defmodule Cyclium.WorkflowEngine do
 
         # Update step_states (use fresh_instance to avoid overwriting parallel step updates)
         current_attempts = get_in(fresh_instance.step_states, [step_id, "attempts"]) || 0
+
         step_states =
           Map.put(fresh_instance.step_states, step_id, %{
             "status" => "running",
@@ -422,7 +431,10 @@ defmodule Cyclium.WorkflowEngine do
         state
 
       {:error, reason} ->
-        Logger.error("[Cyclium.WorkflowEngine] Failed to create episode for step #{step_id}: #{inspect(reason)}")
+        Logger.error(
+          "[Cyclium.WorkflowEngine] Failed to create episode for step #{step_id}: #{inspect(reason)}"
+        )
+
         state
     end
   end

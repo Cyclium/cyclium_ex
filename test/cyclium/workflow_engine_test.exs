@@ -15,7 +15,8 @@ defmodule Cyclium.WorkflowEngineTest do
 
     {:ok, engine} =
       start_supervised(
-        {WorkflowEngine, name: :"engine_#{System.unique_integer([:positive])}", workflows: [TestWorkflows.TwoStep]}
+        {WorkflowEngine,
+         name: :"engine_#{System.unique_integer([:positive])}", workflows: [TestWorkflows.TwoStep]}
       )
 
     on_exit(fn ->
