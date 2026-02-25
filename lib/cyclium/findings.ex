@@ -29,6 +29,12 @@ defmodule Cyclium.Findings do
       Cyclium.Findings.active_for(subject: %{kind: "po", id: "PO-1955"})
       Cyclium.Findings.active_for(finding_key: "po_stalled:PO-1955")
       Cyclium.Findings.active_for(class: "non_responsive")
+
+  ## Options
+
+    * `:limit` — max rows to return
+    * `:offset` — rows to skip (default: 0)
+    * `:exclude_archived` — when `true`, excludes findings with a non-nil `archived_at` (default: `false`)
   """
   def active_for(filters, opts \\ []) when is_list(filters) do
     limit = Keyword.get(opts, :limit)
@@ -37,16 +43,18 @@ defmodule Cyclium.Findings do
     query =
       from(f in Finding, where: f.status == :active, order_by: [desc: f.updated_at])
       |> apply_filters(filters)
+      |> maybe_exclude_archived(opts)
 
     query = if limit, do: query |> limit(^limit) |> offset(^offset), else: query
 
     repo().all(query)
   end
 
-  @doc "Count active findings matching the given filters."
-  def count_active(filters \\ []) when is_list(filters) do
+  @doc "Count active findings matching the given filters. Accepts same opts as `active_for/2`."
+  def count_active(filters \\ [], opts \\ []) when is_list(filters) do
     from(f in Finding, where: f.status == :active, select: count(f.id))
     |> apply_filters(filters)
+    |> maybe_exclude_archived(opts)
     |> repo().one()
   end
 
@@ -75,6 +83,14 @@ defmodule Cyclium.Findings do
   end
 
   defp apply_filters(query, [_ | rest]), do: apply_filters(query, rest)
+
+  defp maybe_exclude_archived(query, opts) do
+    if Keyword.get(opts, :exclude_archived, false) do
+      where(query, [f], is_nil(f.archived_at))
+    else
+      query
+    end
+  end
 
   @doc """
   Returns true if an active finding with the given key was updated within `window_ms` milliseconds.

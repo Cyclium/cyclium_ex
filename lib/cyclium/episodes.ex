@@ -76,6 +76,7 @@ defmodule Cyclium.Episodes do
     * `:limit` — max rows to return (default: 50)
     * `:offset` — rows to skip (default: 0)
     * `:order` — `:asc` or `:desc` by `started_at` (default: `:desc`)
+    * `:exclude_archived` — when `true`, excludes episodes with a non-nil `archived_at` (default: `false`)
 
   """
   def list_by_actors(actor_ids, opts \\ []) when is_list(actor_ids) do
@@ -91,6 +92,7 @@ defmodule Cyclium.Episodes do
       offset: ^offset
     )
     |> maybe_filter_statuses(statuses)
+    |> maybe_exclude_archived(opts)
     |> repo().all()
   end
 
@@ -100,12 +102,21 @@ defmodule Cyclium.Episodes do
 
     from(e in Episode, where: e.actor_id in ^actor_ids, select: count(e.id))
     |> maybe_filter_statuses(statuses)
+    |> maybe_exclude_archived(opts)
     |> repo().one()
   end
 
   defp maybe_filter_statuses(query, nil), do: query
   defp maybe_filter_statuses(query, []), do: query
   defp maybe_filter_statuses(query, statuses), do: where(query, [e], e.status in ^statuses)
+
+  defp maybe_exclude_archived(query, opts) do
+    if Keyword.get(opts, :exclude_archived, false) do
+      where(query, [e], is_nil(e.archived_at))
+    else
+      query
+    end
+  end
 
   def update_status(episode_id, status) do
     update_status(episode_id, status, [])
