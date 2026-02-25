@@ -15,7 +15,7 @@ defmodule Cyclium.ExpectationTest do
     assert exp.budget == %{max_turns: 12, max_tokens: 25_000, max_wall_ms: 120_000}
     assert exp.log_strategy == :timeline
     assert exp.audit_level == :standard
-    assert exp.retention_days == 30
+    assert exp.retention_days == 90
     assert exp.description == ""
     assert exp.synthesizer == nil
   end

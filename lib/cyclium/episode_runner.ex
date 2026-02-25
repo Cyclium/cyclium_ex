@@ -66,18 +66,28 @@ defmodule Cyclium.EpisodeRunner do
             episode_id: episode.id
           })
 
-          step =
-            journal_step!(episode, :tool_call, %{
-              tool_name: "#{capability}.#{action}",
-              args_redacted: args
-            })
+          tool_name = "#{capability}.#{action}"
 
           case Cyclium.ToolExec.call(capability, action, args, %{episode: episode}) do
-            {:ok, result, cost} ->
+            {:ok, result, cost, redacted} ->
+              step =
+                journal_step!(episode, :tool_call, %{
+                  tool_name: tool_name,
+                  args_redacted: redacted.args_redacted,
+                  result_ref: redacted.result_redacted
+                })
+
               increment_budget(episode, cost)
               handle_strategy_result(episode, strategy, state, step, {:ok, result}, started_at)
 
             {:error, _reason} = err ->
+              step =
+                journal_step!(episode, :tool_call, %{
+                  tool_name: tool_name,
+                  args_redacted: args,
+                  error_class: "tool_error"
+                })
+
               handle_strategy_result(episode, strategy, state, step, err, started_at)
           end
 
@@ -86,14 +96,38 @@ defmodule Cyclium.EpisodeRunner do
 
           step = journal_step!(episode, :synthesis, %{args_redacted: prompt_ctx})
 
-          handle_strategy_result(
-            episode,
-            strategy,
-            state,
-            step,
-            {:ok, %{pending: true}},
-            started_at
-          )
+          case resolve_synthesizer() do
+            nil ->
+              Logger.warning(
+                "[Cyclium] No :synthesizer configured — :synthesize step will pass prompt_ctx through as-is"
+              )
+
+              handle_strategy_result(episode, strategy, state, step, {:ok, prompt_ctx}, started_at)
+
+            synthesizer ->
+              episode_ctx = build_episode_ctx(episode)
+
+              case synthesizer.synthesize(prompt_ctx, episode_ctx) do
+                {:ok, result} ->
+                  token_cost =
+                    if function_exported?(synthesizer, :estimate_tokens, 1),
+                      do: synthesizer.estimate_tokens(prompt_ctx),
+                      else: 0
+
+                  increment_budget(episode, token_cost)
+                  handle_strategy_result(episode, strategy, state, step, {:ok, result}, started_at)
+
+                {:error, error_class, detail} ->
+                  handle_strategy_result(
+                    episode,
+                    strategy,
+                    state,
+                    step,
+                    {:error, {error_class, detail}},
+                    started_at
+                  )
+              end
+          end
 
         {:observe, data} ->
           :telemetry.execute([:cyclium, :step, :observation], %{count: 1}, %{
@@ -362,6 +396,10 @@ defmodule Cyclium.EpisodeRunner do
   defp journal_step!(%Episode{} = episode, kind, attrs) do
     now = DateTime.utc_now() |> DateTime.truncate(:second)
     step_no = next_step_no(episode.id)
+    log_strategy = parse_log_strategy(episode.log_strategy)
+
+    {args_redacted, result_ref} =
+      filter_step_data(log_strategy, kind, attrs[:tool_name], attrs[:args_redacted], attrs[:result_ref])
 
     step = %EpisodeStep{
       episode_id: episode.id,
@@ -369,8 +407,8 @@ defmodule Cyclium.EpisodeRunner do
       kind: kind,
       tool_name: attrs[:tool_name],
       args_hash: attrs[:args_hash],
-      args_redacted: attrs[:args_redacted],
-      result_ref: attrs[:result_ref],
+      args_redacted: args_redacted,
+      result_ref: result_ref,
       error_class: attrs[:error_class],
       error_detail: attrs[:error_detail],
       side_effect_key: attrs[:side_effect_key],
@@ -382,13 +420,65 @@ defmodule Cyclium.EpisodeRunner do
     repo().insert!(step)
   end
 
+  # full_debug: store everything as-is
+  defp filter_step_data(:full_debug, _kind, _tool_name, args, result), do: {args, result}
+
+  # timeline: store tool name + summary only, not full payloads
+  defp filter_step_data(:timeline, :tool_call, tool_name, _args, result) do
+    {%{tool: tool_name}, summarize_result(result)}
+  end
+
+  defp filter_step_data(:timeline, :synthesis, _tool_name, args, result) do
+    summary = if is_map(args), do: %{agent_slug: args[:agent_slug] || args["agent_slug"]}, else: nil
+    {summary, summarize_result(result)}
+  end
+
+  defp filter_step_data(:timeline, :observation, _tool_name, _args, result) do
+    {nil, summarize_result(result)}
+  end
+
+  # timeline: pass through for non-data steps (findings, completion, errors)
+  defp filter_step_data(:timeline, _kind, _tool_name, args, result), do: {args, result}
+
+  # none / summary_only: omit args and results entirely
+  defp filter_step_data(strategy, _kind, _tool_name, _args, _result)
+       when strategy in [:none, :summary_only] do
+    {nil, nil}
+  end
+
+  defp summarize_result(nil), do: nil
+
+  defp summarize_result(result) when is_map(result) do
+    # Keep scalar values and counts, drop nested data
+    result
+    |> Enum.reduce(%{}, fn
+      {k, v}, acc when is_binary(v) and byte_size(v) <= 200 -> Map.put(acc, k, v)
+      {k, v}, acc when is_number(v) or is_boolean(v) or is_atom(v) -> Map.put(acc, k, v)
+      {k, v}, acc when is_list(v) -> Map.put(acc, k, %{count: length(v)})
+      {k, v}, acc when is_map(v) -> Map.put(acc, k, %{keys: Map.keys(v)})
+      _, acc -> acc
+    end)
+  end
+
+  defp summarize_result(result), do: result
+
+  defp parse_log_strategy(nil), do: :timeline
+  defp parse_log_strategy("none"), do: :none
+  defp parse_log_strategy("summary_only"), do: :summary_only
+  defp parse_log_strategy("timeline"), do: :timeline
+  defp parse_log_strategy("full_debug"), do: :full_debug
+  defp parse_log_strategy(atom) when is_atom(atom), do: atom
+  defp parse_log_strategy(_), do: :timeline
+
   defp next_step_no(episode_id) do
     import Ecto.Query
 
-    from(s in EpisodeStep, where: s.episode_id == ^episode_id, select: max(s.step_no))
-    |> repo().one() ||
-      0
-      |> Kernel.+(1)
+    (from(s in EpisodeStep, where: s.episode_id == ^episode_id, select: max(s.step_no))
+     |> repo().one() || 0) + 1
+  end
+
+  defp resolve_synthesizer do
+    Application.get_env(:cyclium, :synthesizer)
   end
 
   defp build_episode_ctx(%Episode{} = episode) do

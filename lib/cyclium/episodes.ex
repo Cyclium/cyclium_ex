@@ -36,6 +36,34 @@ defmodule Cyclium.Episodes do
     |> repo().all()
   end
 
+  @doc """
+  List episodes for the given actor ID(s).
+
+  ## Options
+
+    * `:statuses` — list of status atoms to filter by (default: all)
+    * `:limit` — max rows to return (default: 50)
+    * `:order` — `:asc` or `:desc` by `started_at` (default: `:desc`)
+
+  """
+  def list_by_actors(actor_ids, opts \\ []) when is_list(actor_ids) do
+    statuses = Keyword.get(opts, :statuses)
+    limit = Keyword.get(opts, :limit, 50)
+    order = Keyword.get(opts, :order, :desc)
+
+    from(e in Episode,
+      where: e.actor_id in ^actor_ids,
+      order_by: [{^order, e.started_at}],
+      limit: ^limit
+    )
+    |> maybe_filter_statuses(statuses)
+    |> repo().all()
+  end
+
+  defp maybe_filter_statuses(query, nil), do: query
+  defp maybe_filter_statuses(query, []), do: query
+  defp maybe_filter_statuses(query, statuses), do: where(query, [e], e.status in ^statuses)
+
   def update_status(episode_id, status) do
     update_status(episode_id, status, [])
   end
@@ -115,12 +143,10 @@ defmodule Cyclium.Episodes do
   end
 
   defp next_step_no(episode_id) do
-    from(s in EpisodeStep,
-      where: s.episode_id == ^episode_id,
-      select: max(s.step_no)
-    )
-    |> repo().one() ||
-      0
-      |> Kernel.+(1)
+    (from(s in EpisodeStep,
+       where: s.episode_id == ^episode_id,
+       select: max(s.step_no)
+     )
+     |> repo().one() || 0) + 1
   end
 end

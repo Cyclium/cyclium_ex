@@ -354,7 +354,7 @@ defmodule Cyclium.Actor.Server do
         Keyword.get(opts, :budget, %{max_turns: 12, max_tokens: 25_000, max_wall_ms: 120_000}),
       log_strategy: Keyword.get(opts, :log_strategy, :timeline),
       audit_level: Keyword.get(opts, :audit_level, :standard),
-      retention_days: Keyword.get(opts, :retention_days, 30),
+      retention_days: Keyword.get(opts, :retention_days, 90),
       description: Keyword.get(opts, :description, ""),
       synthesizer: Keyword.get(opts, :synthesizer)
     }

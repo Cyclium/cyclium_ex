@@ -26,7 +26,12 @@ defmodule Cyclium.ToolExec do
 
       case tool_module.call(action, args, %{}) do
         {:ok, result} ->
-          {:ok, result, 0}
+          redacted = %{
+            args_redacted: tool_module.redact(args),
+            result_redacted: tool_module.redact_result(result)
+          }
+
+          {:ok, result, 0, redacted}
 
         {:error, reason} ->
           {:error, classify_error(reason)}

@@ -40,7 +40,7 @@ defmodule Cyclium.Expectation do
     budget: %{max_turns: 12, max_tokens: 25_000, max_wall_ms: 120_000},
     log_strategy: :timeline,
     audit_level: :standard,
-    retention_days: 30,
+    retention_days: 90,
     description: ""
   ]
 end
