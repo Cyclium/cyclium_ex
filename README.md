@@ -175,6 +175,7 @@ end
 | `filter` | `%{}` | Payload predicates — only fire when all match |
 | `debounce_ms` | `nil` | Coalesce rapid events into one firing |
 | `cooldown_ms` | `nil` | Minimum gap between firings |
+| `subject_key` | `nil` | Payload key to scope debounce/cooldown per subject (e.g., `:client_id`) |
 | `budget` | `%{max_turns: 12, max_tokens: 25_000, max_wall_ms: 120_000}` | Resource limits |
 | `log_strategy` | `:timeline` | Controls materialized log verbosity AND step journal detail (see below) |
 | `outputs` | `[]` | Declared output types (informational) |
@@ -402,6 +403,31 @@ findings: [
 ]
 ```
 
+**Finding key scoping — deduplicated vs. distinct:**
+
+The `finding_key` controls deduplication. An active finding with the same key is updated in place (last-writer-wins on mutable fields). Choose your key strategy based on intent:
+
+- **Deduplicated (default pattern):** Use a stable key like `"client:health:123"`. Repeated episodes update the same active finding — ideal for ongoing status tracking where you want one finding per subject.
+- **Distinct per episode:** Include the episode ID in the key, e.g. `"po_review:PO-1955:#{episode.id}"`. Each episode creates a separate finding — useful for audit trails or point-in-time snapshots where every run should produce its own record.
+
+The `episode_ctx` map passed to `converge/2` contains `episode_id`, so you can reference it directly:
+
+```elixir
+# Deduplicated: one active finding per client, updated each run
+def converge(state, _episode_ctx) do
+  {:ok, %Cyclium.ConvergeResult{
+    findings: [{:raise, %{finding_key: "client:health:#{state.client_id}", ...}}]
+  }}
+end
+
+# Distinct: one finding per episode run
+def converge(state, episode_ctx) do
+  {:ok, %Cyclium.ConvergeResult{
+    findings: [{:raise, %{finding_key: "po_review:#{state.po_id}:#{episode_ctx.episode_id}", ...}}]
+  }}
+end
+```
+
 Findings are queried via `Cyclium.Findings.active_for/1`:
 
 ```elixir
@@ -504,9 +530,11 @@ def up do
   Cyclium.Migrations.V1.up()   # episodes, steps, checkpoints, findings, outputs
   Cyclium.Migrations.V2.up()   # episode_logs
   Cyclium.Migrations.V3.up()   # workflow_instances
+  Cyclium.Migrations.V4.up()   # archived_at on episodes and findings
 end
 
 def down do
+  Cyclium.Migrations.V4.down()
   Cyclium.Migrations.V3.down()
   Cyclium.Migrations.V2.down()
   Cyclium.Migrations.V1.down()
@@ -588,6 +616,54 @@ budget: %{
 ```
 
 When any limit is hit, the episode fails with `error_class: "budget_exceeded"`. Wall time is enforced asynchronously — a `:budget_wall_exceeded` message interrupts the loop even if the strategy is blocked on a tool call.
+
+## Deduplication: actor-level vs. strategy-level
+
+Cyclium provides three layers of temporal dedup:
+
+**Actor-level global (`cooldown_ms`)** — enforced by the actor GenServer before an episode starts. Simple and zero-cost, but applies globally to the expectation — *all* subjects are blocked during the window.
+
+```elixir
+expectation :client_ai_summary,
+  trigger: {:event, "client.summary_requested"},
+  cooldown_ms: :timer.minutes(5)  # no advisor episodes for ANY client for 5 min
+```
+
+**Actor-level per-subject (`subject_key` + `debounce_ms`/`cooldown_ms`)** — when `subject_key` is set, debounce and cooldown are scoped per subject value. Each unique subject gets its own independent trailing-edge timer and cooldown window. Client A and client B are debounced independently.
+
+```elixir
+expectation :client_ai_summary,
+  trigger: {:event, "client.summary_requested"},
+  subject_key: :client_id,
+  debounce_ms: :timer.seconds(10),   # trailing-edge, per-client
+  cooldown_ms: :timer.minutes(5)     # minimum gap, per-client
+```
+
+When `subject_key` is set but the payload doesn't contain that key, the subject value is `nil` and the key becomes `{expectation_id, nil}` — still isolated from real subjects, never crashing.
+
+**Strategy-level (`Findings.recent?/2`)** — checked in `init/2` using the existing finding for a specific subject. This is DB-backed, so it survives actor restarts unlike the in-memory actor-level dedup.
+
+```elixir
+@summary_cooldown_ms :timer.minutes(5)
+
+def init(_episode, trigger) do
+  client_id = trigger.payload["client_id"]
+  skip = Cyclium.Findings.recent?("client:advisor:#{client_id}", @summary_cooldown_ms)
+  {:ok, %{client_id: client_id, skip: skip}}
+end
+
+def next_step(%{skip: true}, _ctx), do: :done
+```
+
+**When to use which:**
+
+| Scenario | Use |
+|---|---|
+| Rate-limit a high-frequency trigger globally | `cooldown_ms` on the expectation |
+| Coalesce rapid events per subject before firing | `subject_key` + `debounce_ms` |
+| Minimum gap between runs per subject | `subject_key` + `cooldown_ms` |
+| Dedup that survives actor restarts (DB-backed) | `Findings.recent?/2` in `init/2` |
+| Belt-and-suspenders | `subject_key` + `debounce_ms` as fast path, `Findings.recent?/2` for persistence across restarts |
 
 ## Workflows
 
@@ -930,6 +1006,259 @@ batch = Cyclium.Batch.advance(state.batch, parsed_result)
 ```
 
 Progress tracking via `Batch.group_count/1`, `Batch.processed_count/1`, and `Batch.done?/1`.
+
+## Per-item episodes vs. batch processing
+
+Batch helpers are useful when a single episode needs to process many items in groups — but they're not the only pattern. An alternative is to **fire one episode per item**, driven by domain events. This is the pattern used by the project health actor.
+
+**The difference:**
+
+| Approach | When to use | Episode count |
+|---|---|---|
+| Batch (single episode) | Scheduled sweep over a large dataset; items need cross-comparison | One episode, many `:synthesize` turns |
+| Per-item (many episodes) | Event-driven re-evaluation; each item is independent | One episode per item |
+
+**Per-item pattern — ProjectHealthActor:**
+
+The actor listens for `"project.updated"` events. Each event carries a `project_id`, and each project gets its own independent episode. There's no need to load the full dataset — the trigger tells you which item changed.
+
+```elixir
+defmodule MyApp.Actors.ProjectHealthActor do
+  use Cyclium.Actor
+
+  actor do
+    domain :project_health
+    max_concurrent_episodes 5
+    episode_overflow :queue
+
+    expectation :project_should_be_healthy,
+      trigger: {:event, "project.updated"},
+      subject_key: :project_id,
+      debounce_ms: :timer.seconds(2),
+      budget: %{max_turns: 3, max_tokens: 1_000, max_wall_ms: 10_000}
+  end
+end
+```
+
+The strategy is single-turn — load the item, classify it deterministically, emit findings:
+
+```elixir
+defmodule MyApp.Strategies.ProjectHealth do
+  @behaviour Cyclium.EpisodeRunner.Strategy
+
+  @impl true
+  def init(_episode, trigger) do
+    {:ok, %{project_id: trigger.payload["project_id"]}}
+  end
+
+  @impl true
+  def next_step(_state, _episode_ctx), do: :converge
+
+  @impl true
+  def handle_result(state, _step, _result), do: {:ok, state}
+
+  @impl true
+  def converge(state, episode_ctx) do
+    project = MyApp.Projects.get!(state.project_id)
+    percent_spent = project.spent / max(project.budget, 1)
+    days_remaining = Date.diff(project.due_date, Date.utc_today())
+
+    {class, severity, summary} = classify(project.status, percent_spent, days_remaining)
+
+    {:ok, %Cyclium.ConvergeResult{
+      classification: %{"primary" => class, "severity" => to_string(severity)},
+      confidence: 1.0,
+      summary: summary,
+      findings: [
+        {:raise, %{
+          actor_id: "project_health_actor",
+          finding_key: "project:health:#{project.id}:#{episode_ctx.episode_id}",
+          class: class,
+          severity: severity,
+          confidence: 1.0,
+          subject_kind: "project",
+          subject_id: project.id,
+          summary: summary,
+          evidence_refs: %{
+            "percent_spent" => percent_spent,
+            "days_remaining" => days_remaining
+          }
+        }}
+      ],
+      outputs: []
+    }}
+  end
+
+  defp classify(:completed, _pct, _days), do: {"complete", :low, "Project completed"}
+  defp classify(_s, pct, _d) when pct > 1.0, do: {"over_budget", :high, "Over budget"}
+  defp classify(_s, pct, _d) when pct > 0.85, do: {"budget_risk", :medium, "Budget at risk"}
+  defp classify(_s, _pct, d) when d < 0, do: {"overdue", :high, "Past due date"}
+  defp classify(_s, _pct, d) when d < 3, do: {"schedule_risk", :medium, "Due date approaching"}
+  defp classify(_s, _pct, _d), do: {"healthy", :low, "On track"}
+end
+```
+
+**Why this works well:**
+
+- **Reactive** — evaluation happens the moment data changes, not on a polling schedule
+- **Isolated** — each project gets its own episode with its own budget, journal, and findings
+- **Backpressure built in** — `max_concurrent_episodes` + `debounce_ms` + `subject_key` prevent a burst of updates from overwhelming the system. Rapid updates to the same project coalesce into one episode
+- **Findings create an audit trail** — the episode-scoped `finding_key` (`"project:health:#{id}:#{episode_id}"`) means each evaluation produces its own finding, giving you a point-in-time history of how health evolved
+
+**When to reach for Batch instead:** If you need to process 500 items in one pass (e.g., a nightly SKU classification sweep), a single episode with `Cyclium.Batch` is more efficient than 500 separate episodes — fewer rows, one journal, and the ability to compare items within groups.
+
+## Synthesizers
+
+A **synthesizer** is the bridge between strategies and LLM infrastructure. It implements `Cyclium.Synthesizer` and is called when a strategy returns `{:synthesize, prompt_ctx}`. The synthesizer handles the actual LLM call, and its response flows back through `handle_result/3`.
+
+```elixir
+defmodule MyApp.Synthesizers.ProjectAnalysis do
+  @behaviour Cyclium.Synthesizer
+
+  @impl true
+  def synthesize(prompt_ctx, _episode_ctx) do
+    case MyApp.LLM.chat(prompt_ctx.system, prompt_ctx.user) do
+      {:ok, text} -> {:ok, %{text: text}}
+      {:error, reason} -> {:error, :llm_error, reason}
+    end
+  end
+
+  @impl true
+  def estimate_tokens(prompt_ctx) do
+    # Rough estimate for budget tracking
+    String.length(prompt_ctx.user || "") |> div(4)
+  end
+end
+```
+
+### Attaching a synthesizer to an actor
+
+Synthesizers can be declared at two levels:
+
+**Actor-level** — inherited by all expectations in the actor:
+
+```elixir
+defmodule MyApp.Actors.ProjectAdvisorActor do
+  use Cyclium.Actor
+
+  actor do
+    domain :project_advisory
+    synthesizer MyApp.Synthesizers.ProjectAnalysis
+
+    max_concurrent_episodes 3
+    episode_overflow :queue
+
+    expectation :project_ai_summary,
+      trigger: {:event, "project.summary_requested"},
+      budget: %{max_turns: 5, max_tokens: 10_000, max_wall_ms: 30_000}
+
+    expectation :project_risk_assessment,
+      trigger: {:event, "project.risk_review_requested"},
+      budget: %{max_turns: 8, max_tokens: 15_000, max_wall_ms: 60_000}
+  end
+end
+```
+
+Both expectations above use `MyApp.Synthesizers.ProjectAnalysis`.
+
+**Expectation-level** — overrides the actor-level synthesizer for a specific expectation:
+
+```elixir
+actor do
+  domain :project_advisory
+  synthesizer MyApp.Synthesizers.ProjectAnalysis   # default for this actor
+
+  expectation :project_ai_summary,
+    trigger: {:event, "project.summary_requested"},
+    synthesizer: MyApp.Synthesizers.FastSummary     # override for this expectation
+
+  expectation :project_risk_assessment,
+    trigger: {:event, "project.risk_review_requested"}
+    # uses ProjectAnalysis (inherited from actor)
+end
+```
+
+The strategy itself doesn't know or care which synthesizer is wired in — it just returns `{:synthesize, prompt_ctx}` and receives the result in `handle_result`:
+
+```elixir
+def next_step(%{project_data: data, ai_summary: nil}, _ctx) do
+  {:synthesize, %{
+    system: "You are a project risk analyst.",
+    user: "Project: #{data.name}, #{data.percent_spent * 100}% spent, #{data.days_remaining} days left"
+  }}
+end
+
+def handle_result(state, %{kind: :synthesis}, {:ok, %{text: text}}) do
+  {:ok, %{state | ai_summary: text}}
+end
+```
+
+**When you don't need a synthesizer:** If your strategy is purely deterministic (like the ProjectHealthStrategy above), you don't need to declare a synthesizer at all. The synthesizer is only invoked when a strategy returns `{:synthesize, prompt_ctx}` — if your strategy never does, the synthesizer configuration is ignored.
+
+### LLM-provided confidence
+
+Findings have a `confidence` field (0.0–1.0). For deterministic strategies, hardcoding `1.0` is fine. But when an LLM produces the assessment, you can ask it to self-report confidence and pass that through to the finding.
+
+**Step 1 — Add `confidence` to the tool schema in your synthesizer:**
+
+```elixir
+@tool_definition %{
+  type: "function",
+  function: %{
+    name: "project_health_assessment",
+    parameters: %{
+      type: "object",
+      properties: %{
+        class: %{type: "string", enum: ["healthy", "at_risk", "critical"]},
+        severity: %{type: "string", enum: ["low", "medium", "high", "critical"]},
+        summary: %{type: "string", description: "One sentence health summary"},
+        confidence: %{
+          type: "number",
+          minimum: 0.0,
+          maximum: 1.0,
+          description:
+            "How confident you are in this assessment (0.0–1.0). " <>
+            "Use lower values when data is sparse or ambiguous, " <>
+            "higher values when the evidence clearly supports the classification."
+        }
+        # ... other fields
+      },
+      required: ["class", "severity", "summary", "confidence"]
+    }
+  }
+}
+```
+
+The description matters — it tells the LLM what the scale means, which produces more calibrated values than a bare `"confidence"` field.
+
+**Step 2 — Read it in converge and pass it to the finding:**
+
+```elixir
+def converge(state, episode_ctx) do
+  result = state.assessment
+  confidence = parse_confidence(result["confidence"])
+
+  {:ok, %ConvergeResult{
+    classification: %{"primary" => result["class"]},
+    confidence: confidence,
+    summary: result["summary"],
+    findings: [
+      {:raise, %{
+        finding_key: "project:health:#{state.project_id}:#{episode_ctx.episode_id}",
+        confidence: confidence,
+        # ... other finding fields
+      }}
+    ]
+  }}
+end
+
+defp parse_confidence(val) when is_number(val), do: max(0.0, min(val, 1.0))
+defp parse_confidence(_), do: 0.5
+```
+
+The `parse_confidence/1` helper clamps to `[0.0, 1.0]` and falls back to `0.5` if the LLM returns something unexpected. The same confidence flows into both the `ConvergeResult` (episode-level) and the finding (queryable).
+
+**When to hardcode instead:** If the classification is deterministic (rule-based, no LLM), use `confidence: 1.0`. The LLM confidence pattern is for cases where the assessment involves judgment — ambiguous data, sparse evidence, or nuanced classification where the LLM's certainty is genuinely informative.
 
 ## Demo application
 

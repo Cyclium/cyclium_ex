@@ -12,7 +12,11 @@ defmodule Cyclium.EpisodeTask do
 
   defp run(episode_id, opts) do
     episode = Cyclium.Episodes.get!(episode_id)
+    # Store for rescue block
+    Process.put(:cyclium_episode, episode)
+
     strategy = resolve_strategy(episode)
+    synthesizer = resolve_synthesizer(episode)
 
     state =
       case {opts[:resume], load_checkpoint(episode_id)} do
@@ -25,14 +29,32 @@ defmodule Cyclium.EpisodeTask do
           initial_state
       end
 
-    Cyclium.EpisodeRunner.execute_loop(episode, strategy, state)
+    Cyclium.EpisodeRunner.execute_loop(episode, strategy, state, synthesizer: synthesizer)
   rescue
     e ->
       require Logger
 
+      message = Exception.message(e)
+      stacktrace = Exception.format_stacktrace(__STACKTRACE__)
+      episode = Process.get(:cyclium_episode)
+
       Logger.error(
-        "[Cyclium.EpisodeTask] Episode #{episode_id} crashed: #{Exception.message(e)}\n#{Exception.format_stacktrace(__STACKTRACE__)}"
+        "[Cyclium.EpisodeTask] Episode #{episode_id} crashed: #{message}\n#{stacktrace}"
       )
+
+      Cyclium.Episodes.update_status(episode_id, :failed,
+        error_class: "crash",
+        error_detail: %{
+          "exception" => message,
+          "stacktrace" => stacktrace |> String.slice(0, 4000)
+        }
+      )
+
+      Cyclium.Bus.broadcast("episode.failed", %{
+        episode_id: episode_id,
+        actor_id: if(episode, do: episode.actor_id),
+        status: :failed
+      })
 
       reraise e, __STACKTRACE__
   end
@@ -70,6 +92,18 @@ defmodule Cyclium.EpisodeTask do
       registry.strategy_for(episode.actor_id, episode.expectation_id)
     else
       raise "No :strategy_registry configured for :cyclium"
+    end
+  end
+
+  defp resolve_synthesizer(episode) do
+    registry = Application.get_env(:cyclium, :strategy_registry)
+
+    cond do
+      registry && function_exported?(registry, :synthesizer_for, 2) ->
+        registry.synthesizer_for(episode.actor_id, episode.expectation_id)
+
+      true ->
+        Application.get_env(:cyclium, :synthesizer)
     end
   end
 

@@ -14,7 +14,9 @@ defmodule Cyclium.EpisodeRunner do
 
   defp repo, do: Cyclium.repo()
 
-  def execute_loop(%Episode{} = episode, strategy, state) do
+  def execute_loop(%Episode{} = episode, strategy, state, opts \\ []) do
+    if synth = opts[:synthesizer], do: Process.put(:cyclium_synthesizer, synth)
+
     deadline_ref =
       Process.send_after(self(), :budget_wall_exceeded, episode.budget["max_wall_ms"] || 120_000)
 
@@ -40,6 +42,15 @@ defmodule Cyclium.EpisodeRunner do
         })
 
         Cyclium.Episodes.update_status(episode.id, :failed, error_class: "budget_exceeded")
+
+        Cyclium.Bus.broadcast("episode.failed", %{
+          episode_id: episode.id,
+          actor_id: episode.actor_id,
+          status: :failed,
+          workflow_instance_id: episode.workflow_instance_id,
+          workflow_step_id: episode.workflow_step_id
+        })
+
         {:error, :budget_exceeded}
     after
       0 -> :ok
@@ -53,7 +64,6 @@ defmodule Cyclium.EpisodeRunner do
         :done ->
           journal_step!(episode, :episode_completed, %{})
           Cyclium.Episodes.update_status(episode.id, :done)
-          Cyclium.LogProjector.project(episode.id)
           {:ok, state}
 
         :converge ->
@@ -74,7 +84,8 @@ defmodule Cyclium.EpisodeRunner do
                 journal_step!(episode, :tool_call, %{
                   tool_name: tool_name,
                   args_redacted: redacted.args_redacted,
-                  result_ref: redacted.result_redacted
+                  result_ref: redacted.result_redacted,
+                  cost_tokens: cost
                 })
 
               increment_budget(episode, cost)
@@ -94,15 +105,22 @@ defmodule Cyclium.EpisodeRunner do
         {:synthesize, prompt_ctx} ->
           :telemetry.execute([:cyclium, :step, :synthesis], %{count: 1}, %{episode_id: episode.id})
 
-          step = journal_step!(episode, :synthesis, %{args_redacted: prompt_ctx})
-
           case resolve_synthesizer() do
             nil ->
               Logger.warning(
                 "[Cyclium] No :synthesizer configured — :synthesize step will pass prompt_ctx through as-is"
               )
 
-              handle_strategy_result(episode, strategy, state, step, {:ok, prompt_ctx}, started_at)
+              step = journal_step!(episode, :synthesis, %{args_redacted: prompt_ctx})
+
+              handle_strategy_result(
+                episode,
+                strategy,
+                state,
+                step,
+                {:ok, prompt_ctx},
+                started_at
+              )
 
             synthesizer ->
               episode_ctx = build_episode_ctx(episode)
@@ -114,10 +132,31 @@ defmodule Cyclium.EpisodeRunner do
                       do: synthesizer.estimate_tokens(prompt_ctx),
                       else: 0
 
+                  step =
+                    journal_step!(episode, :synthesis, %{
+                      args_redacted: prompt_ctx,
+                      cost_tokens: token_cost
+                    })
+
                   increment_budget(episode, token_cost)
-                  handle_strategy_result(episode, strategy, state, step, {:ok, result}, started_at)
+
+                  handle_strategy_result(
+                    episode,
+                    strategy,
+                    state,
+                    step,
+                    {:ok, result},
+                    started_at
+                  )
 
                 {:error, error_class, detail} ->
+                  step =
+                    journal_step!(episode, :synthesis, %{
+                      args_redacted: prompt_ctx,
+                      error_class: to_string(error_class),
+                      error_detail: inspect(detail)
+                    })
+
                   handle_strategy_result(
                     episode,
                     strategy,
@@ -165,7 +204,30 @@ defmodule Cyclium.EpisodeRunner do
           {:blocked, state}
       end
     else
-      {:error, :budget_exceeded} = err -> err
+      {:error, :budget_exceeded} = err ->
+        current = Cyclium.Episodes.get!(episode.id)
+
+        journal_step!(episode, :episode_failed, %{
+          error_class: "budget_exceeded",
+          error_detail: %{
+            turns_used: current.turns_used,
+            max_turns: (current.budget || %{})["max_turns"],
+            tokens_used: current.tokens_used,
+            max_tokens: (current.budget || %{})["max_tokens"]
+          }
+        })
+
+        Cyclium.Episodes.update_status(episode.id, :failed, error_class: "budget_exceeded")
+
+        Cyclium.Bus.broadcast("episode.failed", %{
+          episode_id: episode.id,
+          actor_id: episode.actor_id,
+          status: :failed,
+          workflow_instance_id: episode.workflow_instance_id,
+          workflow_step_id: episode.workflow_step_id
+        })
+
+        err
     end
   end
 
@@ -224,9 +286,6 @@ defmodule Cyclium.EpisodeRunner do
       classification: converge_result.classification,
       confidence: converge_result.confidence
     )
-
-    # Step 7b: Project log
-    Cyclium.LogProjector.project(episode.id)
 
     # Step 7: Bus event + telemetry
     bus_event = if final_status == :failed, do: "episode.failed", else: "episode.completed"
@@ -349,8 +408,8 @@ defmodule Cyclium.EpisodeRunner do
     max_tokens = budget["max_tokens"] || 100_000
 
     cond do
-      episode.turns_used >= max_turns -> {:error, :budget_exceeded}
-      episode.tokens_used >= max_tokens -> {:error, :budget_exceeded}
+      max_turns > 0 and episode.turns_used >= max_turns -> {:error, :budget_exceeded}
+      max_tokens > 0 and episode.tokens_used >= max_tokens -> {:error, :budget_exceeded}
       true -> :ok
     end
   end
@@ -399,7 +458,13 @@ defmodule Cyclium.EpisodeRunner do
     log_strategy = parse_log_strategy(episode.log_strategy)
 
     {args_redacted, result_ref} =
-      filter_step_data(log_strategy, kind, attrs[:tool_name], attrs[:args_redacted], attrs[:result_ref])
+      filter_step_data(
+        log_strategy,
+        kind,
+        attrs[:tool_name],
+        attrs[:args_redacted],
+        attrs[:result_ref]
+      )
 
     step = %EpisodeStep{
       episode_id: episode.id,
@@ -417,7 +482,19 @@ defmodule Cyclium.EpisodeRunner do
       created_at: now
     }
 
-    repo().insert!(step)
+    inserted = repo().insert!(step)
+
+    # Incrementally project the log after each step (append-only)
+    Cyclium.LogProjector.project(episode.id)
+
+    Cyclium.Bus.broadcast("episode.step_journaled", %{
+      episode_id: episode.id,
+      actor_id: episode.actor_id,
+      step_no: step_no,
+      kind: kind
+    })
+
+    inserted
   end
 
   # full_debug: store everything as-is
@@ -429,8 +506,7 @@ defmodule Cyclium.EpisodeRunner do
   end
 
   defp filter_step_data(:timeline, :synthesis, _tool_name, args, result) do
-    summary = if is_map(args), do: %{agent_slug: args[:agent_slug] || args["agent_slug"]}, else: nil
-    {summary, summarize_result(result)}
+    {summarize_result(args), summarize_result(result)}
   end
 
   defp filter_step_data(:timeline, :observation, _tool_name, _args, result) do
@@ -478,7 +554,7 @@ defmodule Cyclium.EpisodeRunner do
   end
 
   defp resolve_synthesizer do
-    Application.get_env(:cyclium, :synthesizer)
+    Process.get(:cyclium_synthesizer) || Application.get_env(:cyclium, :synthesizer)
   end
 
   defp build_episode_ctx(%Episode{} = episode) do

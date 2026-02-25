@@ -33,6 +33,7 @@ defmodule Cyclium.Schemas.Episode do
     field(:started_at, :utc_datetime)
     field(:finished_at, :utc_datetime)
     field(:queued_at, :utc_datetime)
+    field(:archived_at, :utc_datetime)
 
     has_many(:steps, Cyclium.Schemas.EpisodeStep)
     has_many(:checkpoints, Cyclium.Schemas.EpisodeCheckpoint)
@@ -65,7 +66,8 @@ defmodule Cyclium.Schemas.Episode do
       :workflow_step_id,
       :started_at,
       :finished_at,
-      :queued_at
+      :queued_at,
+      :archived_at
     ])
     |> validate_required([:actor_id, :expectation_id, :trigger_type, :status, :started_at])
   end

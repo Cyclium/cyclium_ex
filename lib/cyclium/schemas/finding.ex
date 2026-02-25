@@ -26,6 +26,7 @@ defmodule Cyclium.Schemas.Finding do
     # Denormalized from subject map for SQL Server indexable queries
     field(:subject_kind, :string)
     field(:subject_id, :string)
+    field(:archived_at, :utc_datetime)
   end
 
   def changeset(finding, attrs) do
@@ -46,7 +47,8 @@ defmodule Cyclium.Schemas.Finding do
       :cleared_at,
       :updated_at,
       :subject_kind,
-      :subject_id
+      :subject_id,
+      :archived_at
     ])
     |> validate_required([
       :actor_id,

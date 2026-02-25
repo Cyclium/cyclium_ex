@@ -16,6 +16,10 @@ defmodule Cyclium.Findings do
 
   defp repo, do: Cyclium.repo()
 
+  def get(id), do: repo().get(Finding, id)
+
+  def get!(id), do: repo().get!(Finding, id)
+
   @doc """
   Query active findings with flexible filters.
 
@@ -26,10 +30,24 @@ defmodule Cyclium.Findings do
       Cyclium.Findings.active_for(finding_key: "po_stalled:PO-1955")
       Cyclium.Findings.active_for(class: "non_responsive")
   """
-  def active_for(filters) when is_list(filters) do
-    from(f in Finding, where: f.status == :active)
+  def active_for(filters, opts \\ []) when is_list(filters) do
+    limit = Keyword.get(opts, :limit)
+    offset = Keyword.get(opts, :offset, 0)
+
+    query =
+      from(f in Finding, where: f.status == :active, order_by: [desc: f.updated_at])
+      |> apply_filters(filters)
+
+    query = if limit, do: query |> limit(^limit) |> offset(^offset), else: query
+
+    repo().all(query)
+  end
+
+  @doc "Count active findings matching the given filters."
+  def count_active(filters \\ []) when is_list(filters) do
+    from(f in Finding, where: f.status == :active, select: count(f.id))
     |> apply_filters(filters)
-    |> repo().all()
+    |> repo().one()
   end
 
   defp apply_filters(query, []), do: query
@@ -57,6 +75,25 @@ defmodule Cyclium.Findings do
   end
 
   defp apply_filters(query, [_ | rest]), do: apply_filters(query, rest)
+
+  @doc """
+  Returns true if an active finding with the given key was updated within `window_ms` milliseconds.
+
+  Useful for per-subject dedup in strategies — skip re-runs when a recent finding already exists.
+
+  ## Examples
+
+      Cyclium.Findings.recent?("client:advisor:123", :timer.minutes(5))
+  """
+  def recent?(finding_key, window_ms) when is_binary(finding_key) and is_integer(window_ms) do
+    case active_for(finding_key: finding_key) do
+      [%{updated_at: updated_at} | _] ->
+        DateTime.diff(DateTime.utc_now(), updated_at, :millisecond) < window_ms
+
+      _ ->
+        false
+    end
+  end
 
   # --- Write path (Phase 3) ---
 

@@ -32,8 +32,13 @@ defmodule Cyclium.LogProjector do
       :skip
     else
       steps = load_new_steps(episode_id, last_rendered(episode_id))
-      content = render_steps(steps, strategy, episode)
-      upsert_log(episode_id, content, max_step_no(steps))
+
+      if steps == [] do
+        :noop
+      else
+        content = render_steps(steps, strategy, episode)
+        upsert_log(episode_id, content, max_step_no(steps))
+      end
     end
   end
 

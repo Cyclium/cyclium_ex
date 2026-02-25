@@ -158,6 +158,8 @@ defmodule Cyclium.Actor.Server do
   the Actor module clean and testable.
   """
 
+  require Logger
+
   alias Cyclium.{Bus, Expectation}
 
   def init_state(module, _opts) do
@@ -210,8 +212,14 @@ defmodule Cyclium.Actor.Server do
     {:noreply, state}
   end
 
-  def handle_info({:debounce_fire, expectation_id, trigger_ref}, state) do
-    state = Map.update!(state, :debounce_timers, &Map.delete(&1, expectation_id))
+  def handle_info({:debounce_fire, key, trigger_ref}, state) do
+    state = Map.update!(state, :debounce_timers, &Map.delete(&1, key))
+
+    expectation_id =
+      case key do
+        id when is_atom(id) -> id
+        {id, _subject} -> id
+      end
 
     case Map.get(state.expectations, expectation_id) do
       nil -> {:noreply, state}
@@ -298,10 +306,22 @@ defmodule Cyclium.Actor.Server do
     added = MapSet.difference(new_ids, old_ids)
 
     # Cancel timers for removed expectations
+    removed_list = MapSet.to_list(removed)
+
     state =
-      Enum.reduce(removed, state, fn id, acc ->
+      Enum.reduce(removed_list, state, fn id, acc ->
         acc = cancel_timer(acc, id)
-        cancel_debounce(acc, id)
+        cancel_debounce_for_expectation(acc, id)
+      end)
+
+    # Drop cooldowns for removed expectations (both atom and {atom, subject} keys)
+    cooldowns =
+      Map.reject(state.cooldowns, fn {key, _} ->
+        case key do
+          id when is_atom(id) -> id in removed_list
+          {id, _subject} -> id in removed_list
+          _ -> false
+        end
       end)
 
     # Update state with new config and expectations
@@ -309,7 +329,7 @@ defmodule Cyclium.Actor.Server do
       state
       | config: new_config,
         expectations: new_expectations,
-        cooldowns: Map.drop(state.cooldowns, MapSet.to_list(removed))
+        cooldowns: cooldowns
     }
 
     # Start timers for newly added schedule expectations
@@ -348,6 +368,7 @@ defmodule Cyclium.Actor.Server do
       filter: Keyword.get(opts, :filter, %{}),
       debounce_ms: Keyword.get(opts, :debounce_ms),
       cooldown_ms: Keyword.get(opts, :cooldown_ms),
+      subject_key: Keyword.get(opts, :subject_key),
       resources: Keyword.get(opts, :resources, []),
       outputs: Keyword.get(opts, :outputs, []),
       budget:
@@ -356,7 +377,7 @@ defmodule Cyclium.Actor.Server do
       audit_level: Keyword.get(opts, :audit_level, :standard),
       retention_days: Keyword.get(opts, :retention_days, 90),
       description: Keyword.get(opts, :description, ""),
-      synthesizer: Keyword.get(opts, :synthesizer)
+      synthesizer: Keyword.get(opts, :synthesizer) || config.synthesizer
     }
   end
 
@@ -373,13 +394,45 @@ defmodule Cyclium.Actor.Server do
     |> Enum.reduce(state, fn {_id, expectation}, acc ->
       case expectation.trigger do
         {:schedule, interval_ms} when is_integer(interval_ms) ->
-          ref = Process.send_after(self(), {:schedule_fire, expectation.id}, interval_ms)
+          delay = compute_schedule_delay(state.actor_id, expectation.id, interval_ms)
+          ref = Process.send_after(self(), {:schedule_fire, expectation.id}, delay)
           put_in(acc.timers[expectation.id], ref)
 
         _ ->
           acc
       end
     end)
+  end
+
+  @min_startup_delay_ms :timer.seconds(10)
+  @max_startup_delay_ms :timer.minutes(5)
+
+  defp compute_schedule_delay(actor_id, expectation_id, interval_ms) do
+    case Cyclium.Episodes.last_schedule_fire(actor_id, expectation_id) do
+      nil ->
+        jittered_startup_delay()
+
+      last_fired_at ->
+        elapsed_ms = DateTime.diff(DateTime.utc_now(), last_fired_at, :millisecond)
+        remaining = interval_ms - elapsed_ms
+
+        if remaining <= 0 do
+          jittered_startup_delay()
+        else
+          remaining
+        end
+    end
+  rescue
+    error ->
+      Logger.warning(
+        "Cyclium.Actor: #{actor_id}/#{expectation_id} schedule lookup failed: #{inspect(error)}, falling back to interval=#{interval_ms}ms"
+      )
+
+      interval_ms
+  end
+
+  defp jittered_startup_delay do
+    Enum.random(@min_startup_delay_ms..@max_startup_delay_ms)
   end
 
   defp reschedule_timer(state, expectation) do
@@ -410,8 +463,29 @@ defmodule Cyclium.Actor.Server do
     end)
   end
 
+  defp subject_scoped_key(expectation, trigger_ref) do
+    case expectation.subject_key do
+      nil ->
+        expectation.id
+
+      key when is_atom(key) ->
+        value =
+          case trigger_ref do
+            %Cyclium.Trigger.Event{payload: p} ->
+              Map.get(p, key) || Map.get(p, to_string(key))
+
+            _ ->
+              nil
+          end
+
+        {expectation.id, value}
+    end
+  end
+
   defp handle_event_trigger(state, expectation, trigger_ref) do
-    if in_cooldown?(state, expectation.id) do
+    key = subject_scoped_key(expectation, trigger_ref)
+
+    if in_cooldown?(state, key) do
       state
     else
       case expectation.debounce_ms do
@@ -420,9 +494,9 @@ defmodule Cyclium.Actor.Server do
 
         ms when is_integer(ms) and ms > 0 ->
           # Cancel existing debounce timer
-          state = cancel_debounce(state, expectation.id)
-          ref = Process.send_after(self(), {:debounce_fire, expectation.id, trigger_ref}, ms)
-          put_in(state.debounce_timers[expectation.id], ref)
+          state = cancel_debounce(state, key)
+          ref = Process.send_after(self(), {:debounce_fire, key, trigger_ref}, ms)
+          put_in(state.debounce_timers[key], ref)
 
         _ ->
           maybe_fire_episode(state, expectation, trigger_ref)
@@ -430,21 +504,31 @@ defmodule Cyclium.Actor.Server do
     end
   end
 
-  defp in_cooldown?(state, expectation_id) do
-    case Map.get(state.cooldowns, expectation_id) do
+  defp in_cooldown?(state, key) do
+    case Map.get(state.cooldowns, key) do
       nil -> false
       expiry -> DateTime.compare(DateTime.utc_now(), expiry) == :lt
     end
   end
 
-  defp cancel_debounce(state, expectation_id) do
-    case Map.get(state.debounce_timers, expectation_id) do
+  defp cancel_debounce_for_expectation(state, expectation_id) do
+    {to_cancel, remaining} =
+      Enum.split_with(state.debounce_timers, fn {key, _ref} ->
+        key == expectation_id or match?({^expectation_id, _}, key)
+      end)
+
+    Enum.each(to_cancel, fn {_key, ref} -> Process.cancel_timer(ref) end)
+    %{state | debounce_timers: Map.new(remaining)}
+  end
+
+  defp cancel_debounce(state, key) do
+    case Map.get(state.debounce_timers, key) do
       nil ->
         state
 
       ref ->
         Process.cancel_timer(ref)
-        Map.update!(state, :debounce_timers, &Map.delete(&1, expectation_id))
+        Map.update!(state, :debounce_timers, &Map.delete(&1, key))
     end
   end
 
@@ -453,7 +537,7 @@ defmodule Cyclium.Actor.Server do
     max = state.config.max_concurrent_episodes
 
     # Set cooldown
-    state = set_cooldown(state, expectation)
+    state = set_cooldown(state, expectation, trigger_ref)
 
     now = DateTime.utc_now() |> DateTime.truncate(:second)
 
@@ -578,7 +662,7 @@ defmodule Cyclium.Actor.Server do
     end
   end
 
-  defp set_cooldown(state, expectation) do
+  defp set_cooldown(state, expectation, trigger_ref) do
     case expectation.cooldown_ms do
       nil ->
         state
@@ -587,8 +671,9 @@ defmodule Cyclium.Actor.Server do
         state
 
       ms when is_integer(ms) ->
+        key = subject_scoped_key(expectation, trigger_ref)
         expiry = DateTime.add(DateTime.utc_now(), ms, :millisecond)
-        put_in(state.cooldowns[expectation.id], expiry)
+        put_in(state.cooldowns[key], expiry)
     end
   end
 
