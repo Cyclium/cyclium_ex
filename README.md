@@ -981,6 +981,84 @@ Cyclium.Recovery.sweep(
 5. Sweep finds stale episodes via step journal recency
 6. First node to claim each orphan via optimistic update handles recovery
 
+## Step Retry Helper
+
+`Cyclium.Strategy.Retry` provides a lightweight helper for retrying failed steps within an episode. This is distinct from workflow-level retry (`on_failure :step, :retry`) which retries entire episodes — the step retry helper retries individual steps (e.g. a synthesis call) within a single episode run.
+
+### The problem
+
+When a strategy calls `:synthesize` and the LLM provider returns a transient error (timeout, rate limit, 503), the strategy needs to retry. Without a helper, you'd manually track attempt counts in the state map:
+
+```elixir
+# Without helper — manual retry tracking
+def handle_result(state, %{kind: :synthesis}, {:error, _}) do
+  if state[:synthesis_retries] < 3 do
+    {:retry, Map.update(state, :synthesis_retries, 1, &(&1 + 1))}
+  else
+    {:abort, "synthesis_failed"}
+  end
+end
+```
+
+This is error-prone (forgetting to reset counters, tracking multiple step types, off-by-one errors).
+
+### Using `Cyclium.Strategy.Retry`
+
+```elixir
+alias Cyclium.Strategy.Retry
+
+# On success — reset the counter so future failures get fresh attempts
+def handle_result(state, %{kind: :synthesis}, {:ok, result}) do
+  {:ok, state |> Retry.reset(:synthesis) |> Map.put(:assessment, result)}
+end
+
+# On failure — retry up to 3 times with 2-second backoff
+def handle_result(state, %{kind: :synthesis} = step, {:error, _}) do
+  case Retry.check(state, step, max_attempts: 3, backoff_ms: 2_000) do
+    {:retry, new_state}              -> {:retry, new_state}
+    {:give_up, _attempts, new_state} -> {:abort, "synthesis_failed_after_retries"}
+  end
+end
+```
+
+When `handle_result` returns `{:retry, state}`, the runner calls `do_loop` → `next_step` again. The strategy should naturally re-emit the same step type (e.g. `:synthesize`) since its phase/state hasn't changed — only the internal `__retries` counter was updated.
+
+### Options
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `:max_attempts` | `3` | Total attempts including the original |
+| `:backoff_ms` | `0` | Milliseconds to sleep before retry |
+| `:step_key` | `step.kind` | Key for tracking — use custom keys to track retries per tool name or phase |
+
+### Custom step keys
+
+Track retries separately for different tool calls within the same episode:
+
+```elixir
+def handle_result(state, %{kind: :tool_call, tool_name: tool} = step, {:error, _}) do
+  case Retry.check(state, step, step_key: {:tool, tool}, max_attempts: 2) do
+    {:retry, new_state}              -> {:retry, new_state}
+    {:give_up, _attempts, new_state} -> {:ok, %{new_state | phase: :skip_tool}}
+  end
+end
+```
+
+### API reference
+
+- `Retry.check(state, step, opts)` — returns `{:retry, state}` or `{:give_up, count, state}`
+- `Retry.reset(state, key)` — clears the counter for one key (call on success)
+- `Retry.reset_all(state)` — clears all retry tracking
+
+### Retry layers summary
+
+| Layer | Scope | Mechanism | Backoff | Limit |
+|-------|-------|-----------|---------|-------|
+| **Step retry** (`Strategy.Retry`) | Within one episode | `handle_result` returns `{:retry, state}` | Optional (`backoff_ms`) | `max_attempts` per step key |
+| **Episode budget** | Within one episode | Runner checks `max_turns`, `max_tokens`, `max_wall_ms` | N/A | Budget exhaustion |
+| **Workflow retry** (`on_failure`) | Across episodes | WorkflowEngine creates new episode | `backoff_ms` (default 5s) | `max_step_attempts` (default 3) |
+| **Crash recovery** | After restart | `Recovery.sweep` re-enqueues or fails | N/A | One attempt per `recovery_policy` |
+
 ## Work Claims (Distributed Lease Coordination)
 
 For clusters where multiple applications share the same database and actor definitions, work claims provide lease-based coordination to ensure at-most-once execution.

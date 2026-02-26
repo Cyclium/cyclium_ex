@@ -15,6 +15,7 @@ defmodule Cyclium.LogProjector do
   import Ecto.Query
 
   alias Cyclium.Schemas.{Episode, EpisodeStep, EpisodeLog}
+  alias Cyclium.Terminology
 
   defp repo, do: Cyclium.repo()
 
@@ -86,50 +87,50 @@ defmodule Cyclium.LogProjector do
         "[#{time}] #{step.tool_name || "tool"}()"
 
       :synthesis ->
-        "[#{time}] Synthesis requested"
+        "[#{time}] #{Terminology.format(:synthesis, :requested)}"
 
       :observation ->
-        "[#{time}] Observation recorded"
+        "[#{time}] #{Terminology.format(:observation, :recorded)}"
 
       :checkpoint ->
-        "[#{time}] Checkpoint saved"
+        "[#{time}] #{Terminology.format(:checkpoint, :saved)}"
 
       :output_proposed ->
-        "[#{time}] Output proposed: #{step.tool_name || "unknown"}"
+        "[#{time}] #{Terminology.format(:output, :proposed)}: #{step.tool_name || "unknown"}"
 
       :output_delivered ->
-        "[#{time}] Output delivered: #{step.tool_name || "unknown"}"
+        "[#{time}] #{Terminology.format(:output, :delivered)}: #{step.tool_name || "unknown"}"
 
       :output_failed ->
-        "[#{time}] Output failed: #{step.tool_name || "unknown"} (#{step.error_class})"
+        "[#{time}] #{Terminology.format(:output, :failed)}: #{step.tool_name || "unknown"} (#{step.error_class})"
 
       :finding_raised ->
-        "[#{time}] Finding raised"
+        "[#{time}] #{Terminology.format(:finding, :raised)}"
 
       :finding_updated ->
-        "[#{time}] Finding updated"
+        "[#{time}] #{Terminology.format(:finding, :updated)}"
 
       :finding_cleared ->
-        "[#{time}] Finding cleared"
+        "[#{time}] #{Terminology.format(:finding, :cleared)}"
 
       :approval_requested ->
-        "[#{time}] Approval requested"
+        "[#{time}] #{Terminology.format(:approval, :requested)}"
 
       :approval_resolved ->
-        "[#{time}] Approval resolved"
+        "[#{time}] #{Terminology.format(:approval, :resolved)}"
 
       :wait_started ->
-        "[#{time}] Waiting on external"
+        "[#{time}] #{Terminology.format(:wait, :started)}"
 
       :wait_resolved ->
-        "[#{time}] Wait resolved"
+        "[#{time}] #{Terminology.format(:wait, :resolved)}"
 
       :episode_completed ->
-        "[#{time}] Episode completed"
+        "[#{time}] #{Terminology.format(:episode, :completed)}"
 
       :episode_failed ->
         error = if step.error_class, do: " (#{step.error_class})", else: ""
-        "[#{time}] Episode failed#{error}"
+        "[#{time}] #{Terminology.format(:episode, :failed)}#{error}"
 
       _ ->
         "[#{time}] #{kind}"
