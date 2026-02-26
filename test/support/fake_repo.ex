@@ -174,6 +174,8 @@ defmodule Cyclium.FakeRepo do
   end
 
   defp fields_match?(existing, record, field) when is_atom(field) do
-    Map.get(existing, field) == Map.get(record, field)
+    val = Map.get(record, field)
+    # NULL values don't violate unique constraints (matches SQL Server filtered index behavior)
+    val != nil && val == Map.get(existing, field)
   end
 end

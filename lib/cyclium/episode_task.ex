@@ -19,14 +19,18 @@ defmodule Cyclium.EpisodeTask do
     Process.put(:cyclium_episode, episode)
 
     # Claim gate — only runs if work_claims is configured
-    case Cyclium.WorkClaims.gate_acquire(episode.dedupe_key, node_name(), lease_seconds: 120) do
+    lease_seconds = lease_seconds()
+
+    case Cyclium.WorkClaims.gate_acquire(episode.dedupe_key, node_name(),
+           lease_seconds: lease_seconds
+         ) do
       {:ok, :passthrough} -> :ok
       {:ok, _claim} -> :ok
       {:error, :busy} -> exit(:normal)
     end
 
     # Start heartbeat for lease renewal if claiming is active
-    heartbeat_pid = maybe_start_heartbeat(episode)
+    heartbeat_pid = maybe_start_heartbeat(episode, lease_seconds)
 
     strategy = resolve_strategy(episode)
     synthesizer = resolve_synthesizer(episode)
@@ -166,17 +170,21 @@ defmodule Cyclium.EpisodeTask do
     end)
   end
 
-  defp maybe_start_heartbeat(episode) do
+  defp maybe_start_heartbeat(episode, lease_seconds) do
     if Cyclium.WorkClaims.configured?() and episode.dedupe_key do
       {:ok, pid} =
         Cyclium.WorkClaims.Heartbeat.start_link(
           dedupe_key: episode.dedupe_key,
           owner_node: node_name(),
-          lease_seconds: 120
+          lease_seconds: lease_seconds
         )
 
       pid
     end
+  end
+
+  defp lease_seconds do
+    Application.get_env(:cyclium, :work_claims_lease_seconds, 120)
   end
 
   defp node_name do

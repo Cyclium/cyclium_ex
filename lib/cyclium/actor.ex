@@ -378,8 +378,23 @@ defmodule Cyclium.Actor.Server do
       retention_days: Keyword.get(opts, :retention_days, 90),
       description: Keyword.get(opts, :description, ""),
       synthesizer: Keyword.get(opts, :synthesizer) || config.synthesizer,
-      recovery_policy: Keyword.get(opts, :recovery_policy, :fail)
+      recovery_policy: Keyword.get(opts, :recovery_policy, :fail),
+      window: Keyword.get(opts, :window) || infer_window(opts)
     }
+  end
+
+  @h24_ms :timer.hours(24)
+  @h48_ms :timer.hours(48)
+  @w1_ms :timer.hours(168)
+
+  defp infer_window(opts) do
+    case Keyword.get(opts, :trigger) do
+      {:schedule, ms} when is_integer(ms) and ms < @h24_ms -> :h4
+      {:schedule, ms} when is_integer(ms) and ms < @h48_ms -> :h24
+      {:schedule, ms} when is_integer(ms) and ms < @w1_ms -> :h48
+      {:schedule, _} -> :w1
+      _ -> nil
+    end
   end
 
   # Infer subscribes_to from event triggers
@@ -547,7 +562,7 @@ defmodule Cyclium.Actor.Server do
       expectation_id: to_string(expectation.id),
       trigger_type: trigger_type_atom(trigger_ref),
       trigger_ref: trigger_ref_to_map(trigger_ref),
-      dedupe_key: generate_dedupe_key(state.actor_id, expectation.id, trigger_ref),
+      dedupe_key: generate_dedupe_key(state.actor_id, expectation, trigger_ref),
       status: :running,
       budget: normalize_budget(expectation.budget),
       log_strategy: to_string(expectation.log_strategy),
@@ -716,20 +731,25 @@ defmodule Cyclium.Actor.Server do
     Map.new(budget, fn {k, v} -> {to_string(k), v} end)
   end
 
-  defp generate_dedupe_key(actor_id, expectation_id, %Cyclium.Trigger.Schedule{} = trigger) do
-    # Window bucket = date for daily schedules
-    date =
+  defp generate_dedupe_key(actor_id, expectation, %Cyclium.Trigger.Schedule{} = trigger) do
+    dt =
       case trigger.scheduled_at do
-        %DateTime{} = dt -> Date.to_iso8601(DateTime.to_date(dt))
-        _ -> Date.to_iso8601(Date.utc_today())
+        %DateTime{} = d -> d
+        _ -> DateTime.utc_now()
       end
 
-    "schedule:#{actor_id}:#{expectation_id}:#{date}"
+    bucket =
+      case expectation.window do
+        nil -> Date.to_iso8601(DateTime.to_date(dt))
+        window -> Cyclium.Window.bucket(window, dt)
+      end
+
+    "schedule:#{actor_id}:#{expectation.id}:#{bucket}"
   end
 
-  defp generate_dedupe_key(actor_id, expectation_id, trigger_ref) do
+  defp generate_dedupe_key(actor_id, expectation, trigger_ref) do
     hash = :erlang.phash2(trigger_ref_to_map(trigger_ref))
-    "event:#{actor_id}:#{expectation_id}:#{hash}"
+    "event:#{actor_id}:#{expectation.id}:#{hash}"
   end
 
   defp has_dedupe_violation?(changeset) do

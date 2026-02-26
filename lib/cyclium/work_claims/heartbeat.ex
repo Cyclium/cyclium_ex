@@ -7,6 +7,13 @@ defmodule Cyclium.WorkClaims.Heartbeat do
   defaults to lease_seconds / 3 to ensure the lease stays alive with
   margin for transient delays.
 
+  ## Crash resilience
+
+  The heartbeat is linked to the calling process (EpisodeTask). If the
+  heartbeat crashes, the EpisodeTask receives an EXIT and restarts it.
+  If the EpisodeTask crashes, the heartbeat dies with it. This ensures
+  the heartbeat lifecycle is always tied to the episode execution.
+
   ## Options
 
     * `:dedupe_key` — the claimed dedupe key (required)
@@ -23,9 +30,13 @@ defmodule Cyclium.WorkClaims.Heartbeat do
     GenServer.start_link(__MODULE__, opts)
   end
 
-  def stop(pid) do
+  def stop(pid) when is_pid(pid) do
     GenServer.stop(pid, :normal)
+  catch
+    :exit, _ -> :ok
   end
+
+  def stop(nil), do: :ok
 
   @impl true
   def init(opts) do
@@ -38,10 +49,11 @@ defmodule Cyclium.WorkClaims.Heartbeat do
       dedupe_key: dedupe_key,
       owner_node: owner_node,
       lease_seconds: lease_seconds,
-      interval_ms: interval_ms
+      interval_ms: interval_ms,
+      consecutive_failures: 0
     }
 
-    Process.send_after(self(), :renew, interval_ms)
+    schedule_renew(interval_ms)
     {:ok, state}
   end
 
@@ -49,15 +61,19 @@ defmodule Cyclium.WorkClaims.Heartbeat do
   def handle_info(:renew, state) do
     case Cyclium.WorkClaims.gate_renew(state.dedupe_key, state.owner_node, state.lease_seconds) do
       :ok ->
-        :ok
+        schedule_renew(state.interval_ms)
+        {:noreply, %{state | consecutive_failures: 0}}
 
       {:error, :not_owner} ->
         Logger.warning(
           "[Cyclium.Heartbeat] Lost claim ownership for #{state.dedupe_key} — stopping heartbeat"
         )
-    end
 
-    Process.send_after(self(), :renew, state.interval_ms)
-    {:noreply, state}
+        {:stop, :normal, state}
+    end
+  end
+
+  defp schedule_renew(interval_ms) do
+    Process.send_after(self(), :renew, interval_ms)
   end
 end

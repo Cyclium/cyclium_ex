@@ -1001,7 +1001,10 @@ config :cyclium, work_claims: Cyclium.WorkClaims.EctoClaims
 # Or a SQL Server-optimized adapter in consuming apps:
 config :cyclium, work_claims: MyApp.WorkClaims.SqlServer
 
-# Or omit entirely — no claiming, fully backwards compatible
+# Lease duration (default: 120 seconds)
+config :cyclium, work_claims_lease_seconds: 180
+
+# Or omit work_claims entirely — no claiming, fully backwards compatible
 ```
 
 When unconfigured, all `gate_*` functions return passthrough values with zero overhead.
@@ -1045,6 +1048,80 @@ The `cyclium_work_claims` table is created by V6 migration:
 ### Integration with recovery
 
 When work claims are configured, `Recovery.sweep/1` uses `gate_acquire` to coordinate across nodes before claiming orphaned episodes. This provides two layers of coordination: the work claim lease prevents concurrent execution, and the optimistic `claim_for_recovery` update prevents duplicate recovery actions.
+
+### Lease tuning
+
+The lease duration (`work_claims_lease_seconds`, default: 120s) controls the trade-off between availability and the "zombie window" — the time between a node crash and another node stealing the work.
+
+| Setting | Zombie window | Heartbeat interval | Good for |
+|---------|---------------|-------------------|----------|
+| 60s | ~60s | ~20s | Short tasks, fast failover |
+| 120s (default) | ~120s | ~40s | Most workloads |
+| 300s | ~5min | ~100s | Long-running tasks, flaky networks |
+
+**Guidelines:**
+- Heartbeat fires at `lease / 3` — set the lease to at least 3x your worst-case DB round-trip time
+- If your episodes typically run for minutes, 120s is fine — the heartbeat keeps the lease alive indefinitely
+- If network partitions last >30s regularly, increase the lease to avoid false steals
+- After a steal, the new node restarts the episode fresh (strategies should be idempotent)
+
+### Heartbeat failure modes
+
+The heartbeat GenServer is linked to the EpisodeTask process:
+
+- **Heartbeat crashes** — The EpisodeTask traps the EXIT and can restart the heartbeat. The lease has margin (only 1/3 expired per interval), so a brief restart is safe.
+- **EpisodeTask crashes** — The heartbeat dies with it. The rescue block marks the claim as `:failed`. If it doesn't (hard kill), the lease expires naturally and another node can steal it.
+- **DB becomes unreachable** — Heartbeat renewal fails, lease expires. When DB comes back, another node may steal. This is by design — if you can't reach the DB, you can't guarantee exclusive access.
+- **Lost ownership** — If `gate_renew` returns `{:error, :not_owner}` (another node stole the claim), the heartbeat stops itself.
+
+**Idempotency guidance:** Since lease expiry can cause a second node to start the same work, strategies that perform side effects should use idempotency keys. For DB writes, use unique constraints keyed by the episode's dedupe_key or step number. For external API calls, include an idempotency header derived from the episode ID + step number.
+
+### Telemetry events
+
+All events are prefixed with `[:cyclium, :work_claims, ...]`:
+
+| Event | Measurements | Metadata | Meaning |
+|-------|-------------|----------|---------|
+| `:acquired` | `count`, `duration_ms` | `dedupe_key`, `owner_node` | Fresh claim acquired |
+| `:steal` | `count`, `duration_ms` | `dedupe_key`, `owner_node` | Expired claim reclaimed (attempt > 1) |
+| `:busy` | `count`, `duration_ms` | `dedupe_key`, `owner_node` | Claim denied — another node holds it |
+| `:renewed` | `count` | `dedupe_key`, `owner_node` | Heartbeat renewal succeeded |
+| `:renew_failed` | `count` | `dedupe_key`, `owner_node` | Heartbeat renewal failed (lost ownership) |
+| `:completed` | `count` | `dedupe_key`, `owner_node` | Work finished, claim released |
+| `:failed` | `count` | `dedupe_key`, `owner_node` | Work failed, claim released |
+
+**Key metrics to alert on:**
+- `steal` rate > 0 during normal operation → nodes are dying or leases are too short
+- `busy` rate proportional to node count → expected (N-1 nodes get busy per dedupe key)
+- `renew_failed` > 0 → possible clock drift or DB contention
+
+### Testing work claims
+
+**Unit tests:** Use `Cyclium.WorkClaims.FakeClaims` — an Agent-backed in-memory implementation:
+
+```elixir
+setup do
+  {:ok, _} = Cyclium.WorkClaims.FakeClaims.start_link()
+  Application.put_env(:cyclium, :work_claims, Cyclium.WorkClaims.FakeClaims)
+  on_exit(fn -> Application.delete_env(:cyclium, :work_claims) end)
+end
+
+test "second acquire is busy" do
+  assert {:ok, _} = Cyclium.WorkClaims.gate_acquire("key:1", "node-a")
+  Cyclium.WorkClaims.FakeClaims.set_busy("key:2")
+  assert {:error, :busy} = Cyclium.WorkClaims.gate_acquire("key:2", "node-b")
+end
+```
+
+**Integration tests (single node):** Configure `EctoClaims` with your test repo. Verify:
+1. Two concurrent `acquire` calls on the same key — one succeeds, one gets `:busy`
+2. After `complete`, a new `acquire` on the same key succeeds (reclaim)
+3. After lease expiry (set a short lease), `acquire` steals from the previous owner
+
+**Multi-node tests:** Deploy to a staging cluster with 2+ nodes. Use a test actor with a short schedule:
+1. Verify only one node's episode runs (check `owner_node` in `cyclium_work_claims`)
+2. Kill a node mid-episode, wait for lease expiry, verify another node steals and completes
+3. Monitor telemetry — `steal` events should only appear after the kill, never during normal operation
 
 ## Tools
 

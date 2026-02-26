@@ -24,7 +24,8 @@ defmodule Cyclium.Expectation do
           retention_days: non_neg_integer() | nil,
           description: binary(),
           synthesizer: module() | nil,
-          recovery_policy: :fail | :restart
+          recovery_policy: :fail | :restart,
+          window: Cyclium.Window.window_size() | nil
         }
 
   defstruct [
@@ -45,6 +46,7 @@ defmodule Cyclium.Expectation do
     audit_level: :standard,
     retention_days: 90,
     description: "",
-    recovery_policy: :fail
+    recovery_policy: :fail,
+    window: nil
   ]
 end

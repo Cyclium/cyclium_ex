@@ -70,5 +70,6 @@ defmodule Cyclium.Schemas.Episode do
       :archived_at
     ])
     |> validate_required([:actor_id, :expectation_id, :trigger_type, :status, :started_at])
+    |> unique_constraint(:dedupe_key)
   end
 end

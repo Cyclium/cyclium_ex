@@ -134,7 +134,7 @@ defmodule Cyclium.Episodes do
       where: e.status == :running and is_nil(e.archived_at),
       left_join: s in EpisodeStep,
       on: s.episode_id == e.id,
-      group_by: e.id,
+      group_by: [e.id, e.started_at],
       having: max(s.created_at) < ^cutoff or (count(s.id) == 0 and e.started_at < ^cutoff)
     )
     |> repo().all()

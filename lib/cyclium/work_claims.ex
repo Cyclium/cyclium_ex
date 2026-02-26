@@ -55,8 +55,42 @@ defmodule Cyclium.WorkClaims do
   """
   def gate_acquire(dedupe_key, owner_node, opts \\ []) do
     case impl() do
-      nil -> {:ok, :passthrough}
-      mod -> mod.acquire(dedupe_key, owner_node, opts)
+      nil ->
+        {:ok, :passthrough}
+
+      mod ->
+        start = System.monotonic_time()
+        result = mod.acquire(dedupe_key, owner_node, opts)
+
+        duration_ms =
+          System.convert_time_unit(System.monotonic_time() - start, :native, :millisecond)
+
+        meta = %{dedupe_key: dedupe_key, owner_node: owner_node}
+
+        case result do
+          {:ok, %{attempt: attempt}} when attempt > 1 ->
+            :telemetry.execute(
+              [:cyclium, :work_claims, :steal],
+              %{count: 1, duration_ms: duration_ms},
+              meta
+            )
+
+          {:ok, _} ->
+            :telemetry.execute(
+              [:cyclium, :work_claims, :acquired],
+              %{count: 1, duration_ms: duration_ms},
+              meta
+            )
+
+          {:error, :busy} ->
+            :telemetry.execute(
+              [:cyclium, :work_claims, :busy],
+              %{count: 1, duration_ms: duration_ms},
+              meta
+            )
+        end
+
+        result
     end
   end
 
@@ -65,8 +99,22 @@ defmodule Cyclium.WorkClaims do
   """
   def gate_renew(dedupe_key, owner_node, lease_seconds) do
     case impl() do
-      nil -> :ok
-      mod -> mod.renew(dedupe_key, owner_node, lease_seconds)
+      nil ->
+        :ok
+
+      mod ->
+        result = mod.renew(dedupe_key, owner_node, lease_seconds)
+        meta = %{dedupe_key: dedupe_key, owner_node: owner_node}
+
+        case result do
+          :ok ->
+            :telemetry.execute([:cyclium, :work_claims, :renewed], %{count: 1}, meta)
+
+          {:error, :not_owner} ->
+            :telemetry.execute([:cyclium, :work_claims, :renew_failed], %{count: 1}, meta)
+        end
+
+        result
     end
   end
 
@@ -75,8 +123,18 @@ defmodule Cyclium.WorkClaims do
   """
   def gate_complete(dedupe_key, owner_node) do
     case impl() do
-      nil -> :ok
-      mod -> mod.complete(dedupe_key, owner_node)
+      nil ->
+        :ok
+
+      mod ->
+        result = mod.complete(dedupe_key, owner_node)
+
+        :telemetry.execute([:cyclium, :work_claims, :completed], %{count: 1}, %{
+          dedupe_key: dedupe_key,
+          owner_node: owner_node
+        })
+
+        result
     end
   end
 
@@ -85,8 +143,18 @@ defmodule Cyclium.WorkClaims do
   """
   def gate_fail(dedupe_key, owner_node, error_detail \\ %{}) do
     case impl() do
-      nil -> :ok
-      mod -> mod.fail(dedupe_key, owner_node, error_detail)
+      nil ->
+        :ok
+
+      mod ->
+        result = mod.fail(dedupe_key, owner_node, error_detail)
+
+        :telemetry.execute([:cyclium, :work_claims, :failed], %{count: 1}, %{
+          dedupe_key: dedupe_key,
+          owner_node: owner_node
+        })
+
+        result
     end
   end
 
