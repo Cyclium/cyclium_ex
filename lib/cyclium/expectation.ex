@@ -23,7 +23,8 @@ defmodule Cyclium.Expectation do
           audit_level: atom(),
           retention_days: non_neg_integer() | nil,
           description: binary(),
-          synthesizer: module() | nil
+          synthesizer: module() | nil,
+          recovery_policy: :fail | :restart
         }
 
   defstruct [
@@ -43,6 +44,7 @@ defmodule Cyclium.Expectation do
     log_strategy: :timeline,
     audit_level: :standard,
     retention_days: 90,
-    description: ""
+    description: "",
+    recovery_policy: :fail
   ]
 end

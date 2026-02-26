@@ -11,6 +11,9 @@ defmodule Cyclium.EpisodeTask do
   end
 
   defp run(episode_id, opts) do
+    # Trap exits so current step can finish during graceful shutdown
+    Process.flag(:trap_exit, true)
+
     episode = Cyclium.Episodes.get!(episode_id)
     # Store for rescue block
     Process.put(:cyclium_episode, episode)

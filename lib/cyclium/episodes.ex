@@ -118,6 +118,46 @@ defmodule Cyclium.Episodes do
     end
   end
 
+  @doc """
+  List `:running` episodes with no recent step journal activity.
+
+  An episode is considered stale if:
+  - Its most recent `EpisodeStep.created_at` is older than `stale_after_ms`, OR
+  - It has no steps and its `started_at` is older than the threshold
+
+  Used by `Cyclium.Recovery.sweep/1` to find orphaned episodes after deploys.
+  """
+  def list_stale_running(stale_after_ms) do
+    cutoff = DateTime.add(DateTime.utc_now(), -stale_after_ms, :millisecond)
+
+    from(e in Episode,
+      where: e.status == :running and is_nil(e.archived_at),
+      left_join: s in EpisodeStep,
+      on: s.episode_id == e.id,
+      group_by: e.id,
+      having: max(s.created_at) < ^cutoff or (count(s.id) == 0 and e.started_at < ^cutoff)
+    )
+    |> repo().all()
+  end
+
+  @doc """
+  Attempt to claim a stale episode for recovery via optimistic update.
+
+  Sets `phase` to `"recovering"` only if the episode is still `:running`.
+  Returns `{:ok, episode}` if claimed, `{:error, :already_claimed}` if
+  another node got there first.
+  """
+  def claim_for_recovery(episode_id) do
+    from(e in Episode,
+      where: e.id == ^episode_id and e.status == :running and is_nil(e.archived_at)
+    )
+    |> repo().update_all(set: [phase: "recovering"])
+    |> case do
+      {1, _} -> {:ok, get!(episode_id)}
+      {0, _} -> {:error, :already_claimed}
+    end
+  end
+
   def update_status(episode_id, status) do
     update_status(episode_id, status, [])
   end

@@ -377,7 +377,8 @@ defmodule Cyclium.Actor.Server do
       audit_level: Keyword.get(opts, :audit_level, :standard),
       retention_days: Keyword.get(opts, :retention_days, 90),
       description: Keyword.get(opts, :description, ""),
-      synthesizer: Keyword.get(opts, :synthesizer) || config.synthesizer
+      synthesizer: Keyword.get(opts, :synthesizer) || config.synthesizer,
+      recovery_policy: Keyword.get(opts, :recovery_policy, :fail)
     }
   end
 
@@ -546,11 +547,15 @@ defmodule Cyclium.Actor.Server do
       expectation_id: to_string(expectation.id),
       trigger_type: trigger_type_atom(trigger_ref),
       trigger_ref: trigger_ref_to_map(trigger_ref),
+      dedupe_key: generate_dedupe_key(state.actor_id, expectation.id, trigger_ref),
       status: :running,
       budget: normalize_budget(expectation.budget),
       log_strategy: to_string(expectation.log_strategy),
       started_at: now
     }
+
+    # Jitter to distribute episode creation across cluster nodes
+    Process.sleep(:rand.uniform(200))
 
     cond do
       active_count < max ->
@@ -583,6 +588,15 @@ defmodule Cyclium.Actor.Server do
 
         Map.update!(state, :active_episodes, &MapSet.put(&1, episode.id))
 
+      {:error, %Ecto.Changeset{} = cs} ->
+        if has_dedupe_violation?(cs) do
+          Logger.debug("[#{state.actor_id}] Dedupe skip: #{params.dedupe_key}")
+        else
+          Logger.warning("[#{state.actor_id}] Episode create failed: #{inspect(cs.errors)}")
+        end
+
+        state
+
       {:error, _} ->
         state
     end
@@ -600,6 +614,13 @@ defmodule Cyclium.Actor.Server do
         })
 
         Map.update!(state, :queued_episodes, &:queue.in(episode.id, &1))
+
+      {:error, %Ecto.Changeset{} = cs} ->
+        if has_dedupe_violation?(cs) do
+          Logger.debug("[#{state.actor_id}] Dedupe skip (queued): #{params.dedupe_key}")
+        end
+
+        state
 
       {:error, _} ->
         state
@@ -693,6 +714,28 @@ defmodule Cyclium.Actor.Server do
 
   defp normalize_budget(budget) when is_map(budget) do
     Map.new(budget, fn {k, v} -> {to_string(k), v} end)
+  end
+
+  defp generate_dedupe_key(actor_id, expectation_id, %Cyclium.Trigger.Schedule{} = trigger) do
+    # Window bucket = date for daily schedules
+    date =
+      case trigger.scheduled_at do
+        %DateTime{} = dt -> Date.to_iso8601(DateTime.to_date(dt))
+        _ -> Date.to_iso8601(Date.utc_today())
+      end
+
+    "schedule:#{actor_id}:#{expectation_id}:#{date}"
+  end
+
+  defp generate_dedupe_key(actor_id, expectation_id, trigger_ref) do
+    hash = :erlang.phash2(trigger_ref_to_map(trigger_ref))
+    "event:#{actor_id}:#{expectation_id}:#{hash}"
+  end
+
+  defp has_dedupe_violation?(changeset) do
+    changeset.errors
+    |> Keyword.get_values(:dedupe_key)
+    |> Enum.any?(fn {_msg, opts} -> opts[:constraint] == :unique end)
   end
 
   defp runner do

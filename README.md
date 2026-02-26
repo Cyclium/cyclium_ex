@@ -531,9 +531,11 @@ def up do
   Cyclium.Migrations.V2.up()   # episode_logs
   Cyclium.Migrations.V3.up()   # workflow_instances
   Cyclium.Migrations.V4.up()   # archived_at on episodes and findings
+  Cyclium.Migrations.V5.up()   # unique index on episode dedupe_key
 end
 
 def down do
+  Cyclium.Migrations.V5.down()
   Cyclium.Migrations.V4.down()
   Cyclium.Migrations.V3.down()
   Cyclium.Migrations.V2.down()
@@ -797,7 +799,7 @@ Query steps: `Cyclium.Episodes.list_steps(episode_id)`
 
 ## Checkpointing
 
-Strategies can save state mid-episode for crash recovery:
+Strategies can save state mid-episode for crash recovery. Return `{:checkpoint, phase_name}` from `next_step/2` to persist the current state:
 
 ```elixir
 def next_step(state, _ctx) do
@@ -809,14 +811,19 @@ def next_step(state, _ctx) do
 end
 ```
 
-On crash/restart, `EpisodeTask` loads the latest checkpoint and calls the strategy's checkpoint schema to migrate state forward if needed:
+The checkpoint saves the full strategy state map to the `cyclium_episode_checkpoints` table. On resume, `EpisodeTask` loads the latest checkpoint by `checkpoint_no` and passes it to the strategy — execution continues from where it left off.
+
+### Checkpoint schema versioning
+
+If your strategy's state shape changes between deploys, register a checkpoint schema to migrate old checkpoints forward:
 
 ```elixir
 defmodule MyApp.Checkpoints.HealthCheck do
   use Cyclium.CheckpointSchema, version: 2
 
-  # Migrate from version 1 → 2
+  # Migrate from version 1 -> 2
   def migrate(1, state), do: {:ok, Map.put(state, :new_field, nil)}
+  def migrate(2, state), do: {:ok, state}
 end
 ```
 
@@ -827,6 +834,150 @@ config :cyclium, :checkpoint_schemas, %{
   {"client_health_actor", "client_should_be_healthy"} => MyApp.Checkpoints.HealthCheck
 }
 ```
+
+If migration fails, `EpisodeTask` falls back to a fresh `strategy.init/2` — the episode restarts from scratch.
+
+### When to checkpoint vs. restart
+
+**Use checkpoints** when:
+- The strategy accumulates state across many turns that would be expensive to recompute (multi-turn LLM conversations, progressive data aggregation)
+- Steps have non-idempotent side effects that shouldn't be repeated
+
+**Use restart (no checkpoint)** when:
+- The strategy re-queries all data from the DB each turn (most monitoring/health strategies)
+- Side effects are idempotent (findings upsert by key, outputs are deduplicated)
+- Episodes are short (< a few minutes)
+
+Most strategies don't need checkpoints — `recovery_policy: :restart` on the expectation handles recovery by re-running the episode from scratch. See the Recovery section below.
+
+## Recovery
+
+Cyclium provides built-in recovery for orphaned episodes after server restarts or deploys.
+
+### The problem
+
+When a node shuts down (deploy, crash, scaling event), in-flight episodes are killed and left as `:running` in the database. Without recovery, these episodes stay orphaned forever.
+
+### Distributed episode claiming
+
+In a multi-node cluster, all nodes run the same actors and receive the same Bus events via PG2. Without coordination, every node would independently create and run an episode for every trigger — tripling (or more) the work. Cyclium uses DB-based coordination with no Redis or leader election required.
+
+#### Episode creation: dedupe_key
+
+When a trigger fires, every node's actor calls `maybe_fire_episode`. Before inserting, the actor generates a deterministic `dedupe_key`:
+
+- **Schedule triggers:** `"schedule:{actor_id}:{expectation_id}:{date}"` — one episode per schedule window
+- **Event triggers:** `"event:{actor_id}:{expectation_id}:{payload_hash}"` — one episode per distinct event payload
+
+A filtered unique index on `dedupe_key` (`WHERE dedupe_key IS NOT NULL AND archived_at IS NULL`) ensures only one node's insert succeeds. The other nodes receive a constraint violation and silently skip — no episode created, no work duplicated. Archived episodes are excluded from the constraint so that re-triggered work isn't blocked by old runs.
+
+A random jitter (0-200ms) before insert spreads winners evenly across nodes, preventing one faster node from consistently claiming all episodes:
+
+```elixir
+# In Actor.Server.maybe_fire_episode/3
+Process.sleep(:rand.uniform(200))
+enqueue_episode(state, episode_params)
+```
+
+The constraint violation is caught in `enqueue_episode` using the same pattern as the Output router:
+
+```elixir
+{:error, %Ecto.Changeset{} = cs} ->
+  if has_dedupe_violation?(cs) do
+    Logger.debug("[#{state.actor_id}] Dedupe skip: #{params.dedupe_key}")
+  end
+  state
+```
+
+#### Recovery claims: optimistic update
+
+After a restart, all surviving nodes run `Cyclium.Recovery.sweep/1`. Each node sees the same list of stale episodes, but only one node can claim each episode:
+
+```elixir
+# Episodes.claim_for_recovery/1
+from(e in Episode,
+  where: e.id == ^episode_id and e.status == :running and is_nil(e.archived_at)
+)
+|> repo().update_all(set: [phase: "recovering"])
+```
+
+This is an atomic `UPDATE ... WHERE` — the first node to execute it sets `phase: "recovering"` and gets `{1, _}` back. All other nodes get `{0, _}` (no rows affected) and skip. No locks, no races, no distributed coordination protocol needed.
+
+#### Summary of coordination guarantees
+
+| Scenario | Mechanism | Guarantee |
+|----------|-----------|-----------|
+| Same trigger on N nodes | `dedupe_key` unique index | Exactly one episode created |
+| Same orphan on N nodes | Optimistic `UPDATE ... WHERE` | Exactly one node recovers it |
+| Archived episodes | Filtered unique index excludes `archived_at IS NOT NULL` | Re-triggering is not blocked by old runs |
+| Node with lower latency | Random jitter (0-200ms) | Winners distributed evenly over time |
+
+### Recovery sweep
+
+`Cyclium.Recovery.sweep/1` finds stale `:running` episodes and recovers them:
+
+1. Query episodes where the most recent step journal entry is older than `stale_after_ms` (default: 2 minutes)
+2. Attempt optimistic claim on each stale episode
+3. If claimed, apply the expectation's `recovery_policy`:
+   - `:restart` — enqueue fresh (re-runs `strategy.init/2`)
+   - `:fail` (default) — mark `:failed` with `error_class: "orphaned"`
+4. Emit `[:cyclium, :recovery, :sweep]` telemetry with counts
+
+### Setting recovery policy
+
+Add `recovery_policy` to the expectation DSL:
+
+```elixir
+actor do
+  expectation :evaluate_project,
+    trigger: {:event, "project_health.check_requested"},
+    recovery_policy: :restart,
+    budget: %{max_turns: 5, max_tokens: 25_000, max_wall_ms: 120_000}
+end
+```
+
+Use `:restart` for idempotent strategies that re-query data from the DB. Use `:fail` (default) for strategies with non-idempotent side effects where automatic recovery could cause harm.
+
+### Wiring up recovery in your app
+
+Add a delayed recovery task to your Cyclium supervisor:
+
+```elixir
+children = [
+  {Cyclium.Supervisor, pubsub: MyApp.PubSub},
+  MyApp.Actors.HealthActor,
+  {Task, fn ->
+    # Wait for cluster to settle after deploy
+    Process.sleep(:timer.minutes(2))
+    Cyclium.Recovery.sweep(
+      resolve_policy: &resolve_recovery_policy/1
+    )
+  end}
+]
+```
+
+The `:resolve_policy` callback maps an episode to its recovery policy by looking up the actor module's compiled expectations:
+
+```elixir
+defp resolve_recovery_policy(episode) do
+  actor_module = actor_module_for(episode.actor_id)
+  raw_expectations = actor_module.__cyclium_expectations__()
+
+  case List.keyfind(raw_expectations, String.to_existing_atom(episode.expectation_id), 0) do
+    {_id, opts} -> Keyword.get(opts, :recovery_policy, :fail)
+    nil -> :fail
+  end
+end
+```
+
+### Deploy sequence
+
+1. Node gets SIGTERM -> 30s graceful shutdown timeout
+2. Episodes trap exits, try to finish current step within remaining time
+3. Episodes that don't finish stay `:running` in DB
+4. After boot, each node waits 2 minutes before running recovery sweep
+5. Sweep finds stale episodes via step journal recency
+6. First node to claim each orphan via optimistic update handles recovery
 
 ## Tools
 
@@ -958,6 +1109,8 @@ All tables use `binary_id` primary keys and are SQL Server 2017 compatible (no J
 | `cyclium_outputs` | V1 | Output proposals, delivery status, deduplication |
 | `cyclium_episode_logs` | V2 | Materialized human-readable logs |
 | `cyclium_workflow_instances` | V3 | Workflow execution tracking and step states |
+
+V4 adds `archived_at` to episodes and findings. V5 replaces the non-unique `dedupe_key` index on episodes with a filtered unique index (`WHERE dedupe_key IS NOT NULL AND archived_at IS NULL`) for multi-node coordination.
 
 ## Window helpers
 
