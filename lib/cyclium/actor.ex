@@ -194,6 +194,25 @@ defmodule Cyclium.Actor.Server do
     {:ok, state}
   end
 
+  def handle_info({:force_fire, expectation_id}, state) do
+    state =
+      case Map.get(state.expectations, expectation_id) do
+        nil ->
+          Logger.warning("[#{state.actor_id}] Force fire: unknown expectation #{expectation_id}")
+          state
+
+        expectation ->
+          trigger_ref = %Cyclium.Trigger.Manual{
+            requested_by: "force_fire",
+            reason: "manual:#{System.system_time(:millisecond)}"
+          }
+
+          maybe_fire_episode(state, expectation, trigger_ref)
+      end
+
+    {:noreply, state}
+  end
+
   def handle_info({:schedule_fire, expectation_id}, state) do
     state =
       case Map.get(state.expectations, expectation_id) do
