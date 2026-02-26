@@ -26,8 +26,25 @@ defmodule Cyclium.Recovery do
 
     * `:stale_after_ms` — consider an episode stale if no step journal activity
       for this long (default: 2 minutes)
-    * `:resolve_policy` — `(episode -> :fail | :restart)` callback to determine
-      recovery policy. Default: always `:fail`.
+    * `:actor_registry` — map of `%{"actor_id" => ActorModule}`. Recovery looks
+      up `recovery_policy` from the actor module's compiled expectations. This is
+      the recommended option — pass your actor modules and Cyclium handles the rest.
+    * `:resolve_policy` — `(episode -> :fail | :restart)` callback for custom
+      policy resolution. Overrides `:actor_registry` if both are provided.
+
+  ## Examples
+
+      # Recommended: pass an actor registry map
+      Cyclium.Recovery.sweep(
+        actor_registry: %{
+          "project_health_actor" => MyApp.Actors.ProjectHealthActor
+        }
+      )
+
+      # Custom: pass a resolve_policy function
+      Cyclium.Recovery.sweep(
+        resolve_policy: fn _episode -> :restart end
+      )
   """
 
   require Logger
@@ -43,7 +60,19 @@ defmodule Cyclium.Recovery do
   """
   def sweep(opts \\ []) do
     stale_after_ms = Keyword.get(opts, :stale_after_ms, @default_stale_ms)
-    resolve_policy = Keyword.get(opts, :resolve_policy, fn _ep -> :fail end)
+
+    resolve_policy =
+      cond do
+        Keyword.has_key?(opts, :resolve_policy) ->
+          Keyword.fetch!(opts, :resolve_policy)
+
+        Keyword.has_key?(opts, :actor_registry) ->
+          registry = Keyword.fetch!(opts, :actor_registry)
+          &resolve_policy_from_registry(&1, registry)
+
+        true ->
+          fn _ep -> :fail end
+      end
 
     stale = Episodes.list_stale_running(stale_after_ms)
 
@@ -51,11 +80,11 @@ defmodule Cyclium.Recovery do
 
     results =
       Enum.map(stale, fn episode ->
-        case Episodes.claim_for_recovery(episode.id) do
+        case claim_episode(episode) do
           {:ok, claimed} ->
             recover_episode(claimed, resolve_policy)
 
-          {:error, :already_claimed} ->
+          {:error, _} ->
             :skipped
         end
       end)
@@ -111,6 +140,33 @@ defmodule Cyclium.Recovery do
 
         :failed
     end
+  end
+
+  defp claim_episode(episode) do
+    if Cyclium.WorkClaims.configured?() and episode.dedupe_key do
+      case Cyclium.WorkClaims.gate_acquire(episode.dedupe_key, node_name(), work_type: "recovery") do
+        {:ok, _claim} -> Episodes.claim_for_recovery(episode.id)
+        {:error, :busy} -> {:error, :busy}
+      end
+    else
+      Episodes.claim_for_recovery(episode.id)
+    end
+  end
+
+  defp node_name, do: node() |> to_string()
+
+  defp resolve_policy_from_registry(episode, registry) do
+    with actor_module when not is_nil(actor_module) <- Map.get(registry, episode.actor_id),
+         true <- function_exported?(actor_module, :__cyclium_expectations__, 0),
+         raw_expectations <- actor_module.__cyclium_expectations__(),
+         expectation_id <- String.to_existing_atom(episode.expectation_id),
+         {_id, opts} <- List.keyfind(raw_expectations, expectation_id, 0) do
+      Keyword.get(opts, :recovery_policy, :fail)
+    else
+      _ -> :fail
+    end
+  rescue
+    _ -> :fail
   end
 
   defp runner do

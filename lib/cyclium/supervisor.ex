@@ -36,6 +36,16 @@ defmodule Cyclium.Supervisor do
         []
       end
 
-    reconciler ++ workflow_engine
+    work_claims =
+      if Application.get_env(:cyclium, :work_claims) do
+        [
+          {DynamicSupervisor,
+           name: Cyclium.WorkClaims.HeartbeatSupervisor, strategy: :one_for_one}
+        ]
+      else
+        []
+      end
+
+    reconciler ++ workflow_engine ++ work_claims
   end
 end

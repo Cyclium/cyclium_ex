@@ -532,9 +532,11 @@ def up do
   Cyclium.Migrations.V3.up()   # workflow_instances
   Cyclium.Migrations.V4.up()   # archived_at on episodes and findings
   Cyclium.Migrations.V5.up()   # unique index on episode dedupe_key
+  Cyclium.Migrations.V6.up()   # work_claims table for lease-based coordination
 end
 
 def down do
+  Cyclium.Migrations.V6.down()
   Cyclium.Migrations.V5.down()
   Cyclium.Migrations.V4.down()
   Cyclium.Migrations.V3.down()
@@ -940,34 +942,34 @@ Use `:restart` for idempotent strategies that re-query data from the DB. Use `:f
 
 ### Wiring up recovery in your app
 
-Add a delayed recovery task to your Cyclium supervisor:
+Add a delayed recovery task to your Cyclium supervisor with an `:actor_registry` map that maps actor ID strings to their modules. Cyclium looks up the `recovery_policy` from each actor's compiled expectations automatically.
 
 ```elixir
+@actor_registry %{
+  "project_health_actor" => MyApp.Actors.ProjectHealthActor,
+  "client_health_actor" => MyApp.Actors.ClientHealthActor
+}
+
 children = [
   {Cyclium.Supervisor, pubsub: MyApp.PubSub},
-  MyApp.Actors.HealthActor,
+  MyApp.Actors.ProjectHealthActor,
+  MyApp.Actors.ClientHealthActor,
   {Task, fn ->
     # Wait for cluster to settle after deploy
     Process.sleep(:timer.minutes(2))
-    Cyclium.Recovery.sweep(
-      resolve_policy: &resolve_recovery_policy/1
-    )
+    Cyclium.Recovery.sweep(actor_registry: @actor_registry)
   end}
 ]
 ```
 
-The `:resolve_policy` callback maps an episode to its recovery policy by looking up the actor module's compiled expectations:
+For custom policy logic, pass `:resolve_policy` instead:
 
 ```elixir
-defp resolve_recovery_policy(episode) do
-  actor_module = actor_module_for(episode.actor_id)
-  raw_expectations = actor_module.__cyclium_expectations__()
-
-  case List.keyfind(raw_expectations, String.to_existing_atom(episode.expectation_id), 0) do
-    {_id, opts} -> Keyword.get(opts, :recovery_policy, :fail)
-    nil -> :fail
+Cyclium.Recovery.sweep(
+  resolve_policy: fn episode ->
+    if episode.actor_id == "critical_actor", do: :restart, else: :fail
   end
-end
+)
 ```
 
 ### Deploy sequence
@@ -978,6 +980,71 @@ end
 4. After boot, each node waits 2 minutes before running recovery sweep
 5. Sweep finds stale episodes via step journal recency
 6. First node to claim each orphan via optimistic update handles recovery
+
+## Work Claims (Distributed Lease Coordination)
+
+For clusters where multiple applications share the same database and actor definitions, work claims provide lease-based coordination to ensure at-most-once execution.
+
+### How it works
+
+1. Before executing an episode, `EpisodeTask` calls `WorkClaims.gate_acquire/3` with the episode's `dedupe_key`
+2. If claimed successfully, a `Heartbeat` GenServer renews the lease periodically (every lease/3 seconds)
+3. On completion, the claim is marked `:done`; on crash, `:failed`
+4. If a node dies, the lease expires and another node can steal it
+
+### Configuration
+
+```elixir
+# Use the built-in Ecto-based implementation:
+config :cyclium, work_claims: Cyclium.WorkClaims.EctoClaims
+
+# Or a SQL Server-optimized adapter in consuming apps:
+config :cyclium, work_claims: MyApp.WorkClaims.SqlServer
+
+# Or omit entirely — no claiming, fully backwards compatible
+```
+
+When unconfigured, all `gate_*` functions return passthrough values with zero overhead.
+
+### Writing a custom adapter
+
+Implement the `Cyclium.WorkClaims` behaviour with 5 callbacks:
+
+```elixir
+defmodule MyApp.WorkClaims.SqlServer do
+  @behaviour Cyclium.WorkClaims
+
+  @impl true
+  def acquire(dedupe_key, owner_node, opts) do
+    # Use hints: ["UPDLOCK"] for SQL Server lock acquisition
+    # Transaction-based: read with lock, then insert or update
+  end
+
+  @impl true
+  def renew(dedupe_key, owner_node, lease_seconds), do: # ...
+  def complete(dedupe_key, owner_node), do: # ...
+  def fail(dedupe_key, owner_node, error_detail), do: # ...
+  def reclaim_expired(limit), do: # ...
+end
+```
+
+The default `EctoClaims` implementation uses plain transactions (no lock hints) and works with any Ecto adapter. For SQL Server, a custom adapter can use `hints: ["UPDLOCK"]` on the read query inside the transaction for stronger concurrency guarantees.
+
+### Database table
+
+The `cyclium_work_claims` table is created by V6 migration:
+
+| Column | Type | Notes |
+|--------|------|-------|
+| `dedupe_key` | string(512) | Unique — matches the episode's dedupe_key |
+| `state` | string(32) | `claimed`, `done`, `failed`, `expired` |
+| `owner_node` | string(255) | Node holding the lease |
+| `lease_until` | utc_datetime | When the lease expires |
+| `attempt` | integer | Incremented on each steal/reclaim |
+
+### Integration with recovery
+
+When work claims are configured, `Recovery.sweep/1` uses `gate_acquire` to coordinate across nodes before claiming orphaned episodes. This provides two layers of coordination: the work claim lease prevents concurrent execution, and the optimistic `claim_for_recovery` update prevents duplicate recovery actions.
 
 ## Tools
 
@@ -1109,8 +1176,9 @@ All tables use `binary_id` primary keys and are SQL Server 2017 compatible (no J
 | `cyclium_outputs` | V1 | Output proposals, delivery status, deduplication |
 | `cyclium_episode_logs` | V2 | Materialized human-readable logs |
 | `cyclium_workflow_instances` | V3 | Workflow execution tracking and step states |
+| `cyclium_work_claims` | V6 | Lease-based distributed work coordination |
 
-V4 adds `archived_at` to episodes and findings. V5 replaces the non-unique `dedupe_key` index on episodes with a filtered unique index (`WHERE dedupe_key IS NOT NULL AND archived_at IS NULL`) for multi-node coordination.
+V4 adds `archived_at` to episodes and findings. V5 replaces the non-unique `dedupe_key` index on episodes with a filtered unique index (`WHERE dedupe_key IS NOT NULL AND archived_at IS NULL`) for multi-node coordination. V6 adds the `cyclium_work_claims` table for lease-based distributed coordination across clustered nodes.
 
 ## Window helpers
 

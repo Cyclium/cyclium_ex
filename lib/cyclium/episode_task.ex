@@ -18,6 +18,16 @@ defmodule Cyclium.EpisodeTask do
     # Store for rescue block
     Process.put(:cyclium_episode, episode)
 
+    # Claim gate — only runs if work_claims is configured
+    case Cyclium.WorkClaims.gate_acquire(episode.dedupe_key, node_name(), lease_seconds: 120) do
+      {:ok, :passthrough} -> :ok
+      {:ok, _claim} -> :ok
+      {:error, :busy} -> exit(:normal)
+    end
+
+    # Start heartbeat for lease renewal if claiming is active
+    heartbeat_pid = maybe_start_heartbeat(episode)
+
     strategy = resolve_strategy(episode)
     synthesizer = resolve_synthesizer(episode)
 
@@ -33,6 +43,10 @@ defmodule Cyclium.EpisodeTask do
       end
 
     Cyclium.EpisodeRunner.execute_loop(episode, strategy, state, synthesizer: synthesizer)
+
+    # Complete claim and stop heartbeat on successful completion
+    Cyclium.WorkClaims.gate_complete(episode.dedupe_key, node_name())
+    if heartbeat_pid, do: Cyclium.WorkClaims.Heartbeat.stop(heartbeat_pid)
   rescue
     e ->
       require Logger
@@ -58,6 +72,14 @@ defmodule Cyclium.EpisodeTask do
         actor_id: if(episode, do: episode.actor_id),
         status: :failed
       })
+
+      # Fail the claim if one was held
+      if episode do
+        Cyclium.WorkClaims.gate_fail(episode.dedupe_key, node_name(), %{
+          "reason" => "crash",
+          "exception" => message
+        })
+      end
 
       reraise e, __STACKTRACE__
   end
@@ -142,5 +164,22 @@ defmodule Cyclium.EpisodeTask do
       {k, v} when is_binary(k) -> {String.to_existing_atom(k), v}
       {k, v} -> {k, v}
     end)
+  end
+
+  defp maybe_start_heartbeat(episode) do
+    if Cyclium.WorkClaims.configured?() and episode.dedupe_key do
+      {:ok, pid} =
+        Cyclium.WorkClaims.Heartbeat.start_link(
+          dedupe_key: episode.dedupe_key,
+          owner_node: node_name(),
+          lease_seconds: 120
+        )
+
+      pid
+    end
+  end
+
+  defp node_name do
+    node() |> to_string()
   end
 end
