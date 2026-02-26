@@ -130,13 +130,17 @@ defmodule Cyclium.Episodes do
   def list_stale_running(stale_after_ms) do
     cutoff = DateTime.add(DateTime.utc_now(), -stale_after_ms, :millisecond)
 
-    from(e in Episode,
-      where: e.status == :running and is_nil(e.archived_at),
-      left_join: s in EpisodeStep,
-      on: s.episode_id == e.id,
-      group_by: [e.id, e.started_at],
-      having: max(s.created_at) < ^cutoff or (count(s.id) == 0 and e.started_at < ^cutoff)
-    )
+    stale_ids =
+      from(e in Episode,
+        where: e.status == :running and is_nil(e.archived_at),
+        left_join: s in EpisodeStep,
+        on: s.episode_id == e.id,
+        group_by: [e.id, e.started_at],
+        having: max(s.created_at) < ^cutoff or (count(s.id) == 0 and e.started_at < ^cutoff),
+        select: e.id
+      )
+
+    from(e in Episode, where: e.id in subquery(stale_ids))
     |> repo().all()
   end
 
