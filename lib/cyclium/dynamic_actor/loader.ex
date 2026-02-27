@@ -23,7 +23,23 @@ defmodule Cyclium.DynamicActor.Loader do
   import Ecto.Query
   alias Cyclium.Schemas.AgentDefinition
 
+  @strategy_cache_table :cyclium_strategy_cache
+
   defp repo, do: Cyclium.repo()
+
+  @doc """
+  Ensures the ETS strategy cache table exists.
+  Called automatically by functions that use the cache.
+  """
+  def ensure_cache_table do
+    case :ets.whereis(@strategy_cache_table) do
+      :undefined ->
+        :ets.new(@strategy_cache_table, [:named_table, :public, :set, read_concurrency: true])
+
+      _ref ->
+        @strategy_cache_table
+    end
+  end
 
   @doc """
   Loads all enabled agent definitions from DB and starts them.
@@ -59,6 +75,7 @@ defmodule Cyclium.DynamicActor.Loader do
   """
   def stop(actor_id) do
     name = process_name(actor_id)
+    invalidate_cache(to_string(actor_id))
 
     case :global.whereis_name(name) do
       :undefined ->
@@ -82,6 +99,7 @@ defmodule Cyclium.DynamicActor.Loader do
   Stops all running dynamic actors.
   """
   def stop_all do
+    clear_cache()
     definitions = repo().all(from(d in AgentDefinition, where: d.enabled == true))
 
     stopped =
@@ -122,14 +140,28 @@ defmodule Cyclium.DynamicActor.Loader do
       end
   """
   def strategy_for(actor_id) do
-    case repo().one(
-           from(d in AgentDefinition,
-             where: d.actor_id == ^to_string(actor_id),
-             select: d.strategy_template
-           )
-         ) do
-      nil -> nil
-      template -> Cyclium.Strategy.TemplateRegistry.resolve(template)
+    actor_id_str = to_string(actor_id)
+    ensure_cache_table()
+
+    case :ets.lookup(@strategy_cache_table, actor_id_str) do
+      [{^actor_id_str, strategy_module}] ->
+        strategy_module
+
+      [] ->
+        case repo().one(
+               from(d in AgentDefinition,
+                 where: d.actor_id == ^actor_id_str,
+                 select: d.strategy_template
+               )
+             ) do
+          nil ->
+            nil
+
+          template ->
+            strategy = Cyclium.Strategy.TemplateRegistry.resolve(template)
+            if strategy, do: cache_strategy(actor_id_str, strategy)
+            strategy
+        end
     end
   rescue
     _ -> nil
@@ -158,6 +190,7 @@ defmodule Cyclium.DynamicActor.Loader do
           "[Cyclium.DynamicActor.Loader] Started dynamic actor #{defn.actor_id} (#{inspect(pid)})"
         )
 
+        cache_strategy_from_definition(defn)
         {:ok, pid}
 
       {:error, {:already_started, pid}} ->
@@ -165,6 +198,7 @@ defmodule Cyclium.DynamicActor.Loader do
           "[Cyclium.DynamicActor.Loader] Dynamic actor #{defn.actor_id} already running"
         )
 
+        cache_strategy_from_definition(defn)
         {:ok, pid}
 
       {:error, reason} = err ->
@@ -252,6 +286,34 @@ defmodule Cyclium.DynamicActor.Loader do
 
   defp to_atom(val) when is_atom(val), do: val
   defp to_atom(val) when is_binary(val), do: String.to_atom(val)
+
+  defp cache_strategy_from_definition(%AgentDefinition{} = defn) do
+    if defn.strategy_template do
+      case Cyclium.Strategy.TemplateRegistry.resolve(defn.strategy_template) do
+        nil -> :ok
+        strategy -> cache_strategy(defn.actor_id, strategy)
+      end
+    end
+  end
+
+  defp cache_strategy(actor_id, strategy_module) do
+    ensure_cache_table()
+    :ets.insert(@strategy_cache_table, {to_string(actor_id), strategy_module})
+  end
+
+  defp invalidate_cache(actor_id) do
+    ensure_cache_table()
+    :ets.delete(@strategy_cache_table, to_string(actor_id))
+  rescue
+    ArgumentError -> :ok
+  end
+
+  defp clear_cache do
+    ensure_cache_table()
+    :ets.delete_all_objects(@strategy_cache_table)
+  rescue
+    ArgumentError -> :ok
+  end
 
   defp validate_strategy_outputs(%AgentDefinition{} = defn) do
     strategy_config =

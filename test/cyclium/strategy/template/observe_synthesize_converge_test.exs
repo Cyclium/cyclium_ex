@@ -95,6 +95,61 @@ defmodule Cyclium.Strategy.Template.ObserveSynthesizeConvergeTest do
     end
   end
 
+  describe "next_step/2 — gather phase with crashing gatherer" do
+    setup do
+      old_registry = Application.get_env(:cyclium, :gatherer_registry, %{})
+
+      on_exit(fn ->
+        Application.put_env(:cyclium, :gatherer_registry, old_registry)
+      end)
+
+      :ok
+    end
+
+    test "catches exception from gatherer and returns error observation" do
+      defmodule CrashingGatherer do
+        def gather(_trigger, _config), do: raise("boom!")
+      end
+
+      Application.put_env(:cyclium, :gatherer_registry, %{
+        "crashing" => CrashingGatherer
+      })
+
+      state = %{
+        phase: :gather,
+        strategy_config: %{"gatherer" => "crashing"},
+        trigger_payload: %{},
+        gathered_data: nil,
+        synthesis_result: nil
+      }
+
+      assert {:observe, data} = ObserveSynthesizeConverge.next_step(state, %{})
+      assert data[:_error] == true
+      assert data[:reason] =~ "error"
+    end
+
+    test "catches throw from gatherer" do
+      defmodule ThrowingGatherer do
+        def gather(_trigger, _config), do: throw(:oops)
+      end
+
+      Application.put_env(:cyclium, :gatherer_registry, %{
+        "throwing" => ThrowingGatherer
+      })
+
+      state = %{
+        phase: :gather,
+        strategy_config: %{"gatherer" => "throwing"},
+        trigger_payload: %{},
+        gathered_data: nil,
+        synthesis_result: nil
+      }
+
+      assert {:observe, data} = ObserveSynthesizeConverge.next_step(state, %{})
+      assert data[:_error] == true
+    end
+  end
+
   describe "converge/2" do
     test "produces findings from synthesis result" do
       state = %{

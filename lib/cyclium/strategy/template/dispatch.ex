@@ -46,7 +46,19 @@ defmodule Cyclium.Strategy.Template.Dispatch do
     gatherer = Cyclium.Gatherer.resolve(gatherer_name)
 
     if gatherer do
-      case gatherer.gather(state.trigger_payload, state.strategy_config) do
+      result =
+        try do
+          gatherer.gather(state.trigger_payload, state.strategy_config)
+        catch
+          kind, reason ->
+            Logger.error(
+              "[Dispatch] Gatherer #{gatherer_name} raised: #{inspect({kind, reason})}"
+            )
+
+            {:error, {kind, reason}}
+        end
+
+      case result do
         {:ok, %{entities: entities}} when is_list(entities) ->
           {:observe, %{entities: entities}}
 

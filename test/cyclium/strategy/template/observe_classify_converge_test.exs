@@ -198,6 +198,73 @@ defmodule Cyclium.Strategy.Template.ObserveClassifyConvergeTest do
     end
   end
 
+  describe "next_step/2 — gather phase with crashing gatherer" do
+    setup do
+      old_registry = Application.get_env(:cyclium, :gatherer_registry, %{})
+
+      on_exit(fn ->
+        Application.put_env(:cyclium, :gatherer_registry, old_registry)
+      end)
+
+      :ok
+    end
+
+    test "catches exception from gatherer and returns error observation" do
+      defmodule OccCrashingGatherer do
+        def gather(_trigger, _config), do: raise("boom!")
+      end
+
+      Application.put_env(:cyclium, :gatherer_registry, %{
+        "crashing" => OccCrashingGatherer
+      })
+
+      state = %{
+        phase: :gather,
+        strategy_config: %{
+          "gatherer" => "crashing",
+          "classify_rules" => [],
+          "default_class" => "default",
+          "default_severity" => "low",
+          "finding_config" => %{}
+        },
+        trigger_payload: %{},
+        gathered_data: nil,
+        classification: nil
+      }
+
+      assert {:observe, data} = ObserveClassifyConverge.next_step(state, %{})
+      assert data[:_error] == true
+      assert data[:reason] =~ "error"
+    end
+
+    test "catches throw from gatherer" do
+      defmodule OccThrowingGatherer do
+        def gather(_trigger, _config), do: throw(:oops)
+      end
+
+      Application.put_env(:cyclium, :gatherer_registry, %{
+        "throwing" => OccThrowingGatherer
+      })
+
+      state = %{
+        phase: :gather,
+        strategy_config: %{
+          "gatherer" => "throwing",
+          "classify_rules" => [],
+          "default_class" => "default",
+          "default_severity" => "low",
+          "finding_config" => %{}
+        },
+        trigger_payload: %{},
+        gathered_data: nil,
+        classification: nil
+      }
+
+      assert {:observe, data} = ObserveClassifyConverge.next_step(state, %{})
+      assert data[:_error] == true
+    end
+  end
+
   describe "converge/2" do
     test "produces ConvergeResult with classification" do
       state = %{
