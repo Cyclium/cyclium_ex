@@ -1,13 +1,19 @@
 defmodule Cyclium.DynamicActor.Watcher do
   @moduledoc """
   Optional GenServer that subscribes to Bus events and automatically
-  refreshes dynamic actors when their DB definitions change.
+  refreshes dynamic actors and dynamic workflows when their DB definitions change.
 
   ## Events handled
 
+  ### Agent definitions
   - `"agent_definition.created"` — loads and starts a new dynamic actor
   - `"agent_definition.updated"` — drains, then reloads the actor from DB
   - `"agent_definition.disabled"` — drains and stops the actor
+
+  ### Workflow definitions
+  - `"workflow_definition.created"` — loads and registers a new dynamic workflow
+  - `"workflow_definition.updated"` — reloads the workflow from DB
+  - `"workflow_definition.disabled"` — unregisters the workflow
 
   ## Usage
 
@@ -20,17 +26,10 @@ defmodule Cyclium.DynamicActor.Watcher do
 
   Then broadcast events from your application when definitions change:
 
-      # After creating a new agent definition:
       Cyclium.Bus.broadcast("agent_definition.created", %{actor_id: "my_monitor"})
+      Cyclium.Bus.broadcast("workflow_definition.created", %{workflow_id: "onboarding"})
 
-      # After updating an existing definition:
-      Cyclium.Bus.broadcast("agent_definition.updated", %{actor_id: "my_monitor"})
-
-      # After disabling a definition:
-      Cyclium.Bus.broadcast("agent_definition.disabled", %{actor_id: "my_monitor"})
-
-  If you don't want automatic refresh, call `Cyclium.DynamicActor.Lifecycle`
-  functions directly instead.
+  If you don't want automatic refresh, call lifecycle/loader functions directly.
   """
 
   use GenServer
@@ -81,6 +80,26 @@ defmodule Cyclium.DynamicActor.Watcher do
     {:noreply, state}
   end
 
+  # --- Workflow definition events ---
+
+  def handle_info({:bus, "workflow_definition.created", payload}, state) do
+    wf_id = extract_workflow_id(payload)
+    if wf_id, do: handle_workflow_created(wf_id)
+    {:noreply, state}
+  end
+
+  def handle_info({:bus, "workflow_definition.updated", payload}, state) do
+    wf_id = extract_workflow_id(payload)
+    if wf_id, do: handle_workflow_updated(wf_id)
+    {:noreply, state}
+  end
+
+  def handle_info({:bus, "workflow_definition.disabled", payload}, state) do
+    wf_id = extract_workflow_id(payload)
+    if wf_id, do: handle_workflow_disabled(wf_id)
+    {:noreply, state}
+  end
+
   def handle_info(_msg, state) do
     {:noreply, state}
   end
@@ -125,5 +144,43 @@ defmodule Cyclium.DynamicActor.Watcher do
           Logger.warning("[Watcher] Could not stop #{actor_id}: #{inspect(reason)}")
       end
     end)
+  end
+
+  # --- Workflow handlers ---
+
+  defp extract_workflow_id(%{workflow_id: id}), do: to_string(id)
+  defp extract_workflow_id(%{"workflow_id" => id}), do: to_string(id)
+  defp extract_workflow_id(_), do: nil
+
+  defp handle_workflow_created(workflow_id) do
+    Logger.info("[Watcher] Loading new dynamic workflow: #{workflow_id}")
+
+    case Cyclium.DynamicWorkflow.Loader.load(workflow_id) do
+      {:ok, _} ->
+        Logger.info("[Watcher] Registered dynamic workflow: #{workflow_id}")
+
+      {:error, reason} ->
+        Logger.error("[Watcher] Failed to load workflow #{workflow_id}: #{inspect(reason)}")
+    end
+  end
+
+  defp handle_workflow_updated(workflow_id) do
+    Logger.info("[Watcher] Reloading dynamic workflow: #{workflow_id}")
+
+    Task.start(fn ->
+      case Cyclium.DynamicWorkflow.Loader.reload(workflow_id) do
+        {:ok, _} ->
+          Logger.info("[Watcher] Reloaded dynamic workflow: #{workflow_id}")
+
+        {:error, reason} ->
+          Logger.error("[Watcher] Failed to reload workflow #{workflow_id}: #{inspect(reason)}")
+      end
+    end)
+  end
+
+  defp handle_workflow_disabled(workflow_id) do
+    Logger.info("[Watcher] Unloading dynamic workflow: #{workflow_id}")
+    Cyclium.DynamicWorkflow.Loader.unload(workflow_id)
+    Logger.info("[Watcher] Unloaded dynamic workflow: #{workflow_id}")
   end
 end

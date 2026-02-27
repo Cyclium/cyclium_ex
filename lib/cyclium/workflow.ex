@@ -82,7 +82,19 @@ defmodule Cyclium.Workflow do
       end)
     end)
 
-    validate_dag!(env, steps)
+    adj = Map.new(steps, fn s -> {s.id, s.depends_on} end)
+
+    case Cyclium.Workflow.DAG.validate!(adj) do
+      :ok ->
+        :ok
+
+      {:error, {:cycle, cycle_node}} ->
+        raise CompileError,
+          file: env.file,
+          line: env.line,
+          description:
+            "#{inspect(env.module)}: circular dependency detected involving step #{inspect(cycle_node)}"
+    end
 
     # Build step data without input_fn (all escapable)
     step_data =
@@ -115,76 +127,6 @@ defmodule Cyclium.Workflow do
           steps: unquote(Macro.escape(step_data)),
           failure_policies: unquote(Macro.escape(policy_map))
         }
-      end
-    end
-  end
-
-  defp validate_dag!(env, steps) do
-    adj = Map.new(steps, fn s -> {s.id, s.depends_on} end)
-
-    case topo_sort(adj, Map.keys(adj)) do
-      {:error, cycle_node} ->
-        raise CompileError,
-          file: env.file,
-          line: env.line,
-          description:
-            "#{inspect(env.module)}: circular dependency detected involving step #{inspect(cycle_node)}"
-
-      {:ok, _order} ->
-        :ok
-    end
-  end
-
-  defp topo_sort(adj, nodes) do
-    state = %{visited: MapSet.new(), in_stack: MapSet.new(), order: []}
-
-    Enum.reduce_while(nodes, {:ok, state}, fn node, {:ok, acc} ->
-      if MapSet.member?(acc.visited, node) do
-        {:cont, {:ok, acc}}
-      else
-        case visit(node, adj, acc) do
-          {:ok, new_acc} -> {:cont, {:ok, new_acc}}
-          {:error, _} = err -> {:halt, err}
-        end
-      end
-    end)
-    |> case do
-      {:ok, state} -> {:ok, Enum.reverse(state.order)}
-      {:error, _} = err -> err
-    end
-  end
-
-  defp visit(node, adj, state) do
-    if MapSet.member?(state.in_stack, node) do
-      {:error, node}
-    else
-      state = %{state | in_stack: MapSet.put(state.in_stack, node)}
-      deps = Map.get(adj, node, [])
-
-      result =
-        Enum.reduce_while(deps, {:ok, state}, fn dep, {:ok, acc} ->
-          if MapSet.member?(acc.visited, dep) do
-            {:cont, {:ok, acc}}
-          else
-            case visit(dep, adj, acc) do
-              {:ok, new_acc} -> {:cont, {:ok, new_acc}}
-              {:error, _} = err -> {:halt, err}
-            end
-          end
-        end)
-
-      case result do
-        {:ok, state} ->
-          {:ok,
-           %{
-             state
-             | visited: MapSet.put(state.visited, node),
-               in_stack: MapSet.delete(state.in_stack, node),
-               order: [node | state.order]
-           }}
-
-        {:error, _} = err ->
-          err
       end
     end
   end

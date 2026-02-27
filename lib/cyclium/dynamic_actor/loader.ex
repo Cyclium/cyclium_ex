@@ -147,6 +147,8 @@ defmodule Cyclium.DynamicActor.Loader do
     expectations = deserialize_expectations(defn)
     name = process_name(defn.actor_id)
 
+    validate_strategy_outputs(defn)
+
     case DynamicSupervisor.start_child(Cyclium.ActorSupervisor, {
            Cyclium.DynamicActor,
            name: name, config: config, expectations: expectations
@@ -250,4 +252,29 @@ defmodule Cyclium.DynamicActor.Loader do
 
   defp to_atom(val) when is_atom(val), do: val
   defp to_atom(val) when is_binary(val), do: String.to_atom(val)
+
+  defp validate_strategy_outputs(%AgentDefinition{} = defn) do
+    strategy_config =
+      case defn.strategy_config do
+        nil -> %{}
+        json when is_binary(json) -> Jason.decode!(json) |> then(& &1)
+        map when is_map(map) -> map
+      end
+
+    case strategy_config do
+      %{"outputs" => types} when is_list(types) ->
+        Enum.each(types, fn type ->
+          unless Cyclium.Output.Adapter.resolve(type) do
+            Logger.warning(
+              "[Cyclium.DynamicActor.Loader] Actor #{defn.actor_id}: output type #{inspect(type)} has no registered adapter"
+            )
+          end
+        end)
+
+      _ ->
+        :ok
+    end
+  rescue
+    _ -> :ok
+  end
 end

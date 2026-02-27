@@ -35,10 +35,29 @@ defmodule Cyclium.WorkflowEngine do
     GenServer.cast(server, {:register_workflow, workflow_module})
   end
 
-  @doc "Start a new workflow instance from a trigger."
+  @doc "Register a dynamic workflow (DB-defined) with pre-built config and input maps."
+  @spec register_dynamic_workflow(GenServer.server(), Config.t(), map()) :: :ok
+  def register_dynamic_workflow(server \\ __MODULE__, config, input_maps \\ %{}) do
+    GenServer.cast(server, {:register_dynamic_workflow, config, input_maps})
+  end
+
+  @doc "Unregister a workflow by workflow_id."
+  @spec unregister_workflow(GenServer.server(), binary()) :: :ok
+  def unregister_workflow(server \\ __MODULE__, workflow_id) do
+    GenServer.cast(server, {:unregister_workflow, workflow_id})
+  end
+
+  @doc "Start a new workflow instance from a trigger (compiled workflow module)."
   @spec start_workflow(GenServer.server(), module(), map()) :: {:ok, binary()} | {:error, term()}
   def start_workflow(server \\ __MODULE__, workflow_module, trigger_data) do
     GenServer.call(server, {:start_workflow, workflow_module, trigger_data})
+  end
+
+  @doc "Start a new dynamic workflow instance by workflow_id."
+  @spec start_dynamic_workflow(GenServer.server(), binary(), map()) ::
+          {:ok, binary()} | {:error, term()}
+  def start_dynamic_workflow(server \\ __MODULE__, workflow_id, trigger_data) do
+    GenServer.call(server, {:start_dynamic_workflow, workflow_id, trigger_data})
   end
 
   # --- GenServer callbacks ---
@@ -50,7 +69,8 @@ defmodule Cyclium.WorkflowEngine do
     state = %{
       workflows: %{},
       workflow_modules: MapSet.new(),
-      retry_timers: %{}
+      retry_timers: %{},
+      input_maps: %{}
     }
 
     state = Enum.reduce(modules, state, &do_register_workflow/2)
@@ -75,8 +95,37 @@ defmodule Cyclium.WorkflowEngine do
   end
 
   @impl true
+  def handle_call({:start_dynamic_workflow, workflow_id, trigger_data}, _from, state) do
+    full_id = "dynamic:#{workflow_id}"
+
+    case resolve_config(full_id, state) do
+      nil ->
+        {:reply, {:error, :not_found}, state}
+
+      config ->
+        case start_workflow_instance(config, trigger_data, state) do
+          {:ok, instance_id, new_state} ->
+            {:reply, {:ok, instance_id}, new_state}
+
+          {:error, _} = err ->
+            {:reply, err, state}
+        end
+    end
+  end
+
+  @impl true
   def handle_cast({:register_workflow, module}, state) do
     {:noreply, do_register_workflow(module, state)}
+  end
+
+  @impl true
+  def handle_cast({:register_dynamic_workflow, config, input_maps}, state) do
+    {:noreply, do_register_dynamic_workflow(config, input_maps, state)}
+  end
+
+  @impl true
+  def handle_cast({:unregister_workflow, workflow_id}, state) do
+    {:noreply, do_unregister_workflow(workflow_id, state)}
   end
 
   @impl true
@@ -128,6 +177,42 @@ defmodule Cyclium.WorkflowEngine do
       end
 
     %{state | workflows: workflows, workflow_modules: MapSet.put(state.workflow_modules, module)}
+  end
+
+  defp do_register_dynamic_workflow(%Config{} = config, input_maps, state) do
+    workflows =
+      case config.trigger do
+        {:event, event_type} ->
+          existing = Map.get(state.workflows, event_type, [])
+          # Avoid duplicate registration
+          filtered = Enum.reject(existing, &(&1.workflow_id == config.workflow_id))
+          Map.put(state.workflows, event_type, [config | filtered])
+
+        :manual ->
+          state.workflows
+      end
+
+    input_maps_state = Map.put(state.input_maps, config.workflow_id, input_maps)
+
+    Logger.info("[Cyclium.WorkflowEngine] Registered dynamic workflow #{config.workflow_id}")
+
+    %{state | workflows: workflows, input_maps: input_maps_state}
+  end
+
+  defp do_unregister_workflow(workflow_id, state) do
+    workflows =
+      state.workflows
+      |> Enum.map(fn {event_type, configs} ->
+        {event_type, Enum.reject(configs, &(&1.workflow_id == workflow_id))}
+      end)
+      |> Enum.reject(fn {_event_type, configs} -> configs == [] end)
+      |> Enum.into(%{})
+
+    input_maps = Map.delete(state.input_maps, workflow_id)
+
+    Logger.info("[Cyclium.WorkflowEngine] Unregistered workflow #{workflow_id}")
+
+    %{state | workflows: workflows, input_maps: input_maps}
   end
 
   defp maybe_trigger_workflow(event_type, payload, state) do
@@ -370,20 +455,7 @@ defmodule Cyclium.WorkflowEngine do
     # Build prior results from completed steps
     prior = build_prior_results(fresh_instance.step_states)
 
-    # Compute input via the workflow module's generated __workflow_step_input__/3
-    workflow_module = String.to_existing_atom(config.workflow_id)
-
-    input =
-      try do
-        workflow_module.__workflow_step_input__(step_atom, fresh_instance.trigger_ref, prior)
-      rescue
-        e ->
-          Logger.warning(
-            "[Cyclium.WorkflowEngine] input_fn failed for step #{step_id}: #{inspect(e)}"
-          )
-
-          %{}
-      end
+    input = resolve_step_input(config, step_atom, fresh_instance.trigger_ref, prior, state)
 
     now = DateTime.utc_now() |> DateTime.truncate(:second)
     actor_id = resolve_actor_id(step_config.actor)
@@ -542,6 +614,32 @@ defmodule Cyclium.WorkflowEngine do
       Enum.find(configs, fn c -> c.workflow_id == workflow_id end)
     end)
   end
+
+  defp resolve_step_input(config, step_atom, trigger_ref, prior, state) do
+    if String.starts_with?(config.workflow_id, "dynamic:") do
+      # Dynamic workflow — resolve via input_map
+      input_maps = Map.get(state.input_maps, config.workflow_id, %{})
+      input_map = Map.get(input_maps, step_atom) || Map.get(input_maps, to_string(step_atom))
+
+      Cyclium.DynamicWorkflow.InputResolver.resolve(input_map, trigger_ref, prior)
+    else
+      # Compiled workflow — call module function
+      workflow_module = String.to_existing_atom(config.workflow_id)
+
+      try do
+        workflow_module.__workflow_step_input__(step_atom, trigger_ref, prior)
+      rescue
+        e ->
+          Logger.warning(
+            "[Cyclium.WorkflowEngine] input_fn failed for step #{step_atom}: #{inspect(e)}"
+          )
+
+          %{}
+      end
+    end
+  end
+
+  defp resolve_actor_id(actor_id) when is_binary(actor_id), do: actor_id
 
   defp resolve_actor_id(actor_module) when is_atom(actor_module) do
     if function_exported?(actor_module, :__cyclium_config__, 0) do

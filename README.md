@@ -10,7 +10,7 @@ Cyclium is an Elixir library for building agentic systems that monitor domains, 
 - **Strategy Pattern** — Pluggable investigation logic with a clear init → observe → converge lifecycle
 - **Episode Runner** — Budget-enforced execution loop with step journaling, checkpointing, and crash recovery
 - **Findings Lifecycle** — Persistent observations with raise/update/clear semantics and upsert-by-key
-- **Output Router** — Deduplicated, adapter-based delivery (email, Slack, webhooks) with approval gates
+- **Output Router** — Deduplicated, adapter-based delivery (email, Slack, webhooks) with approval gates and adapter registry
 - **Event Bus** — Phoenix.PubSub-backed event system connecting actors without coupling
 - **Workflow Engine** — Multi-actor coordination with dependency graphs, failure policies, and retry with backoff
 - **Backpressure Controls** — Per-actor concurrency limits with queue, drop, or shed-oldest overflow policies
@@ -478,6 +478,16 @@ defmodule MyApp.Adapters.Email do
 end
 ```
 
+The adapter registry provides programmatic access:
+
+```elixir
+Cyclium.Output.Adapter.resolve(:email)    # => MyApp.Adapters.Email
+Cyclium.Output.Adapter.resolve("slack")   # => MyApp.Adapters.Slack
+Cyclium.Output.Adapter.all()              # => [:email, :slack]
+```
+
+Dynamic actor strategy templates validate their configured outputs against the registry at load time and log warnings for missing adapters.
+
 ### Bus
 
 The event bus connects actors, LiveViews, and workflows without coupling. It wraps Phoenix.PubSub.
@@ -745,6 +755,83 @@ Cyclium.WorkflowEngine.start_workflow(
   []
 )
 ```
+
+### Dynamic workflows
+
+Dynamic workflows can be defined in the database and registered at runtime — no compiled modules required. They follow the same step-dependency model as compiled workflows but use declarative input mappings instead of Elixir functions.
+
+#### Defining a workflow in the database
+
+Insert a row into `cyclium_workflow_definitions`:
+
+```elixir
+%Cyclium.Schemas.WorkflowDefinition{
+  workflow_id: "vendor_onboarding",
+  trigger_type: "event",
+  trigger_event: "vendor.registration_submitted",
+  steps: Jason.encode!([
+    %{
+      "id" => "compliance_check",
+      "actor_id" => "compliance_monitor",
+      "expectation" => "vendor_risk",
+      "depends_on" => [],
+      "input_map" => %{"vendor_id" => "trigger.vendor_id"},
+      "failure_policy" => "abort"
+    },
+    %{
+      "id" => "connector_setup",
+      "actor_id" => "integration_actor",
+      "expectation" => "setup_connector",
+      "depends_on" => ["compliance_check"],
+      "input_map" => %{
+        "vendor_id" => "trigger.vendor_id",
+        "risk_level" => "prior.compliance_check.classification.primary"
+      },
+      "failure_policy" => "retry",
+      "max_step_attempts" => 2,
+      "backoff_ms" => 30000
+    }
+  ]),
+  enabled: true
+}
+```
+
+#### Input mapping syntax
+
+Dynamic workflows use dot-notation paths instead of Elixir functions:
+
+| Path | Resolves to |
+|------|-------------|
+| `"trigger.order_id"` | `trigger_ref["order_id"]` |
+| `"prior.validate.classification.primary"` | `prior[:validate][:classification]["primary"]` |
+| `"fast"` (no prefix) | Static value `"fast"` |
+
+#### Loading dynamic workflows
+
+```elixir
+# At startup — loads all enabled definitions
+Cyclium.DynamicWorkflow.Loader.load_all()
+
+# Load a single workflow
+Cyclium.DynamicWorkflow.Loader.load("vendor_onboarding")
+
+# Reload after updating the definition in DB
+Cyclium.DynamicWorkflow.Loader.reload("vendor_onboarding")
+
+# Unregister a workflow
+Cyclium.DynamicWorkflow.Loader.unload("vendor_onboarding")
+```
+
+#### Starting dynamic workflows manually
+
+```elixir
+Cyclium.WorkflowEngine.start_dynamic_workflow(
+  "vendor_onboarding",
+  %{"vendor_id" => "v-123"}
+)
+```
+
+Dynamic workflows are event-triggered (via Bus) like compiled workflows. The Watcher also listens for `workflow_definition.created/updated/disabled` events for automatic refresh.
 
 ## Logging and observability
 
@@ -1448,13 +1535,18 @@ children = [
 Then broadcast events when definitions change:
 
 ```elixir
-# After creating/updating/disabling an agent definition:
+# Agent definitions:
 Cyclium.Bus.broadcast("agent_definition.created", %{actor_id: "my_monitor"})
 Cyclium.Bus.broadcast("agent_definition.updated", %{actor_id: "my_monitor"})
 Cyclium.Bus.broadcast("agent_definition.disabled", %{actor_id: "my_monitor"})
+
+# Workflow definitions:
+Cyclium.Bus.broadcast("workflow_definition.created", %{workflow_id: "onboarding"})
+Cyclium.Bus.broadcast("workflow_definition.updated", %{workflow_id: "onboarding"})
+Cyclium.Bus.broadcast("workflow_definition.disabled", %{workflow_id: "onboarding"})
 ```
 
-The Watcher handles each event appropriately — `created` loads the actor, `updated` drains and reloads, `disabled` drains and stops.
+The Watcher handles each event appropriately — `created` loads, `updated` reloads, `disabled` stops/unloads. For actors, updates use drain-and-reload to preserve in-flight episodes.
 
 #### Deploy patterns
 
@@ -1673,8 +1765,9 @@ All tables use `binary_id` primary keys and are SQL Server 2017 compatible (no J
 | `cyclium_workflow_instances` | V3 | Workflow execution tracking and step states |
 | `cyclium_work_claims` | V6 | Lease-based distributed work coordination |
 | `cyclium_agent_definitions` | V7 | DB-stored actor definitions for dynamic actors |
+| `cyclium_workflow_definitions` | V8 | DB-stored workflow definitions for dynamic workflows |
 
-V4 adds `archived_at` to episodes and findings. V5 replaces the non-unique `dedupe_key` index on episodes with a filtered unique index (`WHERE dedupe_key IS NOT NULL AND archived_at IS NULL`) for multi-node coordination. V6 adds the `cyclium_work_claims` table for lease-based distributed coordination across clustered nodes. V7 adds `cyclium_agent_definitions` for dynamic actors and `mode`/`dry_run_opts` columns to episodes for simulation support.
+V4 adds `archived_at` to episodes and findings. V5 replaces the non-unique `dedupe_key` index on episodes with a filtered unique index (`WHERE dedupe_key IS NOT NULL AND archived_at IS NULL`) for multi-node coordination. V6 adds the `cyclium_work_claims` table for lease-based distributed coordination across clustered nodes. V7 adds `cyclium_agent_definitions` for dynamic actors and `mode`/`dry_run_opts` columns to episodes for simulation support. V8 adds `cyclium_workflow_definitions` for dynamic workflows.
 
 ## Window helpers
 

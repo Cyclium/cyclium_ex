@@ -81,12 +81,8 @@ defmodule Cyclium.DynamicActor.Lifecycle do
   - `:timeout` — max wait time in ms for drain (default #{@default_timeout})
   """
   def drain_and_reload(actor_id, opts \\ []) do
-    case drain_and_stop(actor_id, opts) do
-      :ok -> Loader.load(actor_id)
-      {:ok, :force_stopped} -> Loader.load(actor_id)
-      {:error, :not_running} -> Loader.load(actor_id)
-      error -> error
-    end
+    drain_and_stop(actor_id, opts)
+    Loader.load(actor_id)
   end
 
   @doc """

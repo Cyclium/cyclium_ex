@@ -36,6 +36,8 @@ defmodule Cyclium.Strategy.Template.ObserveSynthesizeConverge do
     strategy_config = load_strategy_config(episode.actor_id)
     trigger_payload = extract_trigger_payload(trigger)
 
+    validate_output_adapters(strategy_config, episode.actor_id)
+
     {:ok,
      %{
        phase: :gather,
@@ -306,4 +308,16 @@ defmodule Cyclium.Strategy.Template.ObserveSynthesizeConverge do
   end
 
   defp build_outputs(_, _, _), do: []
+
+  defp validate_output_adapters(%{"outputs" => types}, actor_id) when is_list(types) do
+    Enum.each(types, fn type ->
+      unless Cyclium.Output.Adapter.resolve(type) do
+        Logger.warning(
+          "[ObserveSynthesizeConverge] Actor #{actor_id}: output type #{inspect(type)} has no registered adapter"
+        )
+      end
+    end)
+  end
+
+  defp validate_output_adapters(_, _), do: :ok
 end

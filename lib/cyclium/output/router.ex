@@ -56,7 +56,7 @@ defmodule Cyclium.Output.Router do
   end
 
   defp deliver_via_adapter(output, proposal, episode) do
-    adapter = resolve_adapter(proposal.type)
+    adapter = Cyclium.Output.Adapter.resolve(proposal.type)
 
     if is_nil(adapter) do
       mark_failed(output, "no_adapter", %{type: to_string(proposal.type)})
@@ -94,11 +94,6 @@ defmodule Cyclium.Output.Router do
           {:error, reason}
       end
     end
-  end
-
-  defp resolve_adapter(type) do
-    adapters = Application.get_env(:cyclium, :output_adapters, %{})
-    Map.get(adapters, type) || Map.get(adapters, to_string(type))
   end
 
   defp mark_delivered(output, ref) do
