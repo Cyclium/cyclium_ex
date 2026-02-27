@@ -26,6 +26,37 @@ defmodule TestWorkflows.TwoStep do
   end
 end
 
+defmodule TestWorkflows.Debounced do
+  use Cyclium.Workflow
+
+  workflow do
+    trigger({:event, "entity.updated"})
+    debounce_ms(200)
+    subject_key(:entity_id)
+
+    step(:process,
+      actor: TestWorkflows.FakeActor,
+      expectation: :process_entity,
+      input: fn trigger, _prior -> %{entity_id: trigger["entity_id"] || trigger[:entity_id]} end
+    )
+  end
+end
+
+defmodule TestWorkflows.DebouncedNoSubject do
+  use Cyclium.Workflow
+
+  workflow do
+    trigger({:event, "global.updated"})
+    debounce_ms(200)
+
+    step(:process,
+      actor: TestWorkflows.FakeActor,
+      expectation: :process_global,
+      input: fn _trigger, _prior -> %{} end
+    )
+  end
+end
+
 defmodule TestWorkflows.Parallel do
   use Cyclium.Workflow
 

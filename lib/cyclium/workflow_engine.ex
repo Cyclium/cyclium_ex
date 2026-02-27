@@ -85,7 +85,8 @@ defmodule Cyclium.WorkflowEngine do
       workflows: %{},
       workflow_modules: MapSet.new(),
       retry_timers: %{},
-      input_maps: %{}
+      input_maps: %{},
+      debounce_timers: %{}
     }
 
     state = Enum.reduce(modules, state, &do_register_workflow/2)
@@ -174,6 +175,25 @@ defmodule Cyclium.WorkflowEngine do
   end
 
   @impl true
+  def handle_info({:debounce_fire, key, workflow_id, payload}, state) do
+    state = %{state | debounce_timers: Map.delete(state.debounce_timers, key)}
+
+    config = resolve_config(workflow_id, state)
+
+    state =
+      if config do
+        case start_workflow_instance(config, payload, [], state) do
+          {:ok, _instance_id, new_state} -> new_state
+          {:error, _} -> state
+        end
+      else
+        state
+      end
+
+    {:noreply, state}
+  end
+
+  @impl true
   def handle_info(_msg, state), do: {:noreply, state}
 
   # --- Internal ---
@@ -227,9 +247,18 @@ defmodule Cyclium.WorkflowEngine do
 
     input_maps = Map.delete(state.input_maps, workflow_id)
 
+    # Cancel debounce timers for this workflow
+    {to_cancel, remaining} =
+      Enum.split_with(state.debounce_timers, fn {key, _ref} ->
+        key == workflow_id or match?({^workflow_id, _}, key)
+      end)
+
+    Enum.each(to_cancel, fn {_key, ref} -> Process.cancel_timer(ref) end)
+    debounce_timers = Map.new(remaining)
+
     Logger.info("Unregistered workflow", cyclium_workflow_id: workflow_id)
 
-    %{state | workflows: workflows, input_maps: input_maps}
+    %{state | workflows: workflows, input_maps: input_maps, debounce_timers: debounce_timers}
   end
 
   defp maybe_trigger_workflow(event_type, payload, state) do
@@ -239,11 +268,46 @@ defmodule Cyclium.WorkflowEngine do
 
       configs ->
         Enum.reduce(configs, state, fn config, acc ->
-          case start_workflow_instance(config, payload, [], acc) do
-            {:ok, _instance_id, new_state} -> new_state
-            {:error, _} -> acc
+          case config.debounce_ms do
+            ms when is_integer(ms) and ms > 0 ->
+              debounce_workflow(config, payload, ms, acc)
+
+            _ ->
+              case start_workflow_instance(config, payload, [], acc) do
+                {:ok, _instance_id, new_state} -> new_state
+                {:error, _} -> acc
+              end
           end
         end)
+    end
+  end
+
+  defp debounce_workflow(config, payload, ms, state) do
+    key = workflow_debounce_key(config, payload)
+    state = cancel_workflow_debounce(state, key)
+    ref = Process.send_after(self(), {:debounce_fire, key, config.workflow_id, payload}, ms)
+    put_in(state.debounce_timers[key], ref)
+  end
+
+  defp workflow_debounce_key(config, payload) do
+    case config.subject_key do
+      nil ->
+        config.workflow_id
+
+      key when is_atom(key) ->
+        value = Map.get(payload, key) || Map.get(payload, to_string(key))
+        {config.workflow_id, value}
+    end
+  end
+
+  defp cancel_workflow_debounce(state, key) do
+    case Map.get(state.debounce_timers, key) do
+      nil ->
+        state
+
+      ref ->
+        Process.cancel_timer(ref)
+        %{state | debounce_timers: Map.delete(state.debounce_timers, key)}
     end
   end
 
@@ -604,6 +668,13 @@ defmodule Cyclium.WorkflowEngine do
         WorkflowInstances.update_step_states(instance.id, step_states)
 
         :telemetry.execute([:cyclium, :workflow, :step_started], %{count: 1}, %{
+          workflow_id: config.workflow_id,
+          instance_id: instance.id,
+          step_id: step_atom,
+          episode_id: episode.id
+        })
+
+        Cyclium.Bus.broadcast("workflow.step_started", %{
           workflow_id: config.workflow_id,
           instance_id: instance.id,
           step_id: step_atom,

@@ -10,7 +10,7 @@ defmodule Cyclium.Expectation do
           id: atom(),
           actor_id: atom(),
           domain: atom(),
-          trigger: tuple(),
+          trigger: tuple() | atom() | [tuple() | atom()],
           subscribes_to: [binary()],
           filter: map(),
           debounce_ms: non_neg_integer() | nil,

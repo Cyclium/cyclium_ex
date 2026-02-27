@@ -41,6 +41,8 @@ defmodule Cyclium.Workflow do
       Module.register_attribute(__MODULE__, :cyclium_wf_steps, accumulate: true)
       Module.register_attribute(__MODULE__, :cyclium_wf_failure_policies, accumulate: true)
       Module.register_attribute(__MODULE__, :cyclium_wf_episode_reuse, accumulate: false)
+      Module.register_attribute(__MODULE__, :cyclium_wf_debounce_ms, accumulate: false)
+      Module.register_attribute(__MODULE__, :cyclium_wf_subject_key, accumulate: false)
 
       @before_compile Cyclium.Workflow
     end
@@ -52,6 +54,8 @@ defmodule Cyclium.Workflow do
     policies = Module.get_attribute(env.module, :cyclium_wf_failure_policies) || []
     episode_reuse = Module.get_attribute(env.module, :cyclium_wf_episode_reuse)
     episode_reuse = if episode_reuse == nil, do: true, else: episode_reuse
+    debounce_ms = Module.get_attribute(env.module, :cyclium_wf_debounce_ms)
+    subject_key = Module.get_attribute(env.module, :cyclium_wf_subject_key)
 
     unless trigger do
       raise CompileError,
@@ -129,7 +133,9 @@ defmodule Cyclium.Workflow do
           trigger: unquote(Macro.escape(trigger)),
           steps: unquote(Macro.escape(step_data)),
           failure_policies: unquote(Macro.escape(policy_map)),
-          episode_reuse: unquote(episode_reuse)
+          episode_reuse: unquote(episode_reuse),
+          debounce_ms: unquote(debounce_ms),
+          subject_key: unquote(subject_key)
         }
       end
     end
@@ -146,6 +152,18 @@ defmodule Cyclium.Workflow.DSL do
   defmacro trigger(spec) do
     quote do
       @cyclium_wf_trigger unquote(Macro.escape(spec))
+    end
+  end
+
+  defmacro debounce_ms(ms) do
+    quote do
+      @cyclium_wf_debounce_ms unquote(ms)
+    end
+  end
+
+  defmacro subject_key(key) do
+    quote do
+      @cyclium_wf_subject_key unquote(key)
     end
   end
 

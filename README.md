@@ -112,7 +112,7 @@ EpisodeTask starts
   → EpisodeRunner.execute_loop:
 
     ┌─────────────────────────────────────────────┐
-    │  check_budget → increment_turn              │
+    │  check_budget → check_loop → increment_turn │
     │  strategy.next_step(state, ctx)             │
     │    :done         → journal, set done        │
     │    :converge     → run converge pipeline    │
@@ -169,6 +169,19 @@ end
 - `:drift` — fires when a signature changes (polling-based)
 - `:manual` — fires on explicit request
 - `:workflow` — fires as part of a multi-actor workflow
+- **List** — combine multiple triggers: `[{:event, "client.health_check_requested"}, :workflow]`
+
+**List triggers** allow an expectation to fire from multiple sources. Event subscriptions and schedule timers are extracted from the list automatically. This is the recommended pattern when an expectation participates in a workflow but should also be independently triggerable:
+
+```elixir
+expectation :client_should_be_healthy,
+  trigger: [{:event, "client.health_check_requested"}, :workflow],
+  subject_key: :client_id,
+  debounce_ms: :timer.seconds(3),
+  budget: %{max_turns: 3, max_tokens: 1_000, max_wall_ms: 10_000}
+```
+
+The actor subscribes to `"client.health_check_requested"` for standalone use (with debounce), while the `:workflow` marker documents that workflows can also invoke this expectation. Workflow-triggered episodes bypass the actor GenServer entirely — the workflow engine creates episodes directly — so actor-level debounce/cooldown only applies to event triggers.
 
 **Backpressure options** (`episode_overflow`):
 - `:queue` — buffer excess episodes (default)
@@ -179,7 +192,7 @@ end
 
 | Option | Default | Description |
 |---|---|---|
-| `trigger` | required | What fires the episode |
+| `trigger` | required | What fires the episode. Single trigger or list (e.g. `[{:event, "..."}, :workflow]`) |
 | `filter` | `%{}` | Payload predicates — only fire when all match |
 | `debounce_ms` | `nil` | Coalesce rapid events into one firing |
 | `cooldown_ms` | `nil` | Minimum gap between firings |
@@ -281,7 +294,7 @@ end
 
 Strategies can run multiple turns before converging. `next_step` decides actions, `handle_result` absorbs outcomes — expensive work like LLM calls should be delegated to actions (`:synthesize`, `:tool_call`), not done inside `handle_result`.
 
-This example runs three turns: observe client data → synthesize an LLM summary → converge with findings.
+**Use a `:phase` field in state to drive progression.** This is the recommended pattern — it makes flow explicit, prevents ambiguous matching in `handle_result`, and avoids accidental loops:
 
 ```elixir
 defmodule MyApp.Strategies.ClientAdvisor do
@@ -291,49 +304,45 @@ defmodule MyApp.Strategies.ClientAdvisor do
 
   @impl true
   def init(_episode, trigger) do
-    {:ok, %{client_id: trigger.payload["client_id"], client_data: nil, ai_summary: nil}}
+    client_id = trigger.payload["client_id"]
+    {:ok, %{phase: :gather, client_id: client_id, client_data: nil, ai_summary: nil}}
   end
+
+  # --- next_step: dispatch on phase ---
 
   @impl true
-  def next_step(state, _episode_ctx) do
-    cond do
-      # Turn 3: we have the LLM summary, converge
-      state.ai_summary ->
-        :converge
-
-      # Turn 2: we have client data, request LLM synthesis
-      state.client_data ->
-        {:synthesize, %{
-          system: @system_prompt,
-          user: "Client: #{state.client_data.name}, MRR: $#{state.client_data.mrr}, " <>
-                "Status: #{state.client_data.status}"
-        }}
-
-      # Turn 1: gather client data via observation
-      true ->
-        client = MyApp.Clients.get!(state.client_id)
-        {:observe, %{name: client.name, status: client.status, mrr: client.mrr}}
-    end
+  def next_step(%{phase: :gather} = state, _episode_ctx) do
+    client = MyApp.Clients.get!(state.client_id)
+    {:observe, %{client: %{name: client.name, status: client.status, mrr: client.mrr}}}
   end
+
+  def next_step(%{phase: :synthesize} = state, _episode_ctx) do
+    {:synthesize, %{
+      system_prompt: @system_prompt,
+      user_message: "Client: #{state.client_data.name}, MRR: $#{state.client_data.mrr}"
+    }}
+  end
+
+  def next_step(%{phase: :done}, _episode_ctx), do: :converge
+
+  # --- handle_result: ALWAYS guard on phase ---
 
   @impl true
-  def handle_result(state, %{kind: :observation}, {:ok, data}) do
-    # Observation delivered — store the data for the next turn
-    {:ok, %{state | client_data: data}}
+  def handle_result(%{phase: :gather} = state, _step, {:ok, %{client: data}}) do
+    {:ok, %{state | phase: :synthesize, client_data: data}}
   end
 
-  def handle_result(state, %{kind: :synthesis}, {:ok, %{text: text}}) do
-    # LLM response received — store summary
-    {:ok, %{state | ai_summary: text}}
+  def handle_result(%{phase: :synthesize} = state, _step, {:ok, result}) do
+    summary = if is_map(result), do: result[:text] || result["text"] || inspect(result), else: inspect(result)
+    {:ok, %{state | phase: :done, ai_summary: summary}}
   end
 
-  def handle_result(state, %{kind: :synthesis}, {:error, :rate_limited}) do
-    # Transient failure — retry the same step
+  def handle_result(%{phase: :synthesize} = state, %{kind: :synthesis}, {:error, {_class, _detail}}) do
+    # Transient failure — retry the same step (next_step will re-emit :synthesize)
     {:retry, state}
   end
 
   def handle_result(_state, _step, {:error, reason}) do
-    # Unrecoverable failure — abort the episode
     {:abort, reason}
   end
 
@@ -368,6 +377,74 @@ end
 - `{:abort, reason}` immediately fails the episode with the given reason
 - The `:synthesize` action delegates LLM calls to the app-provided `Cyclium.Synthesizer`, keeping the strategy free of HTTP concerns
 
+#### Multi-step patterns and pitfalls
+
+**Always guard `handle_result` on `:phase`.** The most common multi-step bug is an unguarded `handle_result` clause that matches too broadly, causing the strategy to cycle between phases instead of progressing:
+
+```elixir
+# BAD — matches ANY observation result, even during :synthesize phase
+def handle_result(state, _step, {:ok, %{client: data}}) do
+  {:ok, %{state | phase: :synthesize, client_data: data}}
+end
+
+# BAD — matches ANY success result, could re-trigger gather
+def handle_result(state, _step, {:ok, result}) do
+  {:ok, %{state | phase: :done, ai_summary: inspect(result)}}
+end
+
+# GOOD — each clause is scoped to its phase
+def handle_result(%{phase: :gather} = state, _step, {:ok, %{client: data}}) do
+  {:ok, %{state | phase: :synthesize, client_data: data}}
+end
+
+def handle_result(%{phase: :synthesize} = state, _step, {:ok, result}) do
+  {:ok, %{state | phase: :done, ai_summary: extract_text(result)}}
+end
+```
+
+Without phase guards, here's what happens: observe → handle_result matches the wrong clause → phase doesn't advance → next_step re-emits the same action → loop. The budget will eventually kill it, but you'll burn turns for no reason.
+
+**Handle the no-synthesizer passthrough.** When no `Cyclium.Synthesizer` is configured (or the registry returns `nil` for your actor), the runner passes `prompt_ctx` through as-is to `handle_result` with `{:ok, prompt_ctx}`. Your `:synthesize` phase handler must handle both the LLM response shape AND the raw passthrough:
+
+```elixir
+def handle_result(%{phase: :synthesize} = state, _step, {:ok, result}) do
+  summary =
+    cond do
+      is_binary(result) -> result
+      is_map(result) && Map.has_key?(result, :text) -> result.text
+      is_map(result) && Map.has_key?(result, "text") -> result["text"]
+      true -> inspect(result)  # passthrough — no synthesizer configured
+    end
+
+  {:ok, %{state | phase: :done, ai_summary: summary}}
+end
+```
+
+**Handle both trigger types if your actor can be triggered by workflows.** Workflow-created episodes use `%Cyclium.Trigger.Workflow{input: ...}`, not `%Cyclium.Trigger.Event{payload: ...}`:
+
+```elixir
+def init(_episode, trigger) do
+  client_id =
+    case trigger do
+      %Cyclium.Trigger.Event{payload: %{client_id: id}} -> id
+      %Cyclium.Trigger.Event{payload: payload} -> payload["client_id"]
+      %Cyclium.Trigger.Workflow{input: %{client_id: id}} -> id
+      %Cyclium.Trigger.Workflow{input: input} when is_map(input) -> input["client_id"]
+      _ -> nil
+    end
+
+  {:ok, %{phase: :gather, client_id: client_id}}
+end
+```
+
+#### Loop detection
+
+The episode runner automatically detects repeating step cycles. It fingerprints each `next_step` return value and watches for repeated patterns — a 1-step cycle (A, A, A), a 2-step cycle (A, B, A, B), or longer. When a cycle is detected, the episode fails immediately with `error_class: "loop_detected"`.
+
+This is a safety net, not a substitute for correct phase guards. If loop detection fires, it means your strategy has a bug — fix the root cause (usually a missing phase guard on `handle_result`).
+
+Note that consecutive steps of the **same kind but different data** are fine — the fingerprint includes the full action payload via `:erlang.phash2/1`. A dispatch strategy that emits multiple `:observe` steps with different entity data won't trigger loop detection. Only identical actions repeated in a cycle will.
+
 ### Episodes
 
 An **episode** is one execution of a strategy. It tracks:
@@ -387,7 +464,22 @@ Cyclium.Episodes.list_by_status([:running, :done, :failed])
 Cyclium.Episodes.list_steps(episode_id)   # step journal
 Cyclium.Episodes.get_log(episode_id)      # materialized log
 Cyclium.Episodes.cancel(episode_id)       # cancellation sequence
+
+# List episodes by actor(s)
+Cyclium.Episodes.list_by_actors(["my_actor"], limit: 20, order: :desc)
+
+# Filter by subject — DB-level JSON filtering across trigger types
+# Checks trigger_ref.payload.<key> (event-triggered) and
+# trigger_ref.input.<key> (workflow-triggered) in a single query.
+Cyclium.Episodes.list_by_actors_and_subject(
+  ["client_health_actor", "client_advisor_actor"],
+  :client_id,
+  client.id,
+  limit: 20, order: :desc
+)
 ```
+
+`list_by_actors_and_subject/4` detects the repo adapter at runtime and uses the appropriate JSON text extraction — Postgres `#>>` or SQL Server `JSON_VALUE`. This is the recommended way to fetch episodes for a specific entity — avoids pulling all episodes and filtering in memory.
 
 ### Findings
 
@@ -771,7 +863,9 @@ defmodule MyApp.Workflows.ClientReview do
   use Cyclium.Workflow
 
   workflow do
-    trigger {:event, "client.review_requested"}
+    trigger {:event, "client.updated"}
+    debounce_ms :timer.seconds(3)
+    subject_key :client_id
 
     step :health_check,
       actor: :client_health_actor,
@@ -792,6 +886,8 @@ defmodule MyApp.Workflows.ClientReview do
   end
 end
 ```
+
+**Workflow debounce:** `debounce_ms` and `subject_key` coalesce rapid events before starting the workflow. When `subject_key` is set, each unique subject value gets its own debounce window — client A and client B debounce independently. Without `subject_key`, all events for the workflow share a single timer. Each new event resets the debounce window (trailing-edge). This is useful for workflows that trigger on high-frequency events like `"entity.updated"`.
 
 **Episode reuse (cross-workflow dedup):** By default, workflows reuse recent completed episodes when two workflows trigger the same actor + expectation + input within a 5-minute window. To disable this:
 

@@ -491,17 +491,48 @@ defmodule Cyclium.Actor.Server do
       {:schedule, ms} when is_integer(ms) and ms < @h48_ms -> :h24
       {:schedule, ms} when is_integer(ms) and ms < @w1_ms -> :h48
       {:schedule, _} -> :w1
+      triggers when is_list(triggers) -> infer_window_from_list(triggers)
       _ -> nil
     end
   end
 
-  # Infer subscribes_to from event triggers
+  defp infer_window_from_list(triggers) do
+    Enum.find_value(triggers, fn
+      {:schedule, ms} when is_integer(ms) and ms < @h24_ms -> :h4
+      {:schedule, ms} when is_integer(ms) and ms < @h48_ms -> :h24
+      {:schedule, ms} when is_integer(ms) and ms < @w1_ms -> :h48
+      {:schedule, _} -> :w1
+      _ -> nil
+    end)
+  end
+
+  # Infer subscribes_to from event triggers (supports single or list)
   defp infer_subscriptions(opts) do
     case Keyword.get(opts, :trigger) do
       {:event, event_type} when is_binary(event_type) -> [event_type]
+      triggers when is_list(triggers) -> extract_event_types(triggers)
       _ -> []
     end
   end
+
+  defp extract_event_types(triggers) do
+    Enum.flat_map(triggers, fn
+      {:event, event_type} when is_binary(event_type) -> [event_type]
+      _ -> []
+    end)
+  end
+
+  # Extract schedule trigger from single or list trigger spec
+  defp find_schedule({:schedule, ms} = schedule) when is_integer(ms), do: schedule
+
+  defp find_schedule(triggers) when is_list(triggers) do
+    Enum.find_value(triggers, fn
+      {:schedule, ms} = schedule when is_integer(ms) -> schedule
+      _ -> nil
+    end)
+  end
+
+  defp find_schedule(_), do: nil
 
   defp merge_dry_run_opts(_expectation_dry_run, _fire_overrides, :live), do: nil
 
@@ -530,13 +561,13 @@ defmodule Cyclium.Actor.Server do
   defp start_schedule_timers(state) do
     state.expectations
     |> Enum.reduce(state, fn {_id, expectation}, acc ->
-      case expectation.trigger do
-        {:schedule, interval_ms} when is_integer(interval_ms) ->
+      case find_schedule(expectation.trigger) do
+        {:schedule, interval_ms} ->
           delay = compute_schedule_delay(state.actor_id, expectation.id, interval_ms)
           ref = Process.send_after(self(), {:schedule_fire, expectation.id}, delay)
           put_in(acc.timers[expectation.id], ref)
 
-        _ ->
+        nil ->
           acc
       end
     end)
@@ -576,12 +607,12 @@ defmodule Cyclium.Actor.Server do
   end
 
   defp reschedule_timer(state, expectation) do
-    case expectation.trigger do
-      {:schedule, interval_ms} when is_integer(interval_ms) ->
+    case find_schedule(expectation.trigger) do
+      {:schedule, interval_ms} ->
         ref = Process.send_after(self(), {:schedule_fire, expectation.id}, interval_ms)
         put_in(state.timers[expectation.id], ref)
 
-      _ ->
+      nil ->
         state
     end
   end

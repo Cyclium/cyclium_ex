@@ -59,16 +59,29 @@ defmodule Cyclium.Findings.ExpirationSweep do
   def sweep_expired(batch_size \\ batch_size()) do
     now = DateTime.utc_now() |> DateTime.truncate(:second)
 
-    {count, _} =
-      repo().update_all(
-        from(f in Finding,
-          where: f.status == :active,
-          where: not is_nil(f.expires_at),
-          where: f.expires_at <= ^now,
-          limit: ^batch_size
-        ),
-        set: [status: :cleared, cleared_at: now, updated_at: now]
+    # Select IDs first — update_all doesn't support limit
+    ids =
+      from(f in Finding,
+        where: f.status == :active,
+        where: not is_nil(f.expires_at),
+        where: f.expires_at <= ^now,
+        limit: ^batch_size,
+        select: f.id
       )
+      |> repo().all()
+
+    count =
+      case ids do
+        [] ->
+          0
+
+        ids ->
+          {n, _} =
+            from(f in Finding, where: f.id in ^ids)
+            |> repo().update_all(set: [status: :cleared, cleared_at: now, updated_at: now])
+
+          n
+      end
 
     if count > 0 do
       :telemetry.execute(

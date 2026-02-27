@@ -63,11 +63,15 @@ defmodule Cyclium.EpisodeRunner do
       0 -> :ok
     end
 
-    with :ok <- check_budget(episode) do
+    with :ok <- check_budget(episode),
+         :ok <- check_loop(episode) do
       increment_turn(episode)
       episode_ctx = build_episode_ctx(episode)
 
-      case strategy.next_step(state, episode_ctx) do
+      step_action = strategy.next_step(state, episode_ctx)
+      record_step_kind(step_action)
+
+      case step_action do
         :done ->
           journal_step!(episode, :episode_completed, %{})
           Cyclium.Episodes.update_status(episode.id, :done)
@@ -283,6 +287,29 @@ defmodule Cyclium.EpisodeRunner do
         })
 
         err
+
+      {:error, :loop_detected} = err ->
+        history = Process.get(:cyclium_step_history, [])
+
+        journal_step!(episode, :episode_failed, %{
+          error_class: "loop_detected",
+          error_detail: %{
+            step_fingerprints: history,
+            message: "Repeating step cycle detected — strategy may be stuck"
+          }
+        })
+
+        Cyclium.Episodes.update_status(episode.id, :failed, error_class: "loop_detected")
+
+        Cyclium.Bus.broadcast("episode.failed", %{
+          episode_id: episode.id,
+          actor_id: episode.actor_id,
+          status: :failed,
+          workflow_instance_id: episode.workflow_instance_id,
+          workflow_step_id: episode.workflow_step_id
+        })
+
+        err
     end
   end
 
@@ -485,6 +512,52 @@ defmodule Cyclium.EpisodeRunner do
     end
   end
 
+  # Detect repeating cycles of any length (1, 2, 3, ...) in the step history.
+  # e.g. [A, B, A, B] is a 2-step cycle repeated twice → loop.
+  # e.g. [A, A, A] is a 1-step cycle repeated 3 times → loop.
+  # We require 2 full repetitions of the cycle to trigger.
+  @max_history 8
+
+  defp check_loop(episode) do
+    history = Process.get(:cyclium_step_history, [])
+
+    if repeating_cycle?(history) do
+      Logger.error(
+        "Loop detected: repeating step cycle in episode",
+        cyclium_episode_id: episode.id
+      )
+
+      {:error, :loop_detected}
+    else
+      :ok
+    end
+  end
+
+  defp repeating_cycle?(history) when length(history) < 3, do: false
+
+  defp repeating_cycle?(history) do
+    # Check for cycles of length 1, 2, 3, ... up to half the history
+    max_cycle = div(length(history), 2)
+
+    Enum.any?(1..max_cycle, fn cycle_len ->
+      cycle = Enum.take(history, cycle_len)
+      repetitions = div(length(history), cycle_len)
+
+      repetitions >= 2 and
+        Enum.chunk_every(Enum.take(history, cycle_len * repetitions), cycle_len)
+        |> Enum.all?(&(&1 == cycle))
+    end)
+  end
+
+  # Track by content hash — same step kind with different data is fine,
+  # only identical actions (same kind + same args) indicate a loop.
+  defp record_step_kind(step_action) do
+    fingerprint = :erlang.phash2(step_action)
+
+    history = Process.get(:cyclium_step_history, [])
+    Process.put(:cyclium_step_history, [fingerprint | Enum.take(history, @max_history - 1)])
+  end
+
   defp increment_turn(%Episode{} = episode) do
     import Ecto.Query
 
@@ -568,7 +641,11 @@ defmodule Cyclium.EpisodeRunner do
     inserted
   end
 
-  # full_debug: store everything as-is
+  # full_debug: store everything, but redact prompt content from synthesis steps
+  defp filter_step_data(:full_debug, :synthesis, _tool_name, args, result) do
+    {redact_synthesis_args(args), result}
+  end
+
   defp filter_step_data(:full_debug, _kind, _tool_name, args, result), do: {args, result}
 
   # timeline: store tool name + summary only, not full payloads
@@ -577,7 +654,7 @@ defmodule Cyclium.EpisodeRunner do
   end
 
   defp filter_step_data(:timeline, :synthesis, _tool_name, args, result) do
-    {summarize_result(args), summarize_result(result)}
+    {redact_synthesis_args(summarize_result(args)), summarize_result(result)}
   end
 
   defp filter_step_data(:timeline, :observation, _tool_name, _args, result) do
@@ -592,6 +669,27 @@ defmodule Cyclium.EpisodeRunner do
        when strategy in [:none, :summary_only] do
     {nil, nil}
   end
+
+  @synthesis_redact_keys ~w(system_prompt system user user_message prompt message)
+
+  defp redact_synthesis_args(nil), do: nil
+
+  defp redact_synthesis_args(args) when is_map(args) do
+    Enum.reduce(args, args, fn {k, _v}, acc ->
+      key_str = to_string(k)
+
+      if key_str in @synthesis_redact_keys do
+        Map.put(acc, k, "[REDACTED]")
+      else
+        case Map.get(acc, k) do
+          v when is_map(v) -> Map.put(acc, k, redact_synthesis_args(v))
+          _ -> acc
+        end
+      end
+    end)
+  end
+
+  defp redact_synthesis_args(args), do: args
 
   defp summarize_result(nil), do: nil
 

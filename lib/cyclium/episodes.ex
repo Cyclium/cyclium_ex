@@ -168,6 +168,71 @@ defmodule Cyclium.Episodes do
     |> repo().one()
   end
 
+  @doc """
+  List episodes for the given actor(s) where the trigger payload or workflow
+  input contains the given subject key/value pair.
+
+  Queries two JSON paths to cover both trigger types:
+  - Event-triggered: `trigger_ref.payload.<key>`
+  - Workflow-triggered: `trigger_ref.input.<key>`
+
+  Detects the repo adapter at runtime and uses the appropriate JSON text
+  extraction — Postgres `#>>` or SQL Server `JSON_VALUE`.
+
+  ## Options
+
+  Same as `list_by_actors/2`.
+  """
+  def list_by_actors_and_subject(actor_ids, subject_key, subject_value, opts \\ [])
+      when is_list(actor_ids) do
+    limit = Keyword.get(opts, :limit, 20)
+    offset = Keyword.get(opts, :offset, 0)
+    order = Keyword.get(opts, :order, :desc)
+    statuses = Keyword.get(opts, :statuses)
+    str_key = to_string(subject_key)
+    str_val = to_string(subject_value)
+
+    base =
+      from(e in Episode,
+        where: e.actor_id in ^actor_ids,
+        order_by: [{^order, e.started_at}],
+        limit: ^limit,
+        offset: ^offset
+      )
+
+    base
+    |> where_json_subject(str_key, str_val)
+    |> maybe_filter_statuses(statuses)
+    |> maybe_exclude_archived(opts)
+    |> repo().all()
+  end
+
+  defp where_json_subject(query, key, val) do
+    case repo().__adapter__() do
+      Ecto.Adapters.Postgres ->
+        event_path = ["payload", key]
+        workflow_path = ["input", key]
+
+        where(
+          query,
+          [e],
+          fragment("?#>>?", e.trigger_ref, ^event_path) == ^val or
+            fragment("?#>>?", e.trigger_ref, ^workflow_path) == ^val
+        )
+
+      _sql_server ->
+        event_path = "$.payload.#{key}"
+        workflow_path = "$.input.#{key}"
+
+        where(
+          query,
+          [e],
+          fragment("JSON_VALUE(?, ?)", e.trigger_ref, ^event_path) == ^val or
+            fragment("JSON_VALUE(?, ?)", e.trigger_ref, ^workflow_path) == ^val
+        )
+    end
+  end
+
   defp maybe_filter_statuses(query, nil), do: query
   defp maybe_filter_statuses(query, []), do: query
   defp maybe_filter_statuses(query, statuses), do: where(query, [e], e.status in ^statuses)

@@ -454,4 +454,115 @@ defmodule Cyclium.WorkflowEngineTest do
       :telemetry.detach("test-wf-step-started-#{inspect(ref)}")
     end
   end
+
+  describe "workflow debounce" do
+    test "debounce delays workflow start" do
+      {:ok, engine} =
+        WorkflowEngine.start_link(
+          name: :"engine_debounce_#{System.unique_integer([:positive])}",
+          workflows: [TestWorkflows.Debounced]
+        )
+
+      Cyclium.FakeRunner.reset()
+
+      # Fire event
+      Cyclium.Bus.broadcast("entity.updated", %{entity_id: "E-1"})
+      Process.sleep(50)
+
+      # Should NOT have started yet (200ms debounce)
+      assert length(Cyclium.FakeRunner.enqueued_episodes()) == 0
+
+      # Wait for debounce to fire
+      Process.sleep(250)
+
+      # Now it should have started
+      assert length(Cyclium.FakeRunner.enqueued_episodes()) == 1
+
+      GenServer.stop(engine)
+    end
+
+    test "rapid events coalesce into single workflow" do
+      {:ok, engine} =
+        WorkflowEngine.start_link(
+          name: :"engine_coalesce_#{System.unique_integer([:positive])}",
+          workflows: [TestWorkflows.Debounced]
+        )
+
+      Cyclium.FakeRunner.reset()
+
+      # Fire 3 rapid events for the same subject
+      Cyclium.Bus.broadcast("entity.updated", %{entity_id: "E-2"})
+      Process.sleep(50)
+      Cyclium.Bus.broadcast("entity.updated", %{entity_id: "E-2"})
+      Process.sleep(50)
+      Cyclium.Bus.broadcast("entity.updated", %{entity_id: "E-2"})
+
+      # Wait for debounce (200ms from last event)
+      Process.sleep(300)
+
+      # Only one workflow should have started
+      assert length(Cyclium.FakeRunner.enqueued_episodes()) == 1
+
+      GenServer.stop(engine)
+    end
+
+    test "different subjects debounce independently" do
+      {:ok, engine} =
+        WorkflowEngine.start_link(
+          name: :"engine_subjects_#{System.unique_integer([:positive])}",
+          workflows: [TestWorkflows.Debounced]
+        )
+
+      Cyclium.FakeRunner.reset()
+
+      # Fire events for two different subjects
+      Cyclium.Bus.broadcast("entity.updated", %{entity_id: "E-A"})
+      Cyclium.Bus.broadcast("entity.updated", %{entity_id: "E-B"})
+
+      # Wait for debounce
+      Process.sleep(300)
+
+      # Two workflows should have started (one per subject)
+      assert length(Cyclium.FakeRunner.enqueued_episodes()) == 2
+
+      GenServer.stop(engine)
+    end
+
+    test "no debounce fires immediately", %{engine: _engine} do
+      # Use the setup engine (TwoStep has no debounce)
+      Cyclium.FakeRunner.reset()
+      before_count = length(Cyclium.FakeRunner.enqueued_episodes())
+
+      Cyclium.Bus.broadcast("order.created", %{"order_id" => "ORD-NODEBNC"})
+      Process.sleep(50)
+
+      # Should have fired immediately (at least 1 new episode)
+      after_count = length(Cyclium.FakeRunner.enqueued_episodes())
+      assert after_count > before_count
+    end
+
+    test "debounce without subject_key uses workflow_id as key" do
+      {:ok, engine} =
+        WorkflowEngine.start_link(
+          name: :"engine_nosub_#{System.unique_integer([:positive])}",
+          workflows: [TestWorkflows.DebouncedNoSubject]
+        )
+
+      Cyclium.FakeRunner.reset()
+
+      # Fire 3 rapid events (no subject_key, all coalesce)
+      Cyclium.Bus.broadcast("global.updated", %{data: "a"})
+      Process.sleep(50)
+      Cyclium.Bus.broadcast("global.updated", %{data: "b"})
+      Process.sleep(50)
+      Cyclium.Bus.broadcast("global.updated", %{data: "c"})
+
+      Process.sleep(300)
+
+      # Only one workflow
+      assert length(Cyclium.FakeRunner.enqueued_episodes()) == 1
+
+      GenServer.stop(engine)
+    end
+  end
 end

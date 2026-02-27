@@ -53,7 +53,10 @@ defmodule Cyclium.WorkClaims do
   Attempt to acquire a lease on `dedupe_key`. Returns `{:ok, :passthrough}`
   if work claims are not configured.
   """
-  def gate_acquire(dedupe_key, owner_node, opts \\ []) do
+  def gate_acquire(dedupe_key, owner_node, opts \\ [])
+  def gate_acquire(nil, _owner_node, _opts), do: {:ok, :passthrough}
+
+  def gate_acquire(dedupe_key, owner_node, opts) do
     case impl() do
       nil ->
         {:ok, :passthrough}
@@ -97,6 +100,8 @@ defmodule Cyclium.WorkClaims do
   @doc """
   Renew the lease for `dedupe_key`. No-op if unconfigured.
   """
+  def gate_renew(nil, _owner_node, _lease_seconds), do: :ok
+
   def gate_renew(dedupe_key, owner_node, lease_seconds) do
     case impl() do
       nil ->
@@ -121,6 +126,8 @@ defmodule Cyclium.WorkClaims do
   @doc """
   Mark work as completed. No-op if unconfigured.
   """
+  def gate_complete(nil, _owner_node), do: :ok
+
   def gate_complete(dedupe_key, owner_node) do
     case impl() do
       nil ->
@@ -141,7 +148,10 @@ defmodule Cyclium.WorkClaims do
   @doc """
   Mark work as failed. No-op if unconfigured.
   """
-  def gate_fail(dedupe_key, owner_node, error_detail \\ %{}) do
+  def gate_fail(dedupe_key, owner_node, error_detail \\ %{})
+  def gate_fail(nil, _owner_node, _error_detail), do: :ok
+
+  def gate_fail(dedupe_key, owner_node, error_detail) do
     case impl() do
       nil ->
         :ok
