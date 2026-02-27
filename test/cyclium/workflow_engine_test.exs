@@ -291,6 +291,130 @@ defmodule Cyclium.WorkflowEngineTest do
     end
   end
 
+  describe "dry run mode" do
+    test "instance stores mode and dry_run_opts", %{engine: engine} do
+      {:ok, instance_id} =
+        WorkflowEngine.start_workflow(engine, TestWorkflows.TwoStep, %{"order_id" => "ORD-DR1"},
+          mode: :dry_run,
+          dry_run_opts: %{persist_findings: true}
+        )
+
+      instance = WorkflowInstances.get!(instance_id)
+      assert instance.mode == "dry_run"
+      assert instance.dry_run_opts == %{"persist_findings" => true}
+    end
+
+    test "step episodes inherit mode from instance", %{engine: engine} do
+      {:ok, instance_id} =
+        WorkflowEngine.start_workflow(engine, TestWorkflows.TwoStep, %{"order_id" => "ORD-DR2"},
+          mode: :dry_run,
+          dry_run_opts: %{persist_findings: "experiment1"}
+        )
+
+      instance = WorkflowInstances.get!(instance_id)
+      validate_episode_id = instance.step_states["validate"]["episode_id"]
+
+      episode = Cyclium.Episodes.get!(validate_episode_id)
+      assert episode.mode == "dry_run"
+      assert episode.dry_run_opts == %{"persist_findings" => "experiment1"}
+    end
+
+    test "subsequent steps inherit mode after completion", %{engine: engine} do
+      {:ok, instance_id} =
+        WorkflowEngine.start_workflow(engine, TestWorkflows.TwoStep, %{"order_id" => "ORD-DR3"},
+          mode: :dry_run
+        )
+
+      instance = WorkflowInstances.get!(instance_id)
+      validate_episode_id = instance.step_states["validate"]["episode_id"]
+
+      # Complete validate step
+      Cyclium.Bus.broadcast("episode.completed", %{
+        episode_id: validate_episode_id,
+        actor_id: "fake_actor",
+        status: :done,
+        workflow_instance_id: instance_id,
+        workflow_step_id: "validate"
+      })
+
+      Process.sleep(50)
+
+      instance = WorkflowInstances.get!(instance_id)
+      fulfill_episode_id = instance.step_states["fulfill"]["episode_id"]
+
+      fulfill_episode = Cyclium.Episodes.get!(fulfill_episode_id)
+      assert fulfill_episode.mode == "dry_run"
+    end
+
+    test "default mode is live", %{engine: engine} do
+      {:ok, instance_id} =
+        WorkflowEngine.start_workflow(engine, TestWorkflows.TwoStep, %{"order_id" => "ORD-DR4"})
+
+      instance = WorkflowInstances.get!(instance_id)
+      assert instance.mode == "live"
+      assert instance.dry_run_opts == nil
+    end
+
+    test "per-step overrides merge into episode dry_run_opts", %{engine: engine} do
+      {:ok, instance_id} =
+        WorkflowEngine.start_workflow(engine, TestWorkflows.TwoStep, %{"order_id" => "ORD-DR6"},
+          mode: :dry_run,
+          dry_run_opts: %{
+            persist_findings: true,
+            steps: %{
+              "validate" => %{
+                "synthesis_override" => %{"class" => "approved"}
+              },
+              "fulfill" => %{
+                "tool_overrides" => %{"erp.create_order" => %{"id" => "mock-123"}},
+                "persist_findings" => "experiment1"
+              }
+            }
+          }
+        )
+
+      instance = WorkflowInstances.get!(instance_id)
+      validate_episode_id = instance.step_states["validate"]["episode_id"]
+
+      validate_episode = Cyclium.Episodes.get!(validate_episode_id)
+      # Global persist_findings + step-specific synthesis_override, no "steps" key
+      assert validate_episode.dry_run_opts["persist_findings"] == true
+      assert validate_episode.dry_run_opts["synthesis_override"] == %{"class" => "approved"}
+      refute Map.has_key?(validate_episode.dry_run_opts, "steps")
+    end
+
+    test "per-step override overrides global key", %{engine: engine} do
+      {:ok, instance_id} =
+        WorkflowEngine.start_workflow(engine, TestWorkflows.TwoStep, %{"order_id" => "ORD-DR7"},
+          mode: :dry_run,
+          dry_run_opts: %{
+            persist_findings: true,
+            steps: %{
+              "validate" => %{"persist_findings" => "validate_only"}
+            }
+          }
+        )
+
+      instance = WorkflowInstances.get!(instance_id)
+      validate_episode_id = instance.step_states["validate"]["episode_id"]
+
+      validate_episode = Cyclium.Episodes.get!(validate_episode_id)
+      # Step-level persist_findings overrides global
+      assert validate_episode.dry_run_opts["persist_findings"] == "validate_only"
+    end
+
+    test "dry run with custom string prefix in opts", %{engine: engine} do
+      {:ok, instance_id} =
+        WorkflowEngine.start_workflow(engine, TestWorkflows.TwoStep, %{"order_id" => "ORD-DR5"},
+          mode: :dry_run,
+          dry_run_opts: [persist_findings: "batch_test"]
+        )
+
+      instance = WorkflowInstances.get!(instance_id)
+      assert instance.dry_run_opts == %{"persist_findings" => "batch_test"}
+    end
+  end
+
   describe "telemetry" do
     test "emits workflow started telemetry", %{engine: engine} do
       ref = make_ref()

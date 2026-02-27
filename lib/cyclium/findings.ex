@@ -111,6 +111,41 @@ defmodule Cyclium.Findings do
     end
   end
 
+  @doc """
+  Mode-aware query: automatically prefixes `:actor` and `:finding_key` filters
+  when the episode is a dry run with `persist_findings` enabled.
+
+  In live mode (or dry runs without persist_findings), behaves identically to `active_for/2`.
+  In dry run mode with a persist prefix, rewrites filter keys so strategies can
+  transparently read their own dry run findings.
+
+  ## Examples
+
+      # In a strategy's init/2, pass the episode to get mode-aware results:
+      Cyclium.Findings.active_for_mode([actor: "po_monitor"], episode)
+
+      # Dry run with persist_findings: true → queries actor: "dry_run:po_monitor"
+      # Live mode → queries actor: "po_monitor" (unchanged)
+  """
+  def active_for_mode(filters, episode, opts \\ []) when is_list(filters) do
+    alias Cyclium.DryRun.FindingPrefixer
+
+    case FindingPrefixer.persist_prefix(episode) do
+      nil ->
+        active_for(filters, opts)
+
+      prefix ->
+        prefixed_filters =
+          Enum.map(filters, fn
+            {:actor, actor_id} -> {:actor, "#{prefix}:#{actor_id}"}
+            {:finding_key, key} -> {:finding_key, "#{prefix}:#{key}"}
+            other -> other
+          end)
+
+        active_for(prefixed_filters, opts)
+    end
+  end
+
   # --- Write path (Phase 3) ---
 
   @doc """

@@ -47,17 +47,32 @@ defmodule Cyclium.WorkflowEngine do
     GenServer.cast(server, {:unregister_workflow, workflow_id})
   end
 
-  @doc "Start a new workflow instance from a trigger (compiled workflow module)."
-  @spec start_workflow(GenServer.server(), module(), map()) :: {:ok, binary()} | {:error, term()}
-  def start_workflow(server \\ __MODULE__, workflow_module, trigger_data) do
-    GenServer.call(server, {:start_workflow, workflow_module, trigger_data})
+  @doc """
+  Start a new workflow instance from a trigger (compiled workflow module).
+
+  ## Options
+
+    - `:mode` — `:live` (default) or `:dry_run`
+    - `:dry_run_opts` — map of dry run options (e.g., `%{persist_findings: true}`)
+  """
+  @spec start_workflow(GenServer.server(), module(), map(), keyword()) ::
+          {:ok, binary()} | {:error, term()}
+  def start_workflow(server \\ __MODULE__, workflow_module, trigger_data, opts \\ []) do
+    GenServer.call(server, {:start_workflow, workflow_module, trigger_data, opts})
   end
 
-  @doc "Start a new dynamic workflow instance by workflow_id."
-  @spec start_dynamic_workflow(GenServer.server(), binary(), map()) ::
+  @doc """
+  Start a new dynamic workflow instance by workflow_id.
+
+  ## Options
+
+    - `:mode` — `:live` (default) or `:dry_run`
+    - `:dry_run_opts` — map of dry run options (e.g., `%{persist_findings: true}`)
+  """
+  @spec start_dynamic_workflow(GenServer.server(), binary(), map(), keyword()) ::
           {:ok, binary()} | {:error, term()}
-  def start_dynamic_workflow(server \\ __MODULE__, workflow_id, trigger_data) do
-    GenServer.call(server, {:start_dynamic_workflow, workflow_id, trigger_data})
+  def start_dynamic_workflow(server \\ __MODULE__, workflow_id, trigger_data, opts \\ []) do
+    GenServer.call(server, {:start_dynamic_workflow, workflow_id, trigger_data, opts})
   end
 
   # --- GenServer callbacks ---
@@ -82,10 +97,10 @@ defmodule Cyclium.WorkflowEngine do
   end
 
   @impl true
-  def handle_call({:start_workflow, workflow_module, trigger_data}, _from, state) do
+  def handle_call({:start_workflow, workflow_module, trigger_data, opts}, _from, state) do
     config = workflow_module.__workflow_config__()
 
-    case start_workflow_instance(config, trigger_data, state) do
+    case start_workflow_instance(config, trigger_data, opts, state) do
       {:ok, instance_id, new_state} ->
         {:reply, {:ok, instance_id}, new_state}
 
@@ -95,7 +110,7 @@ defmodule Cyclium.WorkflowEngine do
   end
 
   @impl true
-  def handle_call({:start_dynamic_workflow, workflow_id, trigger_data}, _from, state) do
+  def handle_call({:start_dynamic_workflow, workflow_id, trigger_data, opts}, _from, state) do
     full_id = "dynamic:#{workflow_id}"
 
     case resolve_config(full_id, state) do
@@ -103,7 +118,7 @@ defmodule Cyclium.WorkflowEngine do
         {:reply, {:error, :not_found}, state}
 
       config ->
-        case start_workflow_instance(config, trigger_data, state) do
+        case start_workflow_instance(config, trigger_data, opts, state) do
           {:ok, instance_id, new_state} ->
             {:reply, {:ok, instance_id}, new_state}
 
@@ -222,7 +237,7 @@ defmodule Cyclium.WorkflowEngine do
 
       configs ->
         Enum.reduce(configs, state, fn config, acc ->
-          case start_workflow_instance(config, payload, acc) do
+          case start_workflow_instance(config, payload, [], acc) do
             {:ok, _instance_id, new_state} -> new_state
             {:error, _} -> acc
           end
@@ -230,8 +245,16 @@ defmodule Cyclium.WorkflowEngine do
     end
   end
 
-  defp start_workflow_instance(%Config{} = config, trigger_data, state) do
+  defp start_workflow_instance(%Config{} = config, trigger_data, opts, state) do
     now = DateTime.utc_now() |> DateTime.truncate(:second)
+    mode = Keyword.get(opts, :mode, :live)
+
+    dry_run_opts =
+      case Keyword.get(opts, :dry_run_opts) do
+        nil -> nil
+        m when is_map(m) -> m |> Enum.map(fn {k, v} -> {to_string(k), v} end) |> Map.new()
+        l when is_list(l) -> l |> Enum.map(fn {k, v} -> {to_string(k), v} end) |> Map.new()
+      end
 
     # Initialize step_states for all steps
     initial_step_states =
@@ -245,6 +268,8 @@ defmodule Cyclium.WorkflowEngine do
       workflow_id: config.workflow_id,
       trigger_ref: trigger_data,
       status: :running,
+      mode: to_string(mode),
+      dry_run_opts: dry_run_opts,
       step_states: initial_step_states,
       started_at: now,
       created_at: now,
@@ -260,7 +285,8 @@ defmodule Cyclium.WorkflowEngine do
 
         Cyclium.Bus.broadcast("workflow.started", %{
           workflow_id: config.workflow_id,
-          instance_id: instance.id
+          instance_id: instance.id,
+          mode: instance.mode
         })
 
         # Start ready steps (those with no dependencies)
@@ -460,7 +486,10 @@ defmodule Cyclium.WorkflowEngine do
     now = DateTime.utc_now() |> DateTime.truncate(:second)
     actor_id = resolve_actor_id(step_config.actor)
 
-    # Create episode with workflow correlation
+    # Create episode with workflow correlation (inheriting mode from instance)
+    # Merge per-step overrides from dry_run_opts["steps"][step_id] into the episode opts
+    episode_dry_run_opts = resolve_step_dry_run_opts(fresh_instance.dry_run_opts, step_id)
+
     episode_attrs = %{
       actor_id: actor_id,
       expectation_id: to_string(step_config.expectation),
@@ -472,6 +501,8 @@ defmodule Cyclium.WorkflowEngine do
       },
       workflow_instance_id: instance.id,
       workflow_step_id: step_id,
+      mode: fresh_instance.mode || "live",
+      dry_run_opts: episode_dry_run_opts,
       status: :running,
       started_at: now
     }
@@ -521,7 +552,8 @@ defmodule Cyclium.WorkflowEngine do
 
     Cyclium.Bus.broadcast("workflow.completed", %{
       workflow_id: config.workflow_id,
-      instance_id: instance.id
+      instance_id: instance.id,
+      mode: instance.mode
     })
 
     state
@@ -559,7 +591,8 @@ defmodule Cyclium.WorkflowEngine do
     Cyclium.Bus.broadcast("workflow.failed", %{
       workflow_id: config.workflow_id,
       instance_id: instance.id,
-      step_id: step_id
+      step_id: step_id,
+      mode: instance.mode
     })
 
     state
@@ -647,6 +680,27 @@ defmodule Cyclium.WorkflowEngine do
       to_string(config.actor_id)
     else
       actor_module |> Module.split() |> List.last() |> Macro.underscore()
+    end
+  end
+
+  # Merges per-step overrides from dry_run_opts["steps"][step_id] into the
+  # base dry_run_opts. Step-specific keys override global keys. The "steps"
+  # key itself is removed from the episode's opts (it's workflow-level only).
+  defp resolve_step_dry_run_opts(nil, _step_id), do: nil
+
+  defp resolve_step_dry_run_opts(dry_run_opts, step_id) when is_map(dry_run_opts) do
+    step_overrides =
+      case Map.get(dry_run_opts, "steps") do
+        %{} = steps -> Map.get(steps, step_id) || %{}
+        _ -> %{}
+      end
+
+    dry_run_opts
+    |> Map.delete("steps")
+    |> Map.merge(step_overrides)
+    |> case do
+      empty when map_size(empty) == 0 -> nil
+      merged -> merged
     end
   end
 

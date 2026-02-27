@@ -10,6 +10,7 @@ defmodule Cyclium.EpisodeRunner do
 
   require Logger
 
+  alias Cyclium.DryRun.FindingPrefixer
   alias Cyclium.Schemas.{Episode, EpisodeStep}
 
   defp repo, do: Cyclium.repo()
@@ -300,12 +301,14 @@ defmodule Cyclium.EpisodeRunner do
 
   defp post_converge(episode, converge_result) do
     dry_run? = episode.mode == "dry_run"
+    findings = converge_result.findings || []
 
-    # Step 1+2+3: Persist findings (skipped in dry run)
+    # Step 1+2+3: Persist findings (journaled in dry run; optionally persisted with prefix)
     if dry_run? do
-      journal_dry_run_findings(episode, converge_result.findings || [])
+      journal_dry_run_findings(episode, findings)
+      maybe_persist_dry_run_findings(episode, findings)
     else
-      persist_findings(episode, converge_result.findings || [])
+      persist_findings(episode, findings)
     end
 
     # Step 4: Deliver outputs via OutputRouter (skipped in dry run)
@@ -670,6 +673,13 @@ defmodule Cyclium.EpisodeRunner do
         result_ref: Map.merge(detail, %{"_dry_run" => true})
       })
     end)
+  end
+
+  defp maybe_persist_dry_run_findings(episode, findings) do
+    case FindingPrefixer.persist_prefix(episode) do
+      nil -> :ok
+      prefix -> persist_findings(episode, FindingPrefixer.prefix_actions(findings, prefix))
+    end
   end
 
   defp journal_dry_run_outputs(episode, outputs) do

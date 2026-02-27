@@ -1567,7 +1567,7 @@ Dry runs let you test what an actor would do without producing real findings, ou
 
 An episode with `mode: "dry_run"`:
 - Runs the full strategy loop (same `next_step` → `handle_result` cycle)
-- **Findings are NOT persisted** — but are journaled for inspection
+- **Findings are NOT persisted** — but are journaled for inspection (optionally persistable with prefixed keys via `persist_findings` option)
 - **Outputs are NOT delivered** — but output proposals are journaled
 - **Tool calls and synthesis can be overridden** with mock responses
 - **Steps are fully journaled** — complete audit trail of what *would have* happened
@@ -1617,6 +1617,39 @@ expectation :evaluate_project,
 
 3. **No overrides** — real tool calls and synthesis execute normally, only findings and outputs are skipped
 
+### Persisting findings in dry runs
+
+By default, dry run findings are journaled but not persisted to the DB. You can opt in to persistence with prefixed keys so dry run findings don't collide with live ones:
+
+```elixir
+# Persist with default "dry_run" prefix (finding_key becomes "dry_run:po_stalled:PO-123")
+Cyclium.Episodes.force_fire("po_monitor", "check_pos",
+  mode: :dry_run,
+  overrides: %{persist_findings: true}
+)
+
+# Persist with custom prefix (finding_key becomes "experiment1:po_stalled:PO-123")
+Cyclium.Episodes.force_fire("po_monitor", "check_pos",
+  mode: :dry_run,
+  overrides: %{persist_findings: "experiment1"}
+)
+```
+
+The prefix is also applied to `actor_id` on persisted findings, so `Findings.active_for(actor: "po_monitor")` won't return dry run findings — use `Findings.active_for(actor: "dry_run:po_monitor")` instead, or use the mode-aware helper:
+
+```elixir
+# Automatically prefixes filters when episode is a dry run with persist_findings enabled:
+Cyclium.Findings.active_for_mode([actor: "po_monitor"], episode)
+```
+
+This can also be set at the expectation level in the actor DSL:
+
+```elixir
+expectation :check_pos,
+  trigger: {:interval, 300_000},
+  dry_run: [persist_findings: true]
+```
+
 ### Via the Actor GenServer
 
 You can also fire dry runs through the actor's message interface:
@@ -1632,6 +1665,47 @@ The episode completes with full step journal. In the UI:
 - Step timeline shows which steps used mock overrides (`_dry_run: true` in result_ref)
 - Findings show what *would have* been created
 - Full step-by-step debugging available
+
+### Workflow dry runs
+
+Workflows support dry run mode — every step episode inherits the mode and opts from the workflow instance:
+
+```elixir
+# Compiled workflow
+WorkflowEngine.start_workflow(MyWorkflow, trigger_data, mode: :dry_run)
+
+# Dynamic workflow with finding persistence
+WorkflowEngine.start_dynamic_workflow("order_flow", trigger_data,
+  mode: :dry_run,
+  dry_run_opts: %{persist_findings: true}
+)
+```
+
+All step episodes will run in dry run mode: findings are journaled (and optionally persisted with prefix), outputs are skipped. The workflow instance itself stores `mode` and `dry_run_opts` (V9 migration), so retries and subsequent steps also inherit the mode.
+
+Per-step overrides allow targeting different mocks and options to individual steps:
+
+```elixir
+WorkflowEngine.start_dynamic_workflow("vendor_onboarding", trigger_data,
+  mode: :dry_run,
+  dry_run_opts: %{
+    persist_findings: true,
+    steps: %{
+      "compliance_check" => %{
+        "synthesis_override" => %{"class" => "high_risk", "severity" => "high"}
+      },
+      "connector_setup" => %{
+        "tool_overrides" => %{"erp.create_vendor" => %{"id" => "mock-v-001"}},
+        "persist_findings" => "experiment1"
+      }
+    }
+  }
+)
+```
+
+Global keys (like `persist_findings: true`) apply to all steps. Step-specific keys override globals for that step. The `"steps"` key itself is stripped from each episode's opts.
+
+Strategies in workflow steps can use `Findings.active_for_mode/3` to transparently query their own dry run findings when `persist_findings` is enabled.
 
 ## Tools
 
@@ -1762,7 +1836,7 @@ All tables use `binary_id` primary keys and are SQL Server 2017 compatible (no J
 | `cyclium_findings` | V1 | Persistent observations with raise/update/clear lifecycle |
 | `cyclium_outputs` | V1 | Output proposals, delivery status, deduplication |
 | `cyclium_episode_logs` | V2 | Materialized human-readable logs |
-| `cyclium_workflow_instances` | V3 | Workflow execution tracking and step states |
+| `cyclium_workflow_instances` | V3, V9 | Workflow execution tracking, step states, dry run mode |
 | `cyclium_work_claims` | V6 | Lease-based distributed work coordination |
 | `cyclium_agent_definitions` | V7 | DB-stored actor definitions for dynamic actors |
 | `cyclium_workflow_definitions` | V8 | DB-stored workflow definitions for dynamic workflows |

@@ -13,6 +13,8 @@ defmodule Cyclium.Schemas.WorkflowInstance do
     field(:step_states, :map, default: %{})
     field(:started_at, :utc_datetime)
     field(:finished_at, :utc_datetime)
+    field(:mode, :string, default: "live")
+    field(:dry_run_opts, :map)
     field(:created_at, :utc_datetime)
     field(:updated_at, :utc_datetime)
   end
@@ -24,6 +26,8 @@ defmodule Cyclium.Schemas.WorkflowInstance do
       :trigger_ref,
       :status,
       :step_states,
+      :mode,
+      :dry_run_opts,
       :started_at,
       :finished_at,
       :created_at,
