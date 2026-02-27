@@ -165,11 +165,25 @@ defmodule Cyclium.Actor.Server do
   def init_state(module, _opts) do
     config = module.__cyclium_config__()
     raw_expectations = module.__cyclium_expectations__()
+    init_state_from_config(config, raw_expectations, module)
+  end
 
+  @doc """
+  Initializes actor state from a config map and raw expectations list.
+
+  Used by DynamicActor to start actors from DB-defined configurations
+  without requiring a compiled actor module.
+
+  `raw_expectations` can be `{id, opts_keyword_list}` tuples (same as from the DSL)
+  or `%Expectation{}` structs.
+  """
+  def init_state_from_config(config, raw_expectations, module \\ nil) do
     expectations =
       raw_expectations
-      |> Enum.map(fn {id, opts} ->
-        {id, build_expectation(id, config, opts)}
+      |> Enum.map(fn
+        {id, opts} when is_list(opts) -> {id, build_expectation(id, config, opts)}
+        {id, %Expectation{} = exp} -> {id, exp}
+        %Expectation{id: id} = exp -> {id, exp}
       end)
       |> Map.new()
 
@@ -182,7 +196,8 @@ defmodule Cyclium.Actor.Server do
       queued_episodes: :queue.new(),
       timers: %{},
       debounce_timers: %{},
-      cooldowns: %{}
+      cooldowns: %{},
+      draining: false
     }
 
     # Subscribe to bus for event-triggered expectations
@@ -195,6 +210,10 @@ defmodule Cyclium.Actor.Server do
   end
 
   def handle_info({:force_fire, expectation_id}, state) do
+    handle_info({:force_fire, expectation_id, []}, state)
+  end
+
+  def handle_info({:force_fire, expectation_id, opts}, state) do
     state =
       case Map.get(state.expectations, expectation_id) do
         nil ->
@@ -207,7 +226,7 @@ defmodule Cyclium.Actor.Server do
             reason: "manual:#{System.system_time(:millisecond)}"
           }
 
-          maybe_fire_episode(state, expectation, trigger_ref)
+          maybe_fire_episode(state, expectation, trigger_ref, opts)
       end
 
     {:noreply, state}
@@ -310,6 +329,27 @@ defmodule Cyclium.Actor.Server do
     {:noreply, state}
   end
 
+  # --- Drain ---
+
+  @doc """
+  Enters drain mode: stops accepting new episodes but lets active ones finish.
+  Schedule timers are cancelled. Event triggers are ignored.
+  """
+  def enter_drain(state) do
+    Logger.info("[#{state.actor_id}] Entering drain mode")
+
+    # Cancel all schedule timers
+    state =
+      Enum.reduce(state.timers, state, fn {id, _ref}, acc ->
+        cancel_timer(acc, id)
+      end)
+
+    # Cancel all debounce timers
+    Enum.each(state.debounce_timers, fn {_key, ref} -> Process.cancel_timer(ref) end)
+
+    %{state | draining: true, debounce_timers: %{}}
+  end
+
   # --- Reconciliation ---
 
   defp reconcile_state(state, new_config, raw_expectations) do
@@ -398,7 +438,8 @@ defmodule Cyclium.Actor.Server do
       description: Keyword.get(opts, :description, ""),
       synthesizer: Keyword.get(opts, :synthesizer) || config.synthesizer,
       recovery_policy: Keyword.get(opts, :recovery_policy, :fail),
-      window: Keyword.get(opts, :window) || infer_window(opts)
+      window: Keyword.get(opts, :window) || infer_window(opts),
+      dry_run: Keyword.get(opts, :dry_run)
     }
   end
 
@@ -422,6 +463,30 @@ defmodule Cyclium.Actor.Server do
       {:event, event_type} when is_binary(event_type) -> [event_type]
       _ -> []
     end
+  end
+
+  defp merge_dry_run_opts(_expectation_dry_run, _fire_overrides, :live), do: nil
+
+  defp merge_dry_run_opts(expectation_dry_run, fire_overrides, :dry_run) do
+    exp_opts = normalize_dry_run_opts(expectation_dry_run)
+    fire_opts = normalize_dry_run_opts(fire_overrides)
+
+    case {exp_opts, fire_opts} do
+      {nil, nil} -> nil
+      {nil, f} -> f
+      {e, nil} -> e
+      {e, f} -> Map.merge(e, f)
+    end
+  end
+
+  defp normalize_dry_run_opts(nil), do: nil
+
+  defp normalize_dry_run_opts(opts) when is_list(opts) do
+    opts |> Enum.map(fn {k, v} -> {to_string(k), v} end) |> Map.new()
+  end
+
+  defp normalize_dry_run_opts(opts) when is_map(opts) do
+    opts |> Enum.map(fn {k, v} -> {to_string(k), v} end) |> Map.new()
   end
 
   defp start_schedule_timers(state) do
@@ -567,12 +632,28 @@ defmodule Cyclium.Actor.Server do
     end
   end
 
-  defp maybe_fire_episode(state, expectation, trigger_ref) do
+  defp maybe_fire_episode(state, expectation, trigger_ref, opts \\ []) do
+    # Reject new episodes while draining
+    if state.draining do
+      Logger.debug("[#{state.actor_id}] Rejecting episode fire — draining")
+      state
+    else
+      do_fire_episode(state, expectation, trigger_ref, opts)
+    end
+  end
+
+  defp do_fire_episode(state, expectation, trigger_ref, opts) do
     active_count = MapSet.size(state.active_episodes)
     max = state.config.max_concurrent_episodes
 
     # Set cooldown
     state = set_cooldown(state, expectation, trigger_ref)
+
+    mode = Keyword.get(opts, :mode, :live)
+    fire_overrides = Keyword.get(opts, :overrides)
+
+    # Merge dry_run_opts: fire-time overrides take priority over expectation-level
+    dry_run_opts = merge_dry_run_opts(expectation.dry_run, fire_overrides, mode)
 
     now = DateTime.utc_now() |> DateTime.truncate(:second)
 
@@ -585,6 +666,8 @@ defmodule Cyclium.Actor.Server do
       status: :running,
       budget: normalize_budget(expectation.budget),
       log_strategy: to_string(expectation.log_strategy),
+      mode: to_string(mode),
+      dry_run_opts: dry_run_opts,
       started_at: now
     }
 

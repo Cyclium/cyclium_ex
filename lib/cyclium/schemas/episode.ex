@@ -34,6 +34,8 @@ defmodule Cyclium.Schemas.Episode do
     field(:finished_at, :utc_datetime)
     field(:queued_at, :utc_datetime)
     field(:archived_at, :utc_datetime)
+    field(:mode, :string, default: "live")
+    field(:dry_run_opts, :map)
 
     has_many(:steps, Cyclium.Schemas.EpisodeStep)
     has_many(:checkpoints, Cyclium.Schemas.EpisodeCheckpoint)
@@ -67,7 +69,9 @@ defmodule Cyclium.Schemas.Episode do
       :started_at,
       :finished_at,
       :queued_at,
-      :archived_at
+      :archived_at,
+      :mode,
+      :dry_run_opts
     ])
     |> validate_required([:actor_id, :expectation_id, :trigger_type, :status, :started_at])
     |> unique_constraint(:dedupe_key, name: :cyclium_episodes_dedupe_key_index)

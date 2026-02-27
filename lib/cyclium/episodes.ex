@@ -14,6 +14,68 @@ defmodule Cyclium.Episodes do
     |> repo().insert()
   end
 
+  @doc """
+  Force-fires an episode for an actor/expectation pair.
+
+  ## Options
+
+    - `:mode` — `:live` (default) or `:dry_run`
+    - `:trigger_payload` — map of trigger data
+    - `:overrides` — dry run overrides map with optional keys:
+      - `"tool_overrides"` — `%{"capability.action" => mock_result}`
+      - `"synthesis_override"` — mock synthesis result
+
+  Returns `{:ok, episode}` or `{:error, reason}`.
+  """
+  def force_fire(actor_id, expectation_id, opts \\ []) do
+    mode = Keyword.get(opts, :mode, :live)
+    payload = Keyword.get(opts, :trigger_payload, %{})
+    overrides = Keyword.get(opts, :overrides)
+
+    dry_run_opts =
+      if mode == :dry_run and overrides do
+        overrides
+        |> Enum.map(fn {k, v} -> {to_string(k), v} end)
+        |> Map.new()
+      end
+
+    now = DateTime.utc_now() |> DateTime.truncate(:second)
+
+    attrs = %{
+      actor_id: to_string(actor_id),
+      expectation_id: to_string(expectation_id),
+      trigger_type: :manual,
+      trigger_ref: %{
+        "requested_by" => "force_fire",
+        "reason" => "manual:#{System.system_time(:millisecond)}",
+        "payload" => payload
+      },
+      status: :running,
+      mode: to_string(mode),
+      dry_run_opts: dry_run_opts,
+      started_at: now
+    }
+
+    case create(attrs) do
+      {:ok, episode} ->
+        runner().enqueue(episode.id)
+
+        Cyclium.Bus.broadcast("expectation.triggered", %{
+          actor_id: actor_id,
+          expectation_id: expectation_id,
+          episode_id: episode.id,
+          mode: mode
+        })
+
+        {:ok, episode}
+
+      error ->
+        error
+    end
+  end
+
+  defp runner, do: Application.get_env(:cyclium, :runner, Cyclium.Runner.OTP)
+
   def get!(id) do
     repo().get!(Episode, id)
   end

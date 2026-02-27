@@ -1201,6 +1201,346 @@ end
 2. Kill a node mid-episode, wait for lease expiry, verify another node steals and completes
 3. Monitor telemetry — `steal` events should only appear after the kill, never during normal operation
 
+## Dynamic Actors
+
+Dynamic actors allow agent definitions to be stored in the database and hydrated into running supervised processes at runtime — without requiring compiled Elixir modules.
+
+### When to use dynamic actors
+
+- Users create custom monitoring agents through a UI
+- Agent definitions are stored per-tenant
+- Agent configurations change frequently without requiring code deploys
+
+### How it works
+
+A single `Cyclium.DynamicActor` GenServer module serves all DB-defined actors. Each instance is started with different config/expectations args under `Cyclium.ActorSupervisor`. This avoids runtime module pollution — no `Module.create/3` needed.
+
+```
+Cyclium.ActorSupervisor (DynamicSupervisor)
+├── MyApp.Agents.CompiledActor    (compiled, use Cyclium.Actor)
+├── Cyclium.DynamicActor          (from DB: "user_monitor_1")
+└── Cyclium.DynamicActor          (from DB: "user_monitor_2")
+```
+
+### Defining an agent in the database
+
+Insert a row into `cyclium_agent_definitions`:
+
+```elixir
+%Cyclium.Schemas.AgentDefinition{
+  actor_id: "custom_health_check",
+  domain: "monitoring",
+  strategy_ref: "MyApp.Strategies.GenericHealthCheck",
+  config: Jason.encode!(%{max_concurrent_episodes: 3, episode_overflow: "queue"}),
+  expectations: Jason.encode!([
+    %{
+      id: "check_target",
+      trigger: %{type: "schedule", interval_ms: 300_000},
+      budget: %{max_turns: 5, max_tokens: 10_000, max_wall_ms: 60_000},
+      log_strategy: "timeline"
+    }
+  ]),
+  enabled: true
+}
+```
+
+### Loading dynamic actors
+
+```elixir
+# At application startup — loads all enabled definitions
+Cyclium.DynamicActor.Loader.load_all()
+
+# Load a single actor
+Cyclium.DynamicActor.Loader.load("custom_health_check")
+
+# Reload after updating the definition in DB
+Cyclium.DynamicActor.Loader.reload("custom_health_check")
+
+# Stop a dynamic actor
+Cyclium.DynamicActor.Loader.stop("custom_health_check")
+```
+
+### Strategy resolution
+
+Dynamic actors use the same `:strategy_registry` as compiled actors. The registry's `strategy_for/2` receives the dynamic actor's `actor_id` and `expectation_id` and must return a strategy module. The `strategy_ref` field in the DB definition is available for the registry to use as a lookup hint.
+
+### Database table
+
+`cyclium_agent_definitions` (V7 migration):
+
+| Column | Type | Notes |
+|--------|------|-------|
+| `id` | uuid | PK |
+| `actor_id` | string(255) | Unique identifier |
+| `domain` | string(255) | Grouping domain |
+| `config` | text (JSON) | `max_concurrent_episodes`, `episode_overflow`, etc. |
+| `expectations` | text (JSON) | Array of expectation definitions |
+| `strategy_ref` | string(255) | Strategy module or registry lookup key |
+| `strategy_template` | string(255) | Template name (e.g. `"observe_synthesize_converge"`) |
+| `strategy_config` | text (JSON) | Template parameters (gatherer, system_prompt, finding_config, etc.) |
+| `enabled` | boolean | Soft toggle |
+| `created_by` | string(255) | User/tenant |
+
+### Strategy templates (data-driven strategies)
+
+Dynamic actors use **strategy templates** — built-in parameterized strategy modules that are configured via `strategy_config` JSON in the DB. The compiled app defines what data sources (gatherers) and outputs are available; the DB definition composes them.
+
+| Template | Pattern | Use Case |
+|----------|---------|----------|
+| `"observe_synthesize_converge"` | Gather → LLM → Finding | Health checks, advisors, analysis |
+| `"observe_classify_converge"` | Gather → Rules → Finding | Threshold/rule-based monitoring |
+| `"dispatch"` | Load entities → Broadcast events | Fan-out triggers |
+
+#### Gatherers
+
+Gatherers are compiled modules that know how to collect domain-specific data. The compiled app implements and registers them:
+
+```elixir
+defmodule MyApp.Gatherers.ProjectData do
+  @behaviour Cyclium.Gatherer
+
+  @impl true
+  def gather(trigger_payload, _opts) do
+    project_id = trigger_payload["project_id"]
+    project = Repo.get!(Project, project_id)
+    orders = load_orders(project_id)
+    {:ok, %{project: project, orders: orders, order_count: length(orders)}}
+  end
+end
+```
+
+Register in app config:
+
+```elixir
+config :cyclium, :gatherer_registry, %{
+  "project_data" => MyApp.Gatherers.ProjectData,
+  "client_metrics" => MyApp.Gatherers.ClientMetrics
+}
+```
+
+#### Observe → Synthesize → Converge
+
+The main workhorse. Gathers data, sends to LLM, maps result to findings:
+
+```elixir
+%AgentDefinition{
+  actor_id: "project_health_dynamic",
+  strategy_template: "observe_synthesize_converge",
+  strategy_config: Jason.encode!(%{
+    "gatherer" => "project_data",
+    "system_prompt" => "You are a project health analyst. Evaluate the project data and classify its health status.",
+    "finding_config" => %{
+      "actor_id_field" => "project_health_dynamic",
+      "finding_key_template" => "project:health:${subject_id}",
+      "class_field" => "class",
+      "severity_field" => "severity",
+      "summary_field" => "summary",
+      "subject_kind" => "project",
+      "subject_id_key" => "project_id"
+    },
+    "outputs" => ["email"]
+  }),
+  expectations: Jason.encode!([
+    %{id: "evaluate", trigger: %{type: "event", event_type: "project.check_requested"}}
+  ])
+}
+```
+
+#### Observe → Classify → Converge
+
+Rule-based classification without LLM. Rules are evaluated in order, first match wins:
+
+```elixir
+%AgentDefinition{
+  actor_id: "client_risk_monitor",
+  strategy_template: "observe_classify_converge",
+  strategy_config: Jason.encode!(%{
+    "gatherer" => "client_metrics",
+    "classify_rules" => [
+      %{"field" => "mrr", "op" => "lt", "value" => 500, "class" => "at_risk", "severity" => "high"},
+      %{"field" => "last_login_days_ago", "op" => "gt", "value" => 30, "class" => "inactive", "severity" => "medium"}
+    ],
+    "default_class" => "healthy",
+    "default_severity" => "low",
+    "finding_config" => %{
+      "finding_key_template" => "client:risk:${subject_id}",
+      "subject_kind" => "client",
+      "subject_id_key" => "client_id"
+    }
+  })
+}
+```
+
+Rule operators: `lt`, `gt`, `eq`, `neq`, `in`, `not_in`.
+
+#### Dispatch
+
+Fan-out pattern. Calls a gatherer that returns a list of entities, broadcasts an event for each:
+
+```elixir
+%AgentDefinition{
+  actor_id: "project_dispatch",
+  strategy_template: "dispatch",
+  strategy_config: Jason.encode!(%{
+    "gatherer" => "active_projects",
+    "event_type" => "project.check_requested",
+    "entity_id_field" => "id",
+    "entity_payload_fields" => ["id", "name"]
+  })
+}
+```
+
+#### Strategy resolution for dynamic actors
+
+The consuming app's strategy registry can delegate to the template system:
+
+```elixir
+defmodule MyApp.StrategyRegistry do
+  def strategy_for("my_compiled_actor", _exp), do: MyApp.Strategies.Compiled
+
+  # Fallback: resolve from DB template
+  def strategy_for(actor_id, _exp) do
+    case Cyclium.DynamicActor.Loader.strategy_for(actor_id) do
+      nil -> raise "No strategy for #{actor_id}"
+      strategy -> strategy
+    end
+  end
+end
+```
+
+Custom templates can be registered in app config:
+
+```elixir
+config :cyclium, :strategy_templates, %{
+  "my_custom_template" => MyApp.Strategies.CustomTemplate
+}
+```
+
+### Lifecycle and draining
+
+Safe lifecycle operations for updating dynamic actors without losing in-flight episodes.
+
+#### Drain and reload
+
+```elixir
+# Graceful: waits for active episodes to finish, then reloads from DB
+Cyclium.DynamicActor.Lifecycle.drain_and_reload("my_monitor")
+
+# Graceful stop (waits for episodes)
+Cyclium.DynamicActor.Lifecycle.drain_and_stop("my_monitor")
+
+# Instant stop/reload (existing behavior, may lose in-flight episodes)
+Cyclium.DynamicActor.Loader.stop("my_monitor")
+Cyclium.DynamicActor.Loader.reload("my_monitor")
+```
+
+#### Event-driven refresh
+
+Start the optional `Watcher` in your supervision tree for automatic refresh:
+
+```elixir
+children = [
+  # ... your app ...
+  Cyclium.DynamicActor.Watcher
+]
+```
+
+Then broadcast events when definitions change:
+
+```elixir
+# After creating/updating/disabling an agent definition:
+Cyclium.Bus.broadcast("agent_definition.created", %{actor_id: "my_monitor"})
+Cyclium.Bus.broadcast("agent_definition.updated", %{actor_id: "my_monitor"})
+Cyclium.Bus.broadcast("agent_definition.disabled", %{actor_id: "my_monitor"})
+```
+
+The Watcher handles each event appropriately — `created` loads the actor, `updated` drains and reloads, `disabled` drains and stops.
+
+#### Deploy patterns
+
+**Rolling deploy:**
+
+```elixir
+# In application stop callback or shutdown hook:
+Cyclium.DynamicActor.Lifecycle.stop_all(drain: true, timeout: 30_000)
+```
+
+**Blue-green:** The new instance calls `Loader.load_all()` on startup. Global name registration ensures only one instance runs per actor across the cluster.
+
+## Dry Runs / Simulations
+
+Dry runs let you test what an actor would do without producing real findings, outputs, or side effects. Useful for validating agent configurations and "what if" testing.
+
+### How dry runs work
+
+An episode with `mode: "dry_run"`:
+- Runs the full strategy loop (same `next_step` → `handle_result` cycle)
+- **Findings are NOT persisted** — but are journaled for inspection
+- **Outputs are NOT delivered** — but output proposals are journaled
+- **Tool calls and synthesis can be overridden** with mock responses
+- **Steps are fully journaled** — complete audit trail of what *would have* happened
+- **Episode is tagged** as `mode: "dry_run"` for filtering in UI and metrics
+
+### Force-firing a dry run
+
+```elixir
+# Simplest: real tool calls and synthesis, skip persist
+Cyclium.Episodes.force_fire("project_health_actor", "evaluate_project",
+  mode: :dry_run,
+  trigger_payload: %{project_id: 123}
+)
+
+# With mock overrides — skip real API calls
+Cyclium.Episodes.force_fire("project_health_actor", "evaluate_project",
+  mode: :dry_run,
+  trigger_payload: %{project_id: 123},
+  overrides: %{
+    tool_overrides: %{"erp.get_orders" => [%{id: 1, status: "complete"}]},
+    synthesis_override: %{"class" => "healthy", "severity" => "low"}
+  }
+)
+```
+
+### Override resolution (layered)
+
+Three sources of overrides, checked in priority order:
+
+```
+fire-time overrides > expectation-level DSL > real execution
+```
+
+1. **Fire-time overrides** — passed to `force_fire/3` as `:overrides` option
+2. **Expectation-level DSL** — defined in the actor definition:
+
+```elixir
+expectation :evaluate_project,
+  trigger: {:event, "project_health.check_requested"},
+  dry_run: [
+    tool_overrides: %{
+      {"erp", "get_orders"} => {:ok, %{orders: []}}
+    },
+    synthesis_override: {:ok, %{"class" => "healthy"}}
+  ]
+```
+
+3. **No overrides** — real tool calls and synthesis execute normally, only findings and outputs are skipped
+
+### Via the Actor GenServer
+
+You can also fire dry runs through the actor's message interface:
+
+```elixir
+GenServer.cast(MyApp.Agents.ProjectHealth, {:force_fire, :evaluate_project, mode: :dry_run})
+```
+
+### Dry run results
+
+The episode completes with full step journal. In the UI:
+- "DRY RUN" badge on the episode
+- Step timeline shows which steps used mock overrides (`_dry_run: true` in result_ref)
+- Findings show what *would have* been created
+- Full step-by-step debugging available
+
 ## Tools
 
 External capabilities are registered as tools implementing `Cyclium.Tool`. Use `use Cyclium.Tool` for sensible defaults — the only required callback is `call/3`:
@@ -1332,8 +1672,9 @@ All tables use `binary_id` primary keys and are SQL Server 2017 compatible (no J
 | `cyclium_episode_logs` | V2 | Materialized human-readable logs |
 | `cyclium_workflow_instances` | V3 | Workflow execution tracking and step states |
 | `cyclium_work_claims` | V6 | Lease-based distributed work coordination |
+| `cyclium_agent_definitions` | V7 | DB-stored actor definitions for dynamic actors |
 
-V4 adds `archived_at` to episodes and findings. V5 replaces the non-unique `dedupe_key` index on episodes with a filtered unique index (`WHERE dedupe_key IS NOT NULL AND archived_at IS NULL`) for multi-node coordination. V6 adds the `cyclium_work_claims` table for lease-based distributed coordination across clustered nodes.
+V4 adds `archived_at` to episodes and findings. V5 replaces the non-unique `dedupe_key` index on episodes with a filtered unique index (`WHERE dedupe_key IS NOT NULL AND archived_at IS NULL`) for multi-node coordination. V6 adds the `cyclium_work_claims` table for lease-based distributed coordination across clustered nodes. V7 adds `cyclium_agent_definitions` for dynamic actors and `mode`/`dry_run_opts` columns to episodes for simulation support.
 
 ## Window helpers
 

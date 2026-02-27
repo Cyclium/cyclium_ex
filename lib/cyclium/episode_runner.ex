@@ -78,67 +78,36 @@ defmodule Cyclium.EpisodeRunner do
 
           tool_name = "#{capability}.#{action}"
 
-          case Cyclium.ToolExec.call(capability, action, args, %{episode: episode}) do
-            {:ok, result, cost, redacted} ->
-              step =
-                journal_step!(episode, :tool_call, %{
-                  tool_name: tool_name,
-                  args_redacted: redacted.args_redacted,
-                  result_ref: redacted.result_redacted,
-                  cost_tokens: cost
-                })
-
-              increment_budget(episode, cost)
-              handle_strategy_result(episode, strategy, state, step, {:ok, result}, started_at)
-
-            {:error, _reason} = err ->
+          case dry_run_tool_override(episode, tool_name) do
+            {:mock, mock_result} ->
               step =
                 journal_step!(episode, :tool_call, %{
                   tool_name: tool_name,
                   args_redacted: args,
-                  error_class: "tool_error"
+                  result_ref: %{"_dry_run" => true, "mock" => inspect(mock_result)}
                 })
-
-              handle_strategy_result(episode, strategy, state, step, err, started_at)
-          end
-
-        {:synthesize, prompt_ctx} ->
-          :telemetry.execute([:cyclium, :step, :synthesis], %{count: 1}, %{episode_id: episode.id})
-
-          case resolve_synthesizer() do
-            nil ->
-              Logger.warning(
-                "[Cyclium] No :synthesizer configured — :synthesize step will pass prompt_ctx through as-is"
-              )
-
-              step = journal_step!(episode, :synthesis, %{args_redacted: prompt_ctx})
 
               handle_strategy_result(
                 episode,
                 strategy,
                 state,
                 step,
-                {:ok, prompt_ctx},
+                {:ok, mock_result},
                 started_at
               )
 
-            synthesizer ->
-              episode_ctx = build_episode_ctx(episode)
-
-              case synthesizer.synthesize(prompt_ctx, episode_ctx) do
-                {:ok, result} ->
-                  token_cost =
-                    if function_exported?(synthesizer, :estimate_tokens, 1),
-                      do: synthesizer.estimate_tokens(prompt_ctx),
-                      else: 0
-
+            :real ->
+              case Cyclium.ToolExec.call(capability, action, args, %{episode: episode}) do
+                {:ok, result, cost, redacted} ->
                   step =
-                    journal_step!(episode, :synthesis, %{
-                      args_redacted: prompt_ctx,
-                      cost_tokens: token_cost
+                    journal_step!(episode, :tool_call, %{
+                      tool_name: tool_name,
+                      args_redacted: redacted.args_redacted,
+                      result_ref: redacted.result_redacted,
+                      cost_tokens: cost
                     })
 
-                  increment_budget(episode, token_cost)
+                  increment_budget(episode, cost)
 
                   handle_strategy_result(
                     episode,
@@ -149,22 +118,100 @@ defmodule Cyclium.EpisodeRunner do
                     started_at
                   )
 
-                {:error, error_class, detail} ->
+                {:error, _reason} = err ->
                   step =
-                    journal_step!(episode, :synthesis, %{
-                      args_redacted: prompt_ctx,
-                      error_class: to_string(error_class),
-                      error_detail: inspect(detail)
+                    journal_step!(episode, :tool_call, %{
+                      tool_name: tool_name,
+                      args_redacted: args,
+                      error_class: "tool_error"
                     })
+
+                  handle_strategy_result(episode, strategy, state, step, err, started_at)
+              end
+          end
+
+        {:synthesize, prompt_ctx} ->
+          :telemetry.execute([:cyclium, :step, :synthesis], %{count: 1}, %{episode_id: episode.id})
+
+          case dry_run_synthesis_override(episode) do
+            {:mock, mock_result} ->
+              step =
+                journal_step!(episode, :synthesis, %{
+                  args_redacted: prompt_ctx,
+                  result_ref: %{"_dry_run" => true}
+                })
+
+              handle_strategy_result(
+                episode,
+                strategy,
+                state,
+                step,
+                {:ok, mock_result},
+                started_at
+              )
+
+            :real ->
+              case resolve_synthesizer() do
+                nil ->
+                  Logger.warning(
+                    "[Cyclium] No :synthesizer configured — :synthesize step will pass prompt_ctx through as-is"
+                  )
+
+                  step = journal_step!(episode, :synthesis, %{args_redacted: prompt_ctx})
 
                   handle_strategy_result(
                     episode,
                     strategy,
                     state,
                     step,
-                    {:error, {error_class, detail}},
+                    {:ok, prompt_ctx},
                     started_at
                   )
+
+                synthesizer ->
+                  episode_ctx = build_episode_ctx(episode)
+
+                  case synthesizer.synthesize(prompt_ctx, episode_ctx) do
+                    {:ok, result} ->
+                      token_cost =
+                        if function_exported?(synthesizer, :estimate_tokens, 1),
+                          do: synthesizer.estimate_tokens(prompt_ctx),
+                          else: 0
+
+                      step =
+                        journal_step!(episode, :synthesis, %{
+                          args_redacted: prompt_ctx,
+                          cost_tokens: token_cost
+                        })
+
+                      increment_budget(episode, token_cost)
+
+                      handle_strategy_result(
+                        episode,
+                        strategy,
+                        state,
+                        step,
+                        {:ok, result},
+                        started_at
+                      )
+
+                    {:error, error_class, detail} ->
+                      step =
+                        journal_step!(episode, :synthesis, %{
+                          args_redacted: prompt_ctx,
+                          error_class: to_string(error_class),
+                          error_detail: inspect(detail)
+                        })
+
+                      handle_strategy_result(
+                        episode,
+                        strategy,
+                        state,
+                        step,
+                        {:error, {error_class, detail}},
+                        started_at
+                      )
+                  end
               end
           end
 
@@ -252,15 +299,25 @@ defmodule Cyclium.EpisodeRunner do
   end
 
   defp post_converge(episode, converge_result) do
-    # Step 1+2+3: Persist findings, publish Bus events, journal steps
-    persist_findings(episode, converge_result.findings || [])
+    dry_run? = episode.mode == "dry_run"
 
-    # Step 4: Deliver outputs via OutputRouter
+    # Step 1+2+3: Persist findings (skipped in dry run)
+    if dry_run? do
+      journal_dry_run_findings(episode, converge_result.findings || [])
+    else
+      persist_findings(episode, converge_result.findings || [])
+    end
+
+    # Step 4: Deliver outputs via OutputRouter (skipped in dry run)
     output_results =
-      (converge_result.outputs || [])
-      |> Enum.map(fn proposal ->
-        Cyclium.Output.Router.route(proposal, episode, build_episode_ctx(episode))
-      end)
+      if dry_run? do
+        journal_dry_run_outputs(episode, converge_result.outputs || [])
+      else
+        (converge_result.outputs || [])
+        |> Enum.map(fn proposal ->
+          Cyclium.Output.Router.route(proposal, episode, build_episode_ctx(episode))
+        end)
+      end
 
     # Step 5: Compute final episode status from delivery outcomes
     final_status = compute_episode_status(output_results)
@@ -566,5 +623,62 @@ defmodule Cyclium.EpisodeRunner do
       turns_used: episode.turns_used,
       tokens_used: episode.tokens_used
     }
+  end
+
+  # --- Dry run helpers ---
+
+  defp dry_run_tool_override(%{mode: "dry_run", dry_run_opts: opts}, tool_name)
+       when is_map(opts) do
+    overrides = Map.get(opts, "tool_overrides", %{})
+
+    case Map.get(overrides, tool_name) do
+      nil -> :real
+      mock -> {:mock, mock}
+    end
+  end
+
+  defp dry_run_tool_override(_episode, _tool_name), do: :real
+
+  defp dry_run_synthesis_override(%{mode: "dry_run", dry_run_opts: opts}) when is_map(opts) do
+    case Map.get(opts, "synthesis_override") do
+      nil -> :real
+      mock -> {:mock, mock}
+    end
+  end
+
+  defp dry_run_synthesis_override(_episode), do: :real
+
+  defp journal_dry_run_findings(episode, findings) do
+    Enum.each(findings, fn action ->
+      kind =
+        case action do
+          {:raise, _} -> :finding_raised
+          {:update, _, _} -> :finding_updated
+          {:clear, _} -> :finding_cleared
+          {:clear, _, _} -> :finding_cleared
+        end
+
+      detail =
+        case action do
+          {:raise, attrs} -> attrs
+          {:update, _key, attrs} -> attrs
+          {:clear, key} -> %{finding_key: key}
+          {:clear, key, _} -> %{finding_key: key}
+        end
+
+      journal_step!(episode, kind, %{
+        result_ref: Map.merge(detail, %{"_dry_run" => true})
+      })
+    end)
+  end
+
+  defp journal_dry_run_outputs(episode, outputs) do
+    Enum.map(outputs, fn proposal ->
+      journal_step!(episode, :output_proposed, %{
+        result_ref: %{"_dry_run" => true, "proposal" => inspect(proposal)}
+      })
+
+      {:ok, :dry_run_skipped}
+    end)
   end
 end
