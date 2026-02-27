@@ -45,7 +45,7 @@ defmodule Cyclium.DynamicActor.Watcher do
   @impl true
   def init(_opts) do
     Cyclium.Bus.subscribe()
-    Logger.info("[Cyclium.DynamicActor.Watcher] Started, listening for agent definition events")
+    Logger.info("DynamicActor.Watcher started, listening for agent definition events")
     {:ok, %{}}
   end
 
@@ -107,41 +107,47 @@ defmodule Cyclium.DynamicActor.Watcher do
   # --- Private ---
 
   defp handle_created(actor_id) do
-    Logger.info("[Watcher] Loading new dynamic actor: #{actor_id}")
+    Logger.info("Loading new dynamic actor", cyclium_actor_id: actor_id)
 
     case Loader.load(actor_id) do
       {:ok, _pid} ->
-        Logger.info("[Watcher] Started dynamic actor: #{actor_id}")
+        Logger.info("Started dynamic actor", cyclium_actor_id: actor_id)
 
       {:error, reason} ->
-        Logger.error("[Watcher] Failed to start #{actor_id}: #{inspect(reason)}")
+        Logger.error("Failed to start dynamic actor: #{inspect(reason)}",
+          cyclium_actor_id: actor_id
+        )
     end
   end
 
   defp handle_updated(actor_id) do
-    Logger.info("[Watcher] Reloading dynamic actor: #{actor_id}")
+    Logger.info("Reloading dynamic actor", cyclium_actor_id: actor_id)
 
     Task.start(fn ->
       case Lifecycle.drain_and_reload(actor_id) do
         {:ok, _pid} ->
-          Logger.info("[Watcher] Reloaded dynamic actor: #{actor_id}")
+          Logger.info("Reloaded dynamic actor", cyclium_actor_id: actor_id)
 
         {:error, reason} ->
-          Logger.error("[Watcher] Failed to reload #{actor_id}: #{inspect(reason)}")
+          Logger.error("Failed to reload dynamic actor: #{inspect(reason)}",
+            cyclium_actor_id: actor_id
+          )
       end
     end)
   end
 
   defp handle_disabled(actor_id) do
-    Logger.info("[Watcher] Stopping dynamic actor: #{actor_id}")
+    Logger.info("Stopping dynamic actor", cyclium_actor_id: actor_id)
 
     Task.start(fn ->
       case Lifecycle.drain_and_stop(actor_id) do
         :ok ->
-          Logger.info("[Watcher] Stopped dynamic actor: #{actor_id}")
+          Logger.info("Stopped dynamic actor", cyclium_actor_id: actor_id)
 
         {:error, reason} ->
-          Logger.warning("[Watcher] Could not stop #{actor_id}: #{inspect(reason)}")
+          Logger.warning("Could not stop dynamic actor: #{inspect(reason)}",
+            cyclium_actor_id: actor_id
+          )
       end
     end)
   end
@@ -153,34 +159,38 @@ defmodule Cyclium.DynamicActor.Watcher do
   defp extract_workflow_id(_), do: nil
 
   defp handle_workflow_created(workflow_id) do
-    Logger.info("[Watcher] Loading new dynamic workflow: #{workflow_id}")
+    Logger.info("Loading new dynamic workflow", cyclium_workflow_id: workflow_id)
 
     case Cyclium.DynamicWorkflow.Loader.load(workflow_id) do
       {:ok, _} ->
-        Logger.info("[Watcher] Registered dynamic workflow: #{workflow_id}")
+        Logger.info("Registered dynamic workflow", cyclium_workflow_id: workflow_id)
 
       {:error, reason} ->
-        Logger.error("[Watcher] Failed to load workflow #{workflow_id}: #{inspect(reason)}")
+        Logger.error("Failed to load workflow: #{inspect(reason)}",
+          cyclium_workflow_id: workflow_id
+        )
     end
   end
 
   defp handle_workflow_updated(workflow_id) do
-    Logger.info("[Watcher] Reloading dynamic workflow: #{workflow_id}")
+    Logger.info("Reloading dynamic workflow", cyclium_workflow_id: workflow_id)
 
     Task.start(fn ->
       case Cyclium.DynamicWorkflow.Loader.reload(workflow_id) do
         {:ok, _} ->
-          Logger.info("[Watcher] Reloaded dynamic workflow: #{workflow_id}")
+          Logger.info("Reloaded dynamic workflow", cyclium_workflow_id: workflow_id)
 
         {:error, reason} ->
-          Logger.error("[Watcher] Failed to reload workflow #{workflow_id}: #{inspect(reason)}")
+          Logger.error("Failed to reload workflow: #{inspect(reason)}",
+            cyclium_workflow_id: workflow_id
+          )
       end
     end)
   end
 
   defp handle_workflow_disabled(workflow_id) do
-    Logger.info("[Watcher] Unloading dynamic workflow: #{workflow_id}")
+    Logger.info("Unloading dynamic workflow", cyclium_workflow_id: workflow_id)
     Cyclium.DynamicWorkflow.Loader.unload(workflow_id)
-    Logger.info("[Watcher] Unloaded dynamic workflow: #{workflow_id}")
+    Logger.info("Unloaded dynamic workflow", cyclium_workflow_id: workflow_id)
   end
 end

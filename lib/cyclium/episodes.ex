@@ -302,6 +302,33 @@ defmodule Cyclium.Episodes do
     :ok
   end
 
+  @doc """
+  Cancel running and blocked episodes for the given actor and expectation.
+
+  Returns `{:ok, count}` with the number of episodes canceled.
+  """
+  def cancel_related(actor_id, expectation_id, reason \\ "cascade_cancel") do
+    actor_str = to_string(actor_id)
+    exp_str = to_string(expectation_id)
+
+    episodes =
+      from(e in Episode,
+        where:
+          e.actor_id == ^actor_str and
+            e.expectation_id == ^exp_str and
+            e.status in [:running, :blocked]
+      )
+      |> repo().all()
+
+    canceled =
+      Enum.count(episodes, fn ep ->
+        cancel(ep.id, reason)
+        true
+      end)
+
+    {:ok, canceled}
+  end
+
   defp next_step_no(episode_id) do
     (from(s in EpisodeStep,
        where: s.episode_id == ^episode_id,

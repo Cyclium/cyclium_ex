@@ -67,8 +67,9 @@ defmodule Cyclium.Strategy.Template.ObserveClassifyConverge do
           gatherer.gather(state.trigger_payload, state.strategy_config)
         catch
           kind, reason ->
-            Logger.error(
-              "[ObserveClassifyConverge] Gatherer #{gatherer_name} raised: #{inspect({kind, reason})}"
+            Logger.error("Gatherer raised: #{inspect({kind, reason})}",
+              template: "ObserveClassifyConverge",
+              gatherer: gatherer_name
             )
 
             {:error, {kind, reason}}
@@ -79,15 +80,17 @@ defmodule Cyclium.Strategy.Template.ObserveClassifyConverge do
           {:observe, data}
 
         {:error, reason} ->
-          Logger.error(
-            "[ObserveClassifyConverge] Gatherer #{gatherer_name} failed: #{inspect(reason)}"
+          Logger.error("Gatherer failed: #{inspect(reason)}",
+            template: "ObserveClassifyConverge",
+            gatherer: gatherer_name
           )
 
           {:observe, %{_error: true, reason: inspect(reason)}}
       end
     else
-      Logger.error(
-        "[ObserveClassifyConverge] No gatherer registered as #{inspect(gatherer_name)}"
+      Logger.error("No gatherer registered as #{inspect(gatherer_name)}",
+        template: "ObserveClassifyConverge",
+        gatherer: gatherer_name
       )
 
       {:observe, %{_error: true, reason: "unknown_gatherer"}}

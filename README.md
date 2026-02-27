@@ -9,14 +9,18 @@ Cyclium is an Elixir library for building agentic systems that monitor domains, 
 - **Declarative Actor DSL** — Define actors, expectations, triggers, and budgets in a compact macro-based syntax
 - **Strategy Pattern** — Pluggable investigation logic with a clear init → observe → converge lifecycle
 - **Episode Runner** — Budget-enforced execution loop with step journaling, checkpointing, and crash recovery
-- **Findings Lifecycle** — Persistent observations with raise/update/clear semantics and upsert-by-key
+- **Findings Lifecycle** — Persistent observations with raise/update/clear semantics, upsert-by-key, causality chains, TTL expiration, severity escalation, and post-raise enrichment hooks
 - **Output Router** — Deduplicated, adapter-based delivery (email, Slack, webhooks) with approval gates and adapter registry
 - **Event Bus** — Phoenix.PubSub-backed event system connecting actors without coupling
-- **Workflow Engine** — Multi-actor coordination with dependency graphs, failure policies, and retry with backoff
+- **Workflow Engine** — Multi-actor coordination with dependency graphs, failure policies, retry with backoff, cross-workflow episode dedup, and cancellation cascade
+- **Circuit Breaker** — Per-expectation circuit breaker with configurable thresholds, half-open recovery, and optional in-flight episode cancellation
+- **Episode Sampling** — Probabilistic firing control via `sample_rate` on expectations
+- **Service Level Tracking** — Declarative performance objectives with breach detection and telemetry
+- **Adaptive Budgets** — Advisory budget recommendations based on historical episode usage (p95 with headroom)
 - **Backpressure Controls** — Per-actor concurrency limits with queue, drop, or shed-oldest overflow policies
 - **Debounce and Cooldown** — Temporal controls to coalesce rapid-fire events and enforce minimum gaps
 - **Log Projection** — Materialized human-readable logs at configurable verbosity (none → full_debug)
-- **Telemetry** — 28 structured telemetry events for observability
+- **Telemetry** — 36 structured telemetry events for observability
 - **OTP-Native** — No Oban or external job queue required; episodes run as Tasks under DynamicSupervisor
 - **SQL Server 2017 Compatible** — Transaction-based upserts, denormalized query columns, no JSON operators in DDL
 
@@ -79,7 +83,8 @@ YourApp.Supervisor
 │   │   └── Cyclium.EpisodeTask (one per running episode)
 │   ├── Cyclium.TaskSupervisor (Task.Supervisor)
 │   ├── Cyclium.Reconciler (optional — spec change detection)
-│   └── Cyclium.WorkflowEngine (optional — multi-actor workflows)
+│   ├── Cyclium.WorkflowEngine (optional — multi-actor workflows)
+│   └── Cyclium.Findings.ExpirationSweep (optional — TTL + escalation)
 └── YourAppWeb.Endpoint
 ```
 
@@ -96,7 +101,8 @@ YourApp.Supervisor
 ```
 Bus event arrives
   → Actor.handle_info matches expectation trigger
-  → Check debounce/cooldown → check concurrency (active < max?)
+  → Check debounce/cooldown → circuit breaker → sample_rate
+  → Check concurrency (active < max?)
     → yes: create Episode row, start EpisodeTask under DynamicSupervisor
     → no:  apply overflow policy (queue / drop / shed_oldest)
 
@@ -120,13 +126,15 @@ EpisodeTask starts
     └─────────────────────────────────────────────┘
 
   Converge pipeline (post_converge):
-    1. Persist findings (raise/update/clear) → Bus events per finding
+    1. Persist findings (raise/update/clear) → enrich → Bus events per finding
     2. Route outputs through adapters → dedup by dedupe_key, deliver
     3. Compute final episode status from delivery outcomes
     4. Journal completion/failure step
     5. Project log via LogProjector
-    6. Broadcast episode.completed/failed on Bus
-    7. Emit telemetry
+    6. Record service levels + check for breach
+    7. Record adaptive budget sample (if enabled)
+    8. Broadcast episode.completed/failed on Bus
+    9. Emit telemetry
 ```
 
 ## Core concepts
@@ -182,6 +190,13 @@ end
 | `resources` | `[]` | Declared capability dependencies (informational) |
 | `audit_level` | `:standard` | Audit verbosity |
 | `retention_days` | `90` | How long to keep episode data. Set higher for audit-sensitive workflows (e.g., 365). Retention is declarative — enforcement requires a scheduled cleanup job (not yet built) |
+| `sample_rate` | `nil` | Float 0.0–1.0. When set, episodes fire probabilistically. `nil` or `1.0` = always fire. Force-fire bypasses sampling |
+| `circuit_breaker` | `nil` | Circuit breaker config: `%{threshold: 5, half_open_after_ms: 60_000, cancel_in_flight: false}`. See [Circuit Breaker](#circuit-breaker) |
+| `adaptive_budget` | `false` | When `true`, records episode resource usage for advisory budget recommendations |
+| `service_levels` | `nil` | Performance objectives: `%{max_duration_ms: n, success_rate: 0.95, window_episodes: 20}`. See [Service Level Tracking](#service-level-tracking) |
+| `finding_enrichment` | `nil` | Post-raise enrichment callback: `fn finding, episode -> {:ok, %{summary: ...}} end` or `{Mod, :fun}` |
+| `escalation_rules` | `nil` | Time-based severity escalation: `%{"class" => [%{after_minutes: 60, escalate_to: :high}]}` |
+| `finding_ttl_seconds` | `nil` | Default TTL for findings raised by this expectation. Individual findings can override with explicit `ttl_seconds` |
 
 **Actor ID convention:** Actor IDs are **atoms in-process** and **strings in the database**. The ID is derived from the module name: `MyApp.Actors.ClientHealthActor` becomes `:client_health_actor` in the GenServer state and `"client_health_actor"` when stored in episode rows, findings, and strategy registry lookups. The boundary is at episode creation — `Cyclium.Actor.Server` calls `to_string(state.actor_id)` when building the episode params. Everything upstream is atoms, everything downstream (DB, strategies, findings) is strings.
 
@@ -435,7 +450,73 @@ Cyclium.Findings.active_for(actor: "client_health_actor")
 Cyclium.Findings.active_for(subject: %{kind: "client", id: "123"})
 Cyclium.Findings.active_for(finding_key: "client:health:123")
 Cyclium.Findings.active_for(class: "churned")
+Cyclium.Findings.active_for(caused_by: "parent:finding:key")
 ```
+
+**Causality chains:** Findings can reference a parent finding via `caused_by_key`. This enables tracing root causes through chains of related findings:
+
+```elixir
+# Raise a child finding linked to a parent
+{:raise, %{finding_key: "vendor:delay:PO-123", caused_by_key: "vendor:health:acme", ...}}
+
+# Query helpers
+Cyclium.Findings.caused_by("parent:key")        # direct children
+Cyclium.Findings.causal_chain("child:key", 10)   # walk chain upward (max depth)
+Cyclium.Findings.root_cause("child:key")         # find root (no caused_by_key)
+```
+
+**TTL / Expiration:** Findings can auto-expire after a duration. Declare a default TTL on the expectation, or pass `ttl_seconds` / `expires_at` per finding:
+
+```elixir
+# Default TTL for all findings raised by this expectation
+expectation :check_temp,
+  trigger: {:event, "sensor.updated"},
+  finding_ttl_seconds: 3600
+
+# Or override per finding in converge:
+{:raise, %{finding_key: "temp:alert:123", ttl_seconds: 7200, ...}}
+```
+
+Expired findings are cleared by `Cyclium.Findings.ExpirationSweep`, an optional GenServer that runs on a configurable interval:
+
+```elixir
+# config/config.exs
+config :cyclium, :finding_expiration_sweep, true
+config :cyclium, :finding_expiration_interval_ms, 300_000   # 5 minutes (default)
+config :cyclium, :finding_expiration_batch_size, 100         # per sweep (default)
+```
+
+**Severity escalation:** Time-based rules automatically escalate finding severity based on how long a finding has been active. Declare rules on the expectation:
+
+```elixir
+expectation :check_vendor,
+  trigger: {:event, "vendor.updated"},
+  escalation_rules: %{
+    "vendor_delay" => [
+      %{after_minutes: 60, escalate_to: :high},
+      %{after_minutes: 1440, escalate_to: :critical}
+    ]
+  }
+```
+
+Escalation runs as part of the expiration sweep cycle. Application config (`config :cyclium, :escalation_rules`) is supported as a fallback.
+
+**Post-raise enrichment:** An optional callback enriches findings immediately after they're raised. Declare it on the expectation:
+
+```elixir
+expectation :check_health,
+  trigger: {:event, "client.updated"},
+  finding_enrichment: fn finding, _episode ->
+    {:ok, %{summary: "Enriched: #{finding.summary}", confidence: 0.95}}
+  end
+
+# Or use a module/function tuple:
+expectation :check_health,
+  trigger: {:event, "client.updated"},
+  finding_enrichment: {MyApp.FindingEnricher, :enrich}
+```
+
+The callback receives `(finding, episode)` and returns `{:ok, %{...}}` or `:skip`. Only safe fields are applied: `evidence_refs`, `summary`, `confidence`. Errors in the callback are logged — the finding persists unchanged. Application config (`config :cyclium, :finding_enrichment`) is supported as a fallback.
 
 ### Outputs
 
@@ -712,6 +793,19 @@ defmodule MyApp.Workflows.ClientReview do
 end
 ```
 
+**Episode reuse (cross-workflow dedup):** By default, workflows reuse recent completed episodes when two workflows trigger the same actor + expectation + input within a 5-minute window. To disable this:
+
+```elixir
+workflow do
+  disable_episode_reuse
+
+  trigger {:event, "client.review_requested"}
+  step :health_check, actor: :client_health_actor, expectation: :client_should_be_healthy
+end
+```
+
+**Cancellation cascade:** When a workflow fails, pending and retrying steps are automatically canceled. To also clear active findings raised by the workflow's episodes, set `clear_findings_on_cancel` in the workflow instance metadata.
+
 ### Passing data between steps
 
 When a workflow step completes, the engine calls the strategy's optional `workflow_result/2` callback to extract the data that downstream steps receive via `prior`. If `workflow_result/2` is not implemented, downstream steps receive `nil` for that step's prior.
@@ -833,6 +927,92 @@ Cyclium.WorkflowEngine.start_dynamic_workflow(
 
 Dynamic workflows are event-triggered (via Bus) like compiled workflows. The Watcher also listens for `workflow_definition.created/updated/disabled` events for automatic refresh.
 
+## Circuit breaker
+
+Per-expectation circuit breaker prevents cascading failures when a tool or external service is down. When consecutive episode failures exceed a threshold, the circuit opens and rejects new episodes. After a cooldown period, one probe episode is allowed through (half-open state) — if it succeeds, the circuit closes.
+
+```elixir
+expectation :check_vendor_api,
+  trigger: {:event, "vendor.updated"},
+  circuit_breaker: %{
+    threshold: 5,            # consecutive failures to trip
+    half_open_after_ms: 60_000,  # cooldown before probe
+    cancel_in_flight: false  # cancel running episodes when circuit trips
+  }
+```
+
+**States:** `:closed` (normal) → `:open` (rejecting) → `:half_open` (probe) → `:closed`
+
+**In-flight cancellation:** When `cancel_in_flight: true`, tripping the circuit also cancels any running or blocked episodes for that actor + expectation, preventing wasted work against a known-broken dependency.
+
+**Scope:** Circuit breakers are node-local (ETS-backed). In a cluster, each node tracks failures independently. This is intentional — a service might be unreachable from one node but fine from another. For cluster-wide coordination, combine with the Bus (circuit breaker events are broadcast).
+
+Force-fired episodes bypass the circuit breaker check.
+
+Query state: `Cyclium.CircuitBreaker.get_state(actor_id, expectation_id)`
+
+## Episode sampling
+
+Probabilistic episode firing for high-frequency triggers. Set `sample_rate` on an expectation to control what fraction of triggers actually fire episodes:
+
+```elixir
+expectation :health_check,
+  trigger: {:event, "metrics.updated"},
+  sample_rate: 0.1  # fire ~10% of triggers
+```
+
+- `nil` or `1.0` = always fire (default)
+- `0.0` = never fire
+- Sampled-out episodes emit `[:cyclium, :episode, :sampled_out]` telemetry
+- Force-fired episodes bypass sampling
+
+## Service level tracking
+
+Declarative performance objectives with automatic breach detection. Define success rate and duration thresholds per expectation:
+
+```elixir
+expectation :process_order,
+  trigger: {:event, "order.created"},
+  service_levels: %{
+    max_duration_ms: 30_000,     # p95 target
+    success_rate: 0.95,          # 95% success target
+    window_episodes: 20          # rolling window size
+  }
+```
+
+Breaches emit `[:cyclium, :service_levels, :breach]` telemetry and a `"service_levels.breach"` Bus event with details:
+
+```elixir
+%{type: :success_rate, current: 0.85, threshold: 0.95}
+%{type: :duration, current: 45_000, threshold: 30_000}
+```
+
+Query metrics: `Cyclium.ServiceLevels.metrics(actor_id, expectation_id)` returns `%{success_rate: f, p95_duration_ms: n, sample_count: n}`.
+
+## Adaptive budgets
+
+Advisory budget tracking based on historical episode resource usage. When enabled, Cyclium records turns, tokens, and wall time for each completed episode and recommends budgets based on p95 values with 25% headroom.
+
+```elixir
+expectation :classify_ticket,
+  trigger: {:event, "ticket.created"},
+  adaptive_budget: true
+```
+
+Query recommendations:
+
+```elixir
+# After enough samples (minimum 5):
+Cyclium.AdaptiveBudget.recommend(actor_id, expectation_id)
+# => %{max_turns: 8, max_tokens: 15_000, max_wall_ms: 25_000}
+
+# Detailed stats:
+Cyclium.AdaptiveBudget.stats(actor_id, expectation_id)
+# => %{samples: 47, p50: %{...}, p95: %{...}, max: %{...}}
+```
+
+Adaptive budgets are advisory only — they do not automatically adjust episode budgets. Use the recommendations to tune your expectation configs over time.
+
 ## Logging and observability
 
 ### Log strategies
@@ -854,7 +1034,7 @@ Materialized logs are stored in `cyclium_episode_logs` by `Cyclium.LogProjector`
 
 ### Telemetry
 
-Cyclium emits 28 structured telemetry events under the `[:cyclium, ...]` prefix. Attach a handler for development:
+Cyclium emits 36 structured telemetry events under the `[:cyclium, ...]` prefix. Attach a handler for development:
 
 ```elixir
 Cyclium.Telemetry.attach_default_logger()
@@ -866,13 +1046,21 @@ Key events:
 |---|---|
 | `[:cyclium, :episode, :completed]` | episode_id, actor_id, output_count, finding_count |
 | `[:cyclium, :episode, :failed]` | episode_id, actor_id |
+| `[:cyclium, :episode, :sampled_out]` | actor_id, expectation_id |
 | `[:cyclium, :step, :tool_call]` | tool, action, episode_id |
 | `[:cyclium, :step, :synthesis]` | episode_id |
 | `[:cyclium, :finding, :raised]` | finding_key, actor_id, class |
 | `[:cyclium, :finding, :cleared]` | finding_key, actor_id, class |
+| `[:cyclium, :finding, :expired]` | count |
+| `[:cyclium, :finding, :escalated]` | finding_key, actor_id, class |
 | `[:cyclium, :output, :delivered]` | type, episode_id |
 | `[:cyclium, :actor, :event_received]` | actor_id, event_type |
 | `[:cyclium, :actor, :overflow]` | actor_id, policy |
+| `[:cyclium, :circuit_breaker, :opened]` | actor_id, expectation_id, consecutive_failures |
+| `[:cyclium, :circuit_breaker, :closed]` | actor_id, expectation_id |
+| `[:cyclium, :circuit_breaker, :rejected]` | actor_id, expectation_id |
+| `[:cyclium, :service_levels, :breach]` | actor_id, expectation_id, type, current, threshold |
+| `[:cyclium, :workflow, :step_reused]` | workflow_id, instance_id, step_id, reused_episode_id |
 
 Full list: `Cyclium.Telemetry.events/0`
 
@@ -1841,7 +2029,7 @@ All tables use `binary_id` primary keys and are SQL Server 2017 compatible (no J
 | `cyclium_agent_definitions` | V7 | DB-stored actor definitions for dynamic actors |
 | `cyclium_workflow_definitions` | V8 | DB-stored workflow definitions for dynamic workflows |
 
-V4 adds `archived_at` to episodes and findings. V5 replaces the non-unique `dedupe_key` index on episodes with a filtered unique index (`WHERE dedupe_key IS NOT NULL AND archived_at IS NULL`) for multi-node coordination. V6 adds the `cyclium_work_claims` table for lease-based distributed coordination across clustered nodes. V7 adds `cyclium_agent_definitions` for dynamic actors and `mode`/`dry_run_opts` columns to episodes for simulation support. V8 adds `cyclium_workflow_definitions` for dynamic workflows.
+V4 adds `archived_at` to episodes and findings. V5 replaces the non-unique `dedupe_key` index on episodes with a filtered unique index (`WHERE dedupe_key IS NOT NULL AND archived_at IS NULL`) for multi-node coordination. V6 adds the `cyclium_work_claims` table for lease-based distributed coordination across clustered nodes. V7 adds `cyclium_agent_definitions` for dynamic actors and `mode`/`dry_run_opts` columns to episodes for simulation support. V8 adds `cyclium_workflow_definitions` for dynamic workflows. V10 adds `caused_by_key` (finding causality chains) and `expires_at` (TTL-based expiration) to `cyclium_findings`.
 
 ## Window helpers
 

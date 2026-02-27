@@ -51,8 +51,9 @@ defmodule Cyclium.Strategy.Template.Dispatch do
           gatherer.gather(state.trigger_payload, state.strategy_config)
         catch
           kind, reason ->
-            Logger.error(
-              "[Dispatch] Gatherer #{gatherer_name} raised: #{inspect({kind, reason})}"
+            Logger.error("Gatherer raised: #{inspect({kind, reason})}",
+              template: "Dispatch",
+              gatherer: gatherer_name
             )
 
             {:error, {kind, reason}}
@@ -68,11 +69,19 @@ defmodule Cyclium.Strategy.Template.Dispatch do
           {:observe, %{entities: entities}}
 
         {:error, reason} ->
-          Logger.error("[Dispatch] Gatherer #{gatherer_name} failed: #{inspect(reason)}")
+          Logger.error("Gatherer failed: #{inspect(reason)}",
+            template: "Dispatch",
+            gatherer: gatherer_name
+          )
+
           {:observe, %{entities: []}}
       end
     else
-      Logger.error("[Dispatch] No gatherer registered as #{inspect(gatherer_name)}")
+      Logger.error("No gatherer registered as #{inspect(gatherer_name)}",
+        template: "Dispatch",
+        gatherer: gatherer_name
+      )
+
       {:observe, %{entities: []}}
     end
   end

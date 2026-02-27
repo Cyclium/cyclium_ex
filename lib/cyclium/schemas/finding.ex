@@ -27,6 +27,9 @@ defmodule Cyclium.Schemas.Finding do
     field(:subject_kind, :string)
     field(:subject_id, :string)
     field(:archived_at, :utc_datetime)
+    # V10: Causality and TTL
+    field(:caused_by_key, :string)
+    field(:expires_at, :utc_datetime)
   end
 
   def changeset(finding, attrs) do
@@ -48,7 +51,9 @@ defmodule Cyclium.Schemas.Finding do
       :updated_at,
       :subject_kind,
       :subject_id,
-      :archived_at
+      :archived_at,
+      :caused_by_key,
+      :expires_at
     ])
     |> validate_required([
       :actor_id,

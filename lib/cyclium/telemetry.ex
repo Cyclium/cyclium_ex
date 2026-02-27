@@ -14,6 +14,7 @@ defmodule Cyclium.Telemetry do
       [:cyclium, :episode, :dropped]      — %{actor_id, expectation_id}
       [:cyclium, :episode, :queued]       — %{episode_id, actor_id}
       [:cyclium, :episode, :canceled]     — %{episode_id, actor_id, reason}
+      [:cyclium, :episode, :sampled_out]  — %{actor_id, expectation_id}
 
   ### Step events
 
@@ -42,6 +43,7 @@ defmodule Cyclium.Telemetry do
 
       [:cyclium, :finding, :raised]       — %{finding_key, actor_id, class}
       [:cyclium, :finding, :cleared]      — %{finding_key, actor_id, class}
+      [:cyclium, :finding, :expired]      — %{count}
 
   ### Phase events
 
@@ -80,6 +82,7 @@ defmodule Cyclium.Telemetry do
     [:cyclium, :episode, :dropped],
     [:cyclium, :episode, :queued],
     [:cyclium, :episode, :canceled],
+    [:cyclium, :episode, :sampled_out],
     # Steps
     [:cyclium, :step, :tool_call],
     [:cyclium, :step, :synthesis],
@@ -98,8 +101,17 @@ defmodule Cyclium.Telemetry do
     # Findings
     [:cyclium, :finding, :raised],
     [:cyclium, :finding, :cleared],
+    [:cyclium, :finding, :expired],
+    [:cyclium, :finding, :escalated],
     # Phase
     [:cyclium, :phase, :changed],
+    # Service levels
+    [:cyclium, :service_levels, :breach],
+    # Circuit breaker
+    [:cyclium, :circuit_breaker, :opened],
+    [:cyclium, :circuit_breaker, :closed],
+    [:cyclium, :circuit_breaker, :half_open],
+    [:cyclium, :circuit_breaker, :rejected],
     # Guardrails
     [:cyclium, :guardrail, :triggered],
     # Workflows
@@ -109,7 +121,8 @@ defmodule Cyclium.Telemetry do
     [:cyclium, :workflow, :step_failed],
     [:cyclium, :workflow, :step_retried],
     [:cyclium, :workflow, :completed],
-    [:cyclium, :workflow, :failed]
+    [:cyclium, :workflow, :failed],
+    [:cyclium, :workflow, :step_reused]
   ]
 
   @doc "Returns the list of all Cyclium telemetry event names."

@@ -200,6 +200,31 @@ defmodule Cyclium.Actor.Server do
       draining: false
     }
 
+    # Set structured logging context for this actor process
+    Logger.metadata(
+      cyclium_actor_id: config.actor_id,
+      cyclium_domain: config[:domain]
+    )
+
+    # Register service levels configs
+    Enum.each(expectations, fn {_id, exp} ->
+      if exp.service_levels do
+        Cyclium.ServiceLevels.register(config.actor_id, exp.id, exp.service_levels)
+      end
+
+      # Register finding configs (enrichment, escalation, TTL)
+      finding_config = %{
+        enrichment: exp.finding_enrichment,
+        escalation_rules: exp.escalation_rules,
+        default_ttl_seconds: exp.finding_ttl_seconds
+      }
+
+      if finding_config.enrichment || finding_config.escalation_rules ||
+           finding_config.default_ttl_seconds do
+        Cyclium.Findings.Config.register(config.actor_id, exp.id, finding_config)
+      end
+    end)
+
     # Subscribe to bus for event-triggered expectations
     Bus.subscribe()
 
@@ -217,7 +242,11 @@ defmodule Cyclium.Actor.Server do
     state =
       case Map.get(state.expectations, expectation_id) do
         nil ->
-          Logger.warning("[#{state.actor_id}] Force fire: unknown expectation #{expectation_id}")
+          Logger.warning("Force fire: unknown expectation",
+            cyclium_actor_id: state.actor_id,
+            cyclium_expectation_id: expectation_id
+          )
+
           state
 
         expectation ->
@@ -226,7 +255,7 @@ defmodule Cyclium.Actor.Server do
             reason: "manual:#{System.system_time(:millisecond)}"
           }
 
-          maybe_fire_episode(state, expectation, trigger_ref, opts)
+          maybe_fire_episode(state, expectation, trigger_ref, [{:force, true} | opts])
       end
 
     {:noreply, state}
@@ -278,6 +307,8 @@ defmodule Cyclium.Actor.Server do
         actor_id = payload[:actor_id] || payload["actor_id"]
 
         if actor_id == to_string(state.actor_id) and episode_id do
+          # Update circuit breaker on episode outcome
+          maybe_update_circuit_breaker(state, event_type, payload)
           handle_episode_done(state, episode_id)
         else
           state
@@ -336,7 +367,7 @@ defmodule Cyclium.Actor.Server do
   Schedule timers are cancelled. Event triggers are ignored.
   """
   def enter_drain(state) do
-    Logger.info("[#{state.actor_id}] Entering drain mode")
+    Logger.info("Entering drain mode", cyclium_actor_id: state.actor_id)
 
     # Cancel all schedule timers
     state =
@@ -439,7 +470,14 @@ defmodule Cyclium.Actor.Server do
       synthesizer: Keyword.get(opts, :synthesizer) || config.synthesizer,
       recovery_policy: Keyword.get(opts, :recovery_policy, :fail),
       window: Keyword.get(opts, :window) || infer_window(opts),
-      dry_run: Keyword.get(opts, :dry_run)
+      dry_run: Keyword.get(opts, :dry_run),
+      sample_rate: Keyword.get(opts, :sample_rate),
+      circuit_breaker: Keyword.get(opts, :circuit_breaker),
+      adaptive_budget: Keyword.get(opts, :adaptive_budget, false),
+      service_levels: Keyword.get(opts, :service_levels),
+      finding_enrichment: Keyword.get(opts, :finding_enrichment),
+      escalation_rules: Keyword.get(opts, :escalation_rules),
+      finding_ttl_seconds: Keyword.get(opts, :finding_ttl_seconds)
     }
   end
 
@@ -525,7 +563,9 @@ defmodule Cyclium.Actor.Server do
   rescue
     error ->
       Logger.warning(
-        "Cyclium.Actor: #{actor_id}/#{expectation_id} schedule lookup failed: #{inspect(error)}, falling back to interval=#{interval_ms}ms"
+        "Schedule lookup failed, falling back to interval=#{interval_ms}ms: #{inspect(error)}",
+        cyclium_actor_id: actor_id,
+        cyclium_expectation_id: expectation_id
       )
 
       interval_ms
@@ -633,14 +673,71 @@ defmodule Cyclium.Actor.Server do
   end
 
   defp maybe_fire_episode(state, expectation, trigger_ref, opts \\ []) do
-    # Reject new episodes while draining
-    if state.draining do
-      Logger.debug("[#{state.actor_id}] Rejecting episode fire — draining")
-      state
-    else
-      do_fire_episode(state, expectation, trigger_ref, opts)
+    force = Keyword.get(opts, :force, false)
+
+    cond do
+      # Reject new episodes while draining
+      state.draining ->
+        Logger.debug("Rejecting episode fire — draining", cyclium_actor_id: state.actor_id)
+        state
+
+      # Circuit breaker: skip if open (unless forced)
+      not force and circuit_open?(expectation) ->
+        state
+
+      # Sampling: skip unless forced
+      not force and sampled_out?(expectation) ->
+        :telemetry.execute(
+          [:cyclium, :episode, :sampled_out],
+          %{sample_rate: expectation.sample_rate},
+          %{actor_id: state.actor_id, expectation_id: expectation.id}
+        )
+
+        state
+
+      true ->
+        do_fire_episode(state, expectation, trigger_ref, opts)
     end
   end
+
+  defp maybe_update_circuit_breaker(state, event_type, payload) do
+    expectation_id_str = payload[:expectation_id] || payload["expectation_id"]
+
+    if expectation_id_str do
+      exp_id =
+        try do
+          String.to_existing_atom(to_string(expectation_id_str))
+        rescue
+          _ -> nil
+        end
+
+      case exp_id && Map.get(state.expectations, exp_id) do
+        %{circuit_breaker: config} when not is_nil(config) ->
+          if event_type == "episode.completed" do
+            Cyclium.CircuitBreaker.record_success(state.actor_id, exp_id)
+          else
+            Cyclium.CircuitBreaker.record_failure(state.actor_id, exp_id, config)
+          end
+
+        _ ->
+          :ok
+      end
+    end
+  end
+
+  defp circuit_open?(%{circuit_breaker: nil}), do: false
+
+  defp circuit_open?(%{circuit_breaker: config} = expectation) do
+    case Cyclium.CircuitBreaker.allow?(expectation.actor_id, expectation.id, config) do
+      :ok -> false
+      {:error, :circuit_open} -> true
+    end
+  end
+
+  defp sampled_out?(%{sample_rate: nil}), do: false
+  defp sampled_out?(%{sample_rate: rate}) when rate >= 1.0, do: false
+  defp sampled_out?(%{sample_rate: rate}) when rate <= 0.0, do: true
+  defp sampled_out?(%{sample_rate: rate}), do: :rand.uniform() > rate
 
   defp do_fire_episode(state, expectation, trigger_ref, opts) do
     active_count = MapSet.size(state.active_episodes)
@@ -707,9 +804,14 @@ defmodule Cyclium.Actor.Server do
 
       {:error, %Ecto.Changeset{} = cs} ->
         if has_dedupe_violation?(cs) do
-          Logger.debug("[#{state.actor_id}] Dedupe skip: #{params.dedupe_key}")
+          Logger.debug("Dedupe skip",
+            cyclium_actor_id: state.actor_id,
+            dedupe_key: params.dedupe_key
+          )
         else
-          Logger.warning("[#{state.actor_id}] Episode create failed: #{inspect(cs.errors)}")
+          Logger.warning("Episode create failed: #{inspect(cs.errors)}",
+            cyclium_actor_id: state.actor_id
+          )
         end
 
         state
@@ -734,7 +836,10 @@ defmodule Cyclium.Actor.Server do
 
       {:error, %Ecto.Changeset{} = cs} ->
         if has_dedupe_violation?(cs) do
-          Logger.debug("[#{state.actor_id}] Dedupe skip (queued): #{params.dedupe_key}")
+          Logger.debug("Dedupe skip (queued)",
+            cyclium_actor_id: state.actor_id,
+            dedupe_key: params.dedupe_key
+          )
         end
 
         state

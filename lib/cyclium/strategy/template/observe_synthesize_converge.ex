@@ -59,8 +59,9 @@ defmodule Cyclium.Strategy.Template.ObserveSynthesizeConverge do
           gatherer.gather(state.trigger_payload, state.strategy_config)
         catch
           kind, reason ->
-            Logger.error(
-              "[ObserveSynthesizeConverge] Gatherer #{gatherer_name} raised: #{inspect({kind, reason})}"
+            Logger.error("Gatherer raised: #{inspect({kind, reason})}",
+              template: "ObserveSynthesizeConverge",
+              gatherer: gatherer_name
             )
 
             {:error, {kind, reason}}
@@ -71,15 +72,17 @@ defmodule Cyclium.Strategy.Template.ObserveSynthesizeConverge do
           {:observe, data}
 
         {:error, reason} ->
-          Logger.error(
-            "[ObserveSynthesizeConverge] Gatherer #{gatherer_name} failed: #{inspect(reason)}"
+          Logger.error("Gatherer failed: #{inspect(reason)}",
+            template: "ObserveSynthesizeConverge",
+            gatherer: gatherer_name
           )
 
           {:observe, %{_error: true, reason: inspect(reason)}}
       end
     else
-      Logger.error(
-        "[ObserveSynthesizeConverge] No gatherer registered as #{inspect(gatherer_name)}"
+      Logger.error("No gatherer registered as #{inspect(gatherer_name)}",
+        template: "ObserveSynthesizeConverge",
+        gatherer: gatherer_name
       )
 
       {:observe, %{_error: true, reason: "unknown_gatherer"}}
@@ -118,8 +121,8 @@ defmodule Cyclium.Strategy.Template.ObserveSynthesizeConverge do
         %{kind: :synthesis} = step,
         {:error, {error_class, detail}}
       ) do
-    Logger.warning(
-      "[ObserveSynthesizeConverge] Synthesis error: #{error_class} — #{inspect(detail)}"
+    Logger.warning("Synthesis error: #{error_class} — #{inspect(detail)}",
+      template: "ObserveSynthesizeConverge"
     )
 
     case Retry.check(state, step, max_attempts: 3, backoff_ms: 2_000) do
@@ -127,7 +130,9 @@ defmodule Cyclium.Strategy.Template.ObserveSynthesizeConverge do
         {:retry, new_state}
 
       {:give_up, attempts, new_state} ->
-        Logger.error("[ObserveSynthesizeConverge] Synthesis failed after #{attempts} attempts")
+        Logger.error("Synthesis failed after #{attempts} attempts",
+          template: "ObserveSynthesizeConverge"
+        )
 
         {:ok,
          %{
@@ -324,8 +329,9 @@ defmodule Cyclium.Strategy.Template.ObserveSynthesizeConverge do
   defp validate_output_adapters(%{"outputs" => types}, actor_id) when is_list(types) do
     Enum.each(types, fn type ->
       unless Cyclium.Output.Adapter.resolve(type) do
-        Logger.warning(
-          "[ObserveSynthesizeConverge] Actor #{actor_id}: output type #{inspect(type)} has no registered adapter"
+        Logger.warning("Output type #{inspect(type)} has no registered adapter",
+          template: "ObserveSynthesizeConverge",
+          cyclium_actor_id: actor_id
         )
       end
     end)

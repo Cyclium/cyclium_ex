@@ -82,6 +82,10 @@ defmodule Cyclium.Findings do
     |> apply_filters(rest)
   end
 
+  defp apply_filters(query, [{:caused_by, key} | rest]) do
+    query |> where([f], f.caused_by_key == ^key) |> apply_filters(rest)
+  end
+
   defp apply_filters(query, [_ | rest]), do: apply_filters(query, rest)
 
   defp maybe_exclude_archived(query, opts) do
@@ -146,6 +150,59 @@ defmodule Cyclium.Findings do
     end
   end
 
+  # --- Causality queries ---
+
+  @doc """
+  Returns active child findings caused by the given finding key.
+  """
+  def caused_by(finding_key) when is_binary(finding_key) do
+    active_for(caused_by: finding_key)
+  end
+
+  @doc """
+  Walks the causal chain upward from a finding, returning ancestors.
+
+  Starting from the given finding, follows `caused_by_key` links up
+  to `max_depth` levels. Returns a list of findings from immediate parent
+  to root (oldest ancestor).
+
+  ## Options
+
+    * `:max_depth` — maximum chain depth (default: 10)
+  """
+  def causal_chain(finding_key, opts \\ []) when is_binary(finding_key) do
+    max_depth = Keyword.get(opts, :max_depth, 10)
+    do_causal_chain(finding_key, max_depth, [])
+  end
+
+  defp do_causal_chain(_key, 0, acc), do: Enum.reverse(acc)
+
+  defp do_causal_chain(finding_key, depth, acc) do
+    case repo().one(from(f in Finding, where: f.finding_key == ^finding_key, limit: 1)) do
+      nil ->
+        Enum.reverse(acc)
+
+      %{caused_by_key: nil} = finding ->
+        Enum.reverse([finding | acc])
+
+      %{caused_by_key: parent_key} = finding ->
+        do_causal_chain(parent_key, depth - 1, [finding | acc])
+    end
+  end
+
+  @doc """
+  Returns the root cause finding for the given finding key.
+
+  Walks up the causal chain and returns the first finding with no `caused_by_key`.
+  Returns `nil` if the finding itself is not found.
+  """
+  def root_cause(finding_key, opts \\ []) when is_binary(finding_key) do
+    case causal_chain(finding_key, opts) do
+      [] -> nil
+      chain -> List.last(chain)
+    end
+  end
+
   # --- Write path (Phase 3) ---
 
   @doc """
@@ -161,6 +218,12 @@ defmodule Cyclium.Findings do
   def persist_finding({:raise, params}, episode) do
     now = DateTime.utc_now() |> DateTime.truncate(:second)
     finding_key = Map.fetch!(params, :finding_key)
+
+    # Apply default TTL from expectation config if no explicit ttl_seconds
+    params = maybe_apply_default_ttl(params, episode)
+
+    # Compute expires_at from ttl_seconds if provided
+    params = maybe_apply_ttl(params, now)
 
     # Transaction-based upsert for SQL Server 2017 compatibility
     result =
@@ -186,7 +249,8 @@ defmodule Cyclium.Findings do
                 :summary,
                 :subject,
                 :subject_kind,
-                :subject_id
+                :subject_id,
+                :caused_by_key
               ])
 
             changes = Map.put(mutable, :updated_at, now)
@@ -197,6 +261,7 @@ defmodule Cyclium.Findings do
 
     case result do
       {:ok, finding} ->
+        finding = maybe_enrich(finding, episode)
         emit_finding_telemetry(:raised, finding)
         {:ok, finding}
 
@@ -265,6 +330,76 @@ defmodule Cyclium.Findings do
         end
     end
   end
+
+  defp maybe_enrich(finding, episode) do
+    callback = Cyclium.Findings.Config.enrichment_for(episode.actor_id, episode.expectation_id)
+
+    case callback do
+      nil ->
+        finding
+
+      callback ->
+        try do
+          result =
+            case callback do
+              fun when is_function(fun, 2) -> fun.(finding, episode)
+              {mod, fun} -> apply(mod, fun, [finding, episode])
+            end
+
+          case result do
+            {:ok, enrichments} when is_map(enrichments) ->
+              allowed = Map.take(enrichments, [:evidence_refs, :summary, :confidence])
+
+              if map_size(allowed) > 0 do
+                now = DateTime.utc_now() |> DateTime.truncate(:second)
+                changes = Map.put(allowed, :updated_at, now)
+
+                case finding |> Finding.changeset(changes) |> repo().update() do
+                  {:ok, updated} -> updated
+                  {:error, _} -> finding
+                end
+              else
+                finding
+              end
+
+            :skip ->
+              finding
+
+            _ ->
+              finding
+          end
+        rescue
+          error ->
+            require Logger
+
+            Logger.warning("Finding enrichment callback failed: #{inspect(error)}",
+              cyclium_finding_key: finding.finding_key
+            )
+
+            finding
+        end
+    end
+  end
+
+  defp maybe_apply_default_ttl(%{ttl_seconds: _} = params, _episode), do: params
+  defp maybe_apply_default_ttl(%{expires_at: _} = params, _episode), do: params
+
+  defp maybe_apply_default_ttl(params, episode) do
+    case Cyclium.Findings.Config.default_ttl_for(episode.actor_id, episode.expectation_id) do
+      nil -> params
+      ttl -> Map.put(params, :ttl_seconds, ttl)
+    end
+  end
+
+  defp maybe_apply_ttl(%{ttl_seconds: ttl} = params, now) when is_integer(ttl) and ttl > 0 do
+    expires_at = DateTime.add(now, ttl, :second)
+
+    params
+    |> Map.delete(:ttl_seconds)
+    |> Map.put_new(:expires_at, expires_at)
+  end
+
+  defp maybe_apply_ttl(params, _now), do: Map.delete(params, :ttl_seconds)
 
   defp emit_finding_telemetry(event, finding) do
     :telemetry.execute(

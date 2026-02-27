@@ -209,7 +209,9 @@ defmodule Cyclium.WorkflowEngine do
 
     input_maps_state = Map.put(state.input_maps, config.workflow_id, input_maps)
 
-    Logger.info("[Cyclium.WorkflowEngine] Registered dynamic workflow #{config.workflow_id}")
+    Logger.info("Registered dynamic workflow",
+      cyclium_workflow_id: config.workflow_id
+    )
 
     %{state | workflows: workflows, input_maps: input_maps_state}
   end
@@ -225,7 +227,7 @@ defmodule Cyclium.WorkflowEngine do
 
     input_maps = Map.delete(state.input_maps, workflow_id)
 
-    Logger.info("[Cyclium.WorkflowEngine] Unregistered workflow #{workflow_id}")
+    Logger.info("Unregistered workflow", cyclium_workflow_id: workflow_id)
 
     %{state | workflows: workflows, input_maps: input_maps}
   end
@@ -486,6 +488,83 @@ defmodule Cyclium.WorkflowEngine do
     now = DateTime.utc_now() |> DateTime.truncate(:second)
     actor_id = resolve_actor_id(step_config.actor)
 
+    # Cross-workflow dedup: check for a recent completed episode with matching params
+    case config.episode_reuse && find_reusable_episode(actor_id, step_config.expectation, input) do
+      false ->
+        do_create_step_episode(
+          instance,
+          fresh_instance,
+          config,
+          step_id,
+          step_atom,
+          step_config,
+          actor_id,
+          input,
+          now,
+          state
+        )
+
+      %{id: episode_id} = reused ->
+        step_states =
+          Map.put(fresh_instance.step_states, step_id, %{
+            "status" => "done",
+            "episode_id" => episode_id,
+            "reused" => true,
+            "attempts" => 0,
+            "result" => %{
+              "classification" => Map.get(reused, :classification),
+              "summary" => Map.get(reused, :summary),
+              "confidence" => Map.get(reused, :confidence)
+            }
+          })
+
+        WorkflowInstances.update_step_states(instance.id, step_states)
+
+        :telemetry.execute([:cyclium, :workflow, :step_reused], %{count: 1}, %{
+          workflow_id: config.workflow_id,
+          instance_id: instance.id,
+          step_id: step_atom,
+          reused_episode_id: episode_id
+        })
+
+        # Check if all steps done after reuse
+        all_done? = Enum.all?(step_states, fn {_k, v} -> v["status"] == "done" end)
+
+        if all_done? do
+          complete_workflow(fresh_instance, config, state)
+        else
+          start_ready_steps(fresh_instance, config, state)
+        end
+
+      nil ->
+        # No reusable episode — create a new one
+        do_create_step_episode(
+          instance,
+          fresh_instance,
+          config,
+          step_id,
+          step_atom,
+          step_config,
+          actor_id,
+          input,
+          now,
+          state
+        )
+    end
+  end
+
+  defp do_create_step_episode(
+         instance,
+         fresh_instance,
+         config,
+         step_id,
+         step_atom,
+         step_config,
+         actor_id,
+         input,
+         now,
+         state
+       ) do
     # Create episode with workflow correlation (inheriting mode from instance)
     # Merge per-step overrides from dry_run_opts["steps"][step_id] into the episode opts
     episode_dry_run_opts = resolve_step_dry_run_opts(fresh_instance.dry_run_opts, step_id)
@@ -534,8 +613,8 @@ defmodule Cyclium.WorkflowEngine do
         state
 
       {:error, reason} ->
-        Logger.error(
-          "[Cyclium.WorkflowEngine] Failed to create episode for step #{step_id}: #{inspect(reason)}"
+        Logger.error("Failed to create episode for workflow step: #{inspect(reason)}",
+          cyclium_step_id: step_id
         )
 
         state
@@ -560,14 +639,37 @@ defmodule Cyclium.WorkflowEngine do
   end
 
   defp fail_workflow(instance, config, step_id, state) do
-    # Cancel any running steps
+    # Cancel any running or pending steps
     Enum.each(instance.step_states, fn {sid, step_state} ->
-      if sid != step_id and step_state["status"] == "running" do
-        if episode_id = step_state["episode_id"] do
-          Cyclium.Episodes.cancel(episode_id, "workflow_aborted")
+      if sid != step_id do
+        case step_state["status"] do
+          "running" ->
+            if episode_id = step_state["episode_id"] do
+              Cyclium.Episodes.cancel(episode_id, "workflow_aborted")
+            end
+
+          status when status in ["pending", "retrying"] ->
+            # Mark pending/retrying steps as failed in step_states
+            :ok
+
+          _ ->
+            :ok
         end
       end
     end)
+
+    # Update step_states: mark all non-done, non-failed steps as canceled
+    step_states =
+      Enum.map(instance.step_states, fn {sid, step_state} ->
+        if sid != step_id and step_state["status"] in ["pending", "retrying"] do
+          {sid, Map.put(step_state, "status", "canceled")}
+        else
+          {sid, step_state}
+        end
+      end)
+      |> Enum.into(%{})
+
+    WorkflowInstances.update_step_states(instance.id, step_states)
 
     # Cancel any pending retry timers
     state =
@@ -579,6 +681,9 @@ defmodule Cyclium.WorkflowEngine do
           acc
         end
       end)
+
+    # Optionally clear findings raised by this workflow's episodes
+    maybe_clear_workflow_findings(instance)
 
     WorkflowInstances.update_status(instance.id, :failed)
 
@@ -596,6 +701,44 @@ defmodule Cyclium.WorkflowEngine do
     })
 
     state
+  end
+
+  defp maybe_clear_workflow_findings(instance) do
+    dry_run_opts = instance.dry_run_opts || %{}
+    metadata = instance.trigger_ref || %{}
+
+    clear? =
+      Map.get(dry_run_opts, "clear_findings_on_cancel", false) ||
+        Map.get(metadata, "clear_findings_on_cancel", false)
+
+    if clear? do
+      clear_workflow_findings(instance)
+    end
+  end
+
+  defp clear_workflow_findings(instance) do
+    # Collect episode IDs from all workflow steps
+    episode_ids =
+      instance.step_states
+      |> Enum.flat_map(fn {_sid, step_state} ->
+        case step_state["episode_id"] do
+          nil -> []
+          id -> [id]
+        end
+      end)
+
+    # Clear active findings raised by these episodes
+    if episode_ids != [] do
+      import Ecto.Query
+
+      now = DateTime.utc_now() |> DateTime.truncate(:second)
+
+      from(f in Cyclium.Schemas.Finding,
+        where: f.raised_by_episode_id in ^episode_ids,
+        where: f.status == :active
+      )
+      |> Cyclium.repo().update_all(set: [status: :cleared, cleared_at: now, updated_at: now])
+    end
   end
 
   defp extract_step_result(payload) do
@@ -663,8 +806,8 @@ defmodule Cyclium.WorkflowEngine do
         workflow_module.__workflow_step_input__(step_atom, trigger_ref, prior)
       rescue
         e ->
-          Logger.warning(
-            "[Cyclium.WorkflowEngine] input_fn failed for step #{step_atom}: #{inspect(e)}"
+          Logger.warning("input_fn failed for step: #{inspect(e)}",
+            cyclium_step_id: step_atom
           )
 
           %{}
@@ -702,6 +845,38 @@ defmodule Cyclium.WorkflowEngine do
       empty when map_size(empty) == 0 -> nil
       merged -> merged
     end
+  end
+
+  @dedup_window_ms :timer.minutes(5)
+
+  defp find_reusable_episode(actor_id, expectation, input) do
+    exp_str = to_string(expectation)
+    cutoff = DateTime.utc_now() |> DateTime.add(-@dedup_window_ms, :millisecond)
+    input_hash = :erlang.phash2(input)
+
+    import Ecto.Query
+
+    episodes =
+      from(e in Cyclium.Schemas.Episode,
+        where:
+          e.actor_id == ^actor_id and
+            e.expectation_id == ^exp_str and
+            e.status == :done and
+            e.started_at >= ^cutoff,
+        order_by: [desc: e.started_at],
+        limit: 5
+      )
+      |> Cyclium.repo().all()
+
+    # Match by input hash (approximate — compares the trigger_ref input)
+    Enum.find(episodes, fn ep ->
+      ep_input =
+        get_in(ep.trigger_ref || %{}, ["input"]) || get_in(ep.trigger_ref || %{}, [:input])
+
+      :erlang.phash2(ep_input) == input_hash
+    end)
+  rescue
+    _ -> nil
   end
 
   defp runner do

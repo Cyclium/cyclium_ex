@@ -26,7 +26,14 @@ defmodule Cyclium.Expectation do
           synthesizer: module() | nil,
           recovery_policy: :fail | :restart,
           window: Cyclium.Window.window_size() | nil,
-          dry_run: keyword() | nil
+          dry_run: keyword() | nil,
+          sample_rate: float() | nil,
+          circuit_breaker: map() | nil,
+          adaptive_budget: boolean(),
+          service_levels: map() | nil,
+          finding_enrichment: (map(), map() -> {:ok, map()} | :skip) | {module(), atom()} | nil,
+          escalation_rules: map() | nil,
+          finding_ttl_seconds: pos_integer() | nil
         }
 
   defstruct [
@@ -49,6 +56,13 @@ defmodule Cyclium.Expectation do
     description: "",
     recovery_policy: :fail,
     window: nil,
-    dry_run: nil
+    dry_run: nil,
+    sample_rate: nil,
+    circuit_breaker: nil,
+    adaptive_budget: false,
+    service_levels: nil,
+    finding_enrichment: nil,
+    escalation_rules: nil,
+    finding_ttl_seconds: nil
   ]
 end

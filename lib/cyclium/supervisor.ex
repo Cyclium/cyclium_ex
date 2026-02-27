@@ -11,6 +11,11 @@ defmodule Cyclium.Supervisor do
       Application.put_env(:cyclium, :pubsub, pubsub)
     end
 
+    Cyclium.CircuitBreaker.ensure_table()
+    Cyclium.ServiceLevels.ensure_table()
+    Cyclium.AdaptiveBudget.ensure_table()
+    Cyclium.Findings.Config.ensure_table()
+
     children =
       [
         {DynamicSupervisor, name: Cyclium.ActorSupervisor, strategy: :one_for_one},
@@ -46,6 +51,13 @@ defmodule Cyclium.Supervisor do
         []
       end
 
-    reconciler ++ workflow_engine ++ work_claims
+    expiration_sweep =
+      if Application.get_env(:cyclium, :finding_expiration_sweep, false) do
+        [Cyclium.Findings.ExpirationSweep]
+      else
+        []
+      end
+
+    reconciler ++ workflow_engine ++ work_claims ++ expiration_sweep
   end
 end

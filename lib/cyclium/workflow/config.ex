@@ -7,8 +7,9 @@ defmodule Cyclium.Workflow.Config do
           workflow_id: binary(),
           trigger: {:event, binary()} | :manual,
           steps: %{atom() => Cyclium.Workflow.StepConfig.t()},
-          failure_policies: %{atom() => map()}
+          failure_policies: %{atom() => map()},
+          episode_reuse: boolean()
         }
 
-  defstruct [:workflow_id, :trigger, steps: %{}, failure_policies: %{}]
+  defstruct [:workflow_id, :trigger, steps: %{}, failure_policies: %{}, episode_reuse: true]
 end

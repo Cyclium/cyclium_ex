@@ -53,9 +53,7 @@ defmodule Cyclium.DynamicActor.Loader do
       |> Enum.map(&start_from_definition/1)
       |> Enum.count(&match?({:ok, _}, &1))
 
-    Logger.info(
-      "[Cyclium.DynamicActor.Loader] Started #{started}/#{length(definitions)} dynamic actors"
-    )
+    Logger.info("Started #{started}/#{length(definitions)} dynamic actors")
 
     {:ok, started}
   end
@@ -107,9 +105,7 @@ defmodule Cyclium.DynamicActor.Loader do
       |> Enum.map(&stop(&1.actor_id))
       |> Enum.count(&(&1 == :ok))
 
-    Logger.info(
-      "[Cyclium.DynamicActor.Loader] Stopped #{stopped}/#{length(definitions)} dynamic actors"
-    )
+    Logger.info("Stopped #{stopped}/#{length(definitions)} dynamic actors")
 
     {:ok, stopped}
   end
@@ -186,24 +182,24 @@ defmodule Cyclium.DynamicActor.Loader do
            name: name, config: config, expectations: expectations
          }) do
       {:ok, pid} ->
-        Logger.info(
-          "[Cyclium.DynamicActor.Loader] Started dynamic actor #{defn.actor_id} (#{inspect(pid)})"
+        Logger.info("Started dynamic actor (#{inspect(pid)})",
+          cyclium_actor_id: defn.actor_id
         )
 
         cache_strategy_from_definition(defn)
         {:ok, pid}
 
       {:error, {:already_started, pid}} ->
-        Logger.debug(
-          "[Cyclium.DynamicActor.Loader] Dynamic actor #{defn.actor_id} already running"
+        Logger.debug("Dynamic actor already running",
+          cyclium_actor_id: defn.actor_id
         )
 
         cache_strategy_from_definition(defn)
         {:ok, pid}
 
       {:error, reason} = err ->
-        Logger.error(
-          "[Cyclium.DynamicActor.Loader] Failed to start #{defn.actor_id}: #{inspect(reason)}"
+        Logger.error("Failed to start dynamic actor: #{inspect(reason)}",
+          cyclium_actor_id: defn.actor_id
         )
 
         err
@@ -327,8 +323,8 @@ defmodule Cyclium.DynamicActor.Loader do
       %{"outputs" => types} when is_list(types) ->
         Enum.each(types, fn type ->
           unless Cyclium.Output.Adapter.resolve(type) do
-            Logger.warning(
-              "[Cyclium.DynamicActor.Loader] Actor #{defn.actor_id}: output type #{inspect(type)} has no registered adapter"
+            Logger.warning("Output type #{inspect(type)} has no registered adapter",
+              cyclium_actor_id: defn.actor_id
             )
           end
         end)

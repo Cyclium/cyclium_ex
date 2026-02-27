@@ -18,6 +18,12 @@ defmodule Cyclium.EpisodeRunner do
   def execute_loop(%Episode{} = episode, strategy, state, opts \\ []) do
     if synth = opts[:synthesizer], do: Process.put(:cyclium_synthesizer, synth)
 
+    Logger.metadata(
+      cyclium_actor_id: episode.actor_id,
+      cyclium_episode_id: episode.id,
+      cyclium_expectation_id: episode.expectation_id
+    )
+
     deadline_ref =
       Process.send_after(self(), :budget_wall_exceeded, episode.budget["max_wall_ms"] || 120_000)
 
@@ -155,7 +161,8 @@ defmodule Cyclium.EpisodeRunner do
               case resolve_synthesizer() do
                 nil ->
                   Logger.warning(
-                    "[Cyclium] No :synthesizer configured — :synthesize step will pass prompt_ctx through as-is"
+                    "No :synthesizer configured — :synthesize step will pass prompt_ctx through as-is",
+                    cyclium_episode_id: episode.id
                   )
 
                   step = journal_step!(episode, :synthesis, %{args_redacted: prompt_ctx})
@@ -347,7 +354,11 @@ defmodule Cyclium.EpisodeRunner do
       confidence: converge_result.confidence
     )
 
-    # Step 7: Bus event + telemetry
+    # Step 7: Service levels and adaptive budget tracking
+    maybe_record_service_levels(episode, final_status)
+    maybe_record_adaptive_budget(episode)
+
+    # Step 8: Bus event + telemetry
     bus_event = if final_status == :failed, do: "episode.failed", else: "episode.completed"
 
     Cyclium.Bus.broadcast(bus_event, %{
@@ -396,8 +407,8 @@ defmodule Cyclium.EpisodeRunner do
           :ok
 
         {:error, reason} ->
-          Logger.warning(
-            "[Cyclium] Failed to persist finding #{inspect(action)}: #{inspect(reason)}"
+          Logger.warning("Failed to persist finding: #{inspect(reason)}",
+            finding_action: inspect(action)
           )
       end
     end)
@@ -690,5 +701,65 @@ defmodule Cyclium.EpisodeRunner do
 
       {:ok, :dry_run_skipped}
     end)
+  end
+
+  defp maybe_record_service_levels(episode, final_status) do
+    duration_ms =
+      if episode.started_at do
+        DateTime.diff(DateTime.utc_now(), episode.started_at, :millisecond)
+      else
+        0
+      end
+
+    success = final_status in [:done, :partially_failed]
+
+    Cyclium.ServiceLevels.record(
+      episode.actor_id,
+      episode.expectation_id,
+      %{duration_ms: duration_ms, success: success}
+    )
+
+    case Cyclium.ServiceLevels.check(episode.actor_id, episode.expectation_id) do
+      :ok ->
+        :ok
+
+      {:breach, details} ->
+        :telemetry.execute(
+          [:cyclium, :service_levels, :breach],
+          %{count: 1},
+          Map.merge(details, %{
+            actor_id: episode.actor_id,
+            expectation_id: episode.expectation_id
+          })
+        )
+
+        Cyclium.Bus.broadcast("service_levels.breach", %{
+          actor_id: episode.actor_id,
+          expectation_id: episode.expectation_id,
+          breach: details
+        })
+    end
+  rescue
+    _ -> :ok
+  end
+
+  defp maybe_record_adaptive_budget(episode) do
+    wall_ms =
+      if episode.started_at do
+        DateTime.diff(DateTime.utc_now(), episode.started_at, :millisecond)
+      else
+        0
+      end
+
+    # Extract turns and tokens from episode steps count (approximate)
+    turns = Cyclium.Episodes.count_steps(episode.id) || 0
+
+    Cyclium.AdaptiveBudget.record(
+      episode.actor_id,
+      episode.expectation_id,
+      %{turns_used: turns, tokens_used: 0, wall_ms: wall_ms}
+    )
+  rescue
+    _ -> :ok
   end
 end

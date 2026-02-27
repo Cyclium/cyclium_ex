@@ -76,7 +76,7 @@ defmodule Cyclium.Recovery do
 
     stale = Episodes.list_stale_running(stale_after_ms)
 
-    Logger.info("[Cyclium.Recovery] Sweep found #{length(stale)} stale episode(s)")
+    Logger.info("Recovery sweep found #{length(stale)} stale episode(s)")
 
     results =
       Enum.map(stale, fn episode ->
@@ -101,7 +101,7 @@ defmodule Cyclium.Recovery do
       %{stale_after_ms: stale_after_ms}
     )
 
-    Logger.info("[Cyclium.Recovery] Sweep complete: #{inspect(counts)}")
+    Logger.info("Recovery sweep complete: #{inspect(counts)}")
 
     {:ok, counts}
   end
@@ -111,9 +111,10 @@ defmodule Cyclium.Recovery do
 
     case policy do
       :restart ->
-        Logger.info(
-          "[Cyclium.Recovery] Restarting episode #{episode.id} " <>
-            "(#{episode.actor_id}/#{episode.expectation_id})"
+        Logger.info("Restarting episode",
+          cyclium_episode_id: episode.id,
+          cyclium_actor_id: episode.actor_id,
+          cyclium_expectation_id: episode.expectation_id
         )
 
         # Reset status to :running (clear the "recovering" phase)
@@ -122,9 +123,10 @@ defmodule Cyclium.Recovery do
         :restarted
 
       :fail ->
-        Logger.info(
-          "[Cyclium.Recovery] Failing orphaned episode #{episode.id} " <>
-            "(#{episode.actor_id}/#{episode.expectation_id})"
+        Logger.info("Failing orphaned episode",
+          cyclium_episode_id: episode.id,
+          cyclium_actor_id: episode.actor_id,
+          cyclium_expectation_id: episode.expectation_id
         )
 
         Episodes.update_status(episode.id, :failed,

@@ -40,6 +40,7 @@ defmodule Cyclium.Workflow do
       Module.register_attribute(__MODULE__, :cyclium_wf_trigger, accumulate: false)
       Module.register_attribute(__MODULE__, :cyclium_wf_steps, accumulate: true)
       Module.register_attribute(__MODULE__, :cyclium_wf_failure_policies, accumulate: true)
+      Module.register_attribute(__MODULE__, :cyclium_wf_episode_reuse, accumulate: false)
 
       @before_compile Cyclium.Workflow
     end
@@ -49,6 +50,8 @@ defmodule Cyclium.Workflow do
     trigger = Module.get_attribute(env.module, :cyclium_wf_trigger)
     steps = Module.get_attribute(env.module, :cyclium_wf_steps) || []
     policies = Module.get_attribute(env.module, :cyclium_wf_failure_policies) || []
+    episode_reuse = Module.get_attribute(env.module, :cyclium_wf_episode_reuse)
+    episode_reuse = if episode_reuse == nil, do: true, else: episode_reuse
 
     unless trigger do
       raise CompileError,
@@ -125,7 +128,8 @@ defmodule Cyclium.Workflow do
           workflow_id: unquote(workflow_id),
           trigger: unquote(Macro.escape(trigger)),
           steps: unquote(Macro.escape(step_data)),
-          failure_policies: unquote(Macro.escape(policy_map))
+          failure_policies: unquote(Macro.escape(policy_map)),
+          episode_reuse: unquote(episode_reuse)
         }
       end
     end
@@ -183,6 +187,12 @@ defmodule Cyclium.Workflow.DSL do
         depends_on: depends_on,
         requires_approval: requires_approval
       }
+    end
+  end
+
+  defmacro disable_episode_reuse do
+    quote do
+      @cyclium_wf_episode_reuse false
     end
   end
 
