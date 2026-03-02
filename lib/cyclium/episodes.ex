@@ -31,6 +31,7 @@ defmodule Cyclium.Episodes do
     mode = Keyword.get(opts, :mode, :live)
     payload = Keyword.get(opts, :trigger_payload, %{})
     overrides = Keyword.get(opts, :overrides)
+    spec_rev = Keyword.get(opts, :spec_rev)
 
     dry_run_opts =
       if mode == :dry_run and overrides do
@@ -39,7 +40,7 @@ defmodule Cyclium.Episodes do
         |> Map.new()
       end
 
-    now = DateTime.utc_now() |> DateTime.truncate(:second)
+    now = DateTime.utc_now()
 
     attrs = %{
       actor_id: to_string(actor_id),
@@ -53,6 +54,7 @@ defmodule Cyclium.Episodes do
       status: :running,
       mode: to_string(mode),
       dry_run_opts: dry_run_opts,
+      spec_rev: spec_rev,
       started_at: now
     }
 
@@ -149,7 +151,7 @@ defmodule Cyclium.Episodes do
 
     from(e in Episode,
       where: e.actor_id in ^actor_ids,
-      order_by: [{^order, e.started_at}],
+      order_by: [{^order, e.started_at}, {^order, e.workflow_step_no}, {^order, e.queued_at}],
       limit: ^limit,
       offset: ^offset
     )
@@ -195,7 +197,7 @@ defmodule Cyclium.Episodes do
     base =
       from(e in Episode,
         where: e.actor_id in ^actor_ids,
-        order_by: [{^order, e.started_at}],
+        order_by: [{^order, e.started_at}, {^order, e.workflow_step_no}, {^order, e.queued_at}],
         limit: ^limit,
         offset: ^offset
       )
@@ -282,7 +284,7 @@ defmodule Cyclium.Episodes do
     from(e in Episode,
       where: e.id == ^episode_id and e.status == :running and is_nil(e.archived_at)
     )
-    |> repo().update_all(set: [phase: "recovering"])
+    |> repo().update_all(set: [phase: "recovering"], inc: [attempts: 1])
     |> case do
       {1, _} -> {:ok, get!(episode_id)}
       {0, _} -> {:error, :already_claimed}
@@ -309,7 +311,7 @@ defmodule Cyclium.Episodes do
 
   defp maybe_set_finished_at(attrs, status)
        when status in [:done, :failed, :partially_failed, :canceled] do
-    Map.put_new(attrs, :finished_at, DateTime.utc_now() |> DateTime.truncate(:second))
+    Map.put_new(attrs, :finished_at, DateTime.utc_now())
   end
 
   defp maybe_set_finished_at(attrs, _status), do: attrs

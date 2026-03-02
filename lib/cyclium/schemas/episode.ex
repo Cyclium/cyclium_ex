@@ -30,9 +30,10 @@ defmodule Cyclium.Schemas.Episode do
     field(:error_detail, :map)
     field(:workflow_instance_id, :binary_id)
     field(:workflow_step_id, :string)
-    field(:started_at, :utc_datetime)
-    field(:finished_at, :utc_datetime)
-    field(:queued_at, :utc_datetime)
+    field(:workflow_step_no, :integer)
+    field(:started_at, :utc_datetime_usec)
+    field(:finished_at, :utc_datetime_usec)
+    field(:queued_at, :utc_datetime_usec)
     field(:archived_at, :utc_datetime)
     field(:mode, :string, default: "live")
     field(:dry_run_opts, :map)
@@ -66,6 +67,7 @@ defmodule Cyclium.Schemas.Episode do
       :error_detail,
       :workflow_instance_id,
       :workflow_step_id,
+      :workflow_step_no,
       :started_at,
       :finished_at,
       :queued_at,

@@ -85,6 +85,7 @@ defmodule Cyclium.Actor do
     max_concurrent = Module.get_attribute(env.module, :cyclium_max_concurrent) || 3
     overflow = Module.get_attribute(env.module, :cyclium_overflow) || :queue
     expectations = Module.get_attribute(env.module, :cyclium_expectations) || []
+    spec_rev = Module.get_attribute(env.module, :cyclium_spec_rev)
 
     actor_id =
       env.module |> Module.split() |> List.last() |> Macro.underscore() |> String.to_atom()
@@ -97,7 +98,8 @@ defmodule Cyclium.Actor do
           synthesizer: unquote(synthesizer),
           capabilities: unquote(capabilities),
           max_concurrent_episodes: unquote(max_concurrent),
-          episode_overflow: unquote(overflow)
+          episode_overflow: unquote(overflow),
+          spec_rev: unquote(spec_rev)
         }
       end
 
@@ -142,6 +144,12 @@ defmodule Cyclium.Actor.DSL do
   defmacro episode_overflow(policy) do
     quote do
       @cyclium_overflow unquote(policy)
+    end
+  end
+
+  defmacro spec_rev(rev) do
+    quote do
+      @cyclium_spec_rev unquote(rev)
     end
   end
 
@@ -783,7 +791,7 @@ defmodule Cyclium.Actor.Server do
     # Merge dry_run_opts: fire-time overrides take priority over expectation-level
     dry_run_opts = merge_dry_run_opts(expectation.dry_run, fire_overrides, mode)
 
-    now = DateTime.utc_now() |> DateTime.truncate(:second)
+    now = DateTime.utc_now()
 
     episode_params = %{
       actor_id: to_string(state.actor_id),
@@ -796,6 +804,7 @@ defmodule Cyclium.Actor.Server do
       log_strategy: to_string(expectation.log_strategy),
       mode: to_string(mode),
       dry_run_opts: dry_run_opts,
+      spec_rev: state.config.spec_rev,
       started_at: now
     }
 

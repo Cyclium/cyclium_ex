@@ -144,11 +144,13 @@ defmodule Cyclium.EpisodeRunner do
         {:synthesize, prompt_ctx} ->
           :telemetry.execute([:cyclium, :step, :synthesis], %{count: 1}, %{episode_id: episode.id})
 
+          {prompt_for_synth, prompt_for_storage} = split_transient(prompt_ctx)
+
           case dry_run_synthesis_override(episode) do
             {:mock, mock_result} ->
               step =
                 journal_step!(episode, :synthesis, %{
-                  args_redacted: prompt_ctx,
+                  args_redacted: prompt_for_storage,
                   result_ref: %{"_dry_run" => true}
                 })
 
@@ -169,30 +171,30 @@ defmodule Cyclium.EpisodeRunner do
                     cyclium_episode_id: episode.id
                   )
 
-                  step = journal_step!(episode, :synthesis, %{args_redacted: prompt_ctx})
+                  step = journal_step!(episode, :synthesis, %{args_redacted: prompt_for_storage})
 
                   handle_strategy_result(
                     episode,
                     strategy,
                     state,
                     step,
-                    {:ok, prompt_ctx},
+                    {:ok, prompt_for_synth},
                     started_at
                   )
 
                 synthesizer ->
                   episode_ctx = build_episode_ctx(episode)
 
-                  case synthesizer.synthesize(prompt_ctx, episode_ctx) do
+                  case synthesizer.synthesize(prompt_for_synth, episode_ctx) do
                     {:ok, result} ->
                       token_cost =
                         if function_exported?(synthesizer, :estimate_tokens, 1),
-                          do: synthesizer.estimate_tokens(prompt_ctx),
+                          do: synthesizer.estimate_tokens(prompt_for_synth),
                           else: 0
 
                       step =
                         journal_step!(episode, :synthesis, %{
-                          args_redacted: prompt_ctx,
+                          args_redacted: prompt_for_storage,
                           cost_tokens: token_cost
                         })
 
@@ -210,7 +212,7 @@ defmodule Cyclium.EpisodeRunner do
                     {:error, error_class, detail} ->
                       step =
                         journal_step!(episode, :synthesis, %{
-                          args_redacted: prompt_ctx,
+                          args_redacted: prompt_for_storage,
                           error_class: to_string(error_class),
                           error_detail: inspect(detail)
                         })
@@ -671,6 +673,17 @@ defmodule Cyclium.EpisodeRunner do
   end
 
   @synthesis_redact_keys ~w(system_prompt system user user_message prompt message)
+
+  # Splits a synthesis payload into {full_for_synthesizer, stripped_for_storage}.
+  # Keys listed under :__transient__ are passed to the synthesizer but omitted
+  # from the persisted args_redacted. The :__transient__ key itself is always removed.
+  defp split_transient(prompt_ctx) when is_map(prompt_ctx) do
+    {transient_keys, full} = Map.pop(prompt_ctx, :__transient__, [])
+    storage = Map.drop(full, transient_keys)
+    {full, storage}
+  end
+
+  defp split_transient(prompt_ctx), do: {prompt_ctx, prompt_ctx}
 
   defp redact_synthesis_args(nil), do: nil
 

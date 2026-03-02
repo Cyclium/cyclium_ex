@@ -549,7 +549,7 @@ defmodule Cyclium.WorkflowEngine do
 
     input = resolve_step_input(config, step_atom, fresh_instance.trigger_ref, prior, state)
 
-    now = DateTime.utc_now() |> DateTime.truncate(:second)
+    now = DateTime.utc_now()
     actor_id = resolve_actor_id(step_config.actor)
 
     # Cross-workflow dedup: check for a recent completed episode with matching params
@@ -644,10 +644,13 @@ defmodule Cyclium.WorkflowEngine do
       },
       workflow_instance_id: instance.id,
       workflow_step_id: step_id,
+      workflow_step_no: compute_step_depth(step_atom, config),
+      spec_rev: resolve_spec_rev(step_config.actor),
       mode: fresh_instance.mode || "live",
       dry_run_opts: episode_dry_run_opts,
       status: :running,
-      started_at: now
+      started_at: now,
+      queued_at: now
     }
 
     case Cyclium.Episodes.create(episode_attrs) do
@@ -948,6 +951,31 @@ defmodule Cyclium.WorkflowEngine do
     end)
   rescue
     _ -> nil
+  end
+
+  # Returns the spec_rev from the actor module's config, or nil if unavailable.
+  defp resolve_spec_rev(actor) when is_atom(actor) do
+    if function_exported?(actor, :__cyclium_config__, 0) do
+      actor.__cyclium_config__()[:spec_rev]
+    end
+  end
+
+  defp resolve_spec_rev(_actor), do: nil
+
+  # Returns the topological depth of a step in the workflow DAG.
+  # Steps with no dependencies are depth 0; each dependent layer adds 1.
+  # Used to populate `workflow_step_no` on the episode for stable sort ordering.
+  defp compute_step_depth(step_atom, config) do
+    step = Map.get(config.steps, step_atom)
+
+    if is_nil(step) or step.depends_on == [] do
+      0
+    else
+      step.depends_on
+      |> Enum.map(&compute_step_depth(&1, config))
+      |> Enum.max()
+      |> Kernel.+(1)
+    end
   end
 
   defp runner do

@@ -1113,18 +1113,79 @@ Adaptive budgets are advisory only — they do not automatically adjust episode 
 
 ### Log strategies
 
-Set per-expectation via `log_strategy`. Controls both the materialized log (LogProjector) and what gets stored in step journal columns (`args_redacted`, `result_ref`):
+Set per-expectation via `log_strategy`. Controls both what gets stored in step journal columns (`args_redacted`, `result_ref`) and what the materialized log renders:
 
 | Strategy | Step journal `args_redacted` | Step journal `result_ref` | Materialized log |
 |---|---|---|---|
 | `:none` | omitted | omitted | none |
 | `:summary_only` | omitted | omitted | one-line status summary |
 | `:timeline` | tool name + action only | summary/IDs only | step-by-step with timestamps |
-| `:full_debug` | full prompt_ctx / tool args | full result payload | timeline + args, results, errors |
+| `:full_debug` | surviving context after earlier layers | full result payload | timeline + args, results, errors |
 
 Use `:full_debug` for audit-sensitive workflows where you need to reconstruct exactly what context an LLM had (EOX predictions, SKU classifications). Use `:timeline` for high-frequency episodes where you want the flow visible without storing full payloads.
 
-Tool implementations also control what gets journaled via two callbacks that run **before** log_strategy filtering: `redact/1` strips bulky data from args, and `redact_result/1` strips bulky data from results. This gives tools domain-specific control over what's stored, independent of the episode's log_strategy.
+**Important:** `log_strategy` is the last layer in a pipeline. By the time it runs, earlier layers have already trimmed the data. "Full" in `:full_debug` means "everything that survived the earlier layers", not necessarily everything the strategy originally passed. See the pipeline below.
+
+The materialized log is built by `LogProjector` reading back from the already-stored step rows — it never re-processes the original payload. Whatever `log_strategy` stored is exactly what appears in the log.
+
+### Storage pipeline for synthesis steps
+
+Every synthesis step passes through three filtering layers in order before anything reaches the database:
+
+```
+synthesis payload from next_step
+        │
+        ▼
+1. __transient__ stripping   — keys listed in :__transient__ are removed from storage
+        │                       but the synthesizer receives the full payload
+        ▼
+2. tool redact callbacks     — redact/1 and redact_result/1 on tool steps
+        │                       (not applicable to synthesis, but runs for tool_call steps)
+        ▼
+3. log_strategy filtering    — controls final shape of args_redacted / result_ref
+        │
+        ▼
+   cyclium_episode_steps (args_redacted, result_ref)
+        │
+        ▼
+   cyclium_episode_logs (rendered by LogProjector from stored step rows)
+```
+
+Each layer has a different scope:
+
+| Layer | Controlled by | Purpose |
+|---|---|---|
+| `__transient__` | Strategy (per synthesis call) | Pass bulk data to LLM without persisting it |
+| `redact/1`, `redact_result/1` | Tool module | Trim domain-specific bulky fields from tool steps |
+| `log_strategy` | Expectation | Set overall verbosity for the whole episode |
+
+### Transient synthesis data
+
+Sometimes a strategy needs to pass large data to the synthesizer (full record lists, raw API payloads) that the LLM needs for context but that you don't want persisted in the step journal or materialized log. Mark those keys under `:__transient__` in the synthesis payload:
+
+```elixir
+def next_step(state, _ctx) do
+  orders = load_orders(state.project_id)
+
+  {:synthesize, %{
+    project_id: state.project_id,
+    project_name: state.project_name,
+    order_count: length(orders),           # small scalar — kept in storage
+    orders: serialize_orders(orders),      # full list — synthesizer needs it, storage does not
+    evidence: build_evidence(orders),      # small structured summary — kept in storage
+    __transient__: [:orders]               # strip :orders before writing args_redacted
+  }}
+end
+```
+
+The runner passes the full map (minus `:__transient__` itself) to `synthesizer.synthesize/2`, then drops the listed keys before handing off to `log_strategy` filtering. The synthesizer receives `orders`; the stored step and rendered log do not, regardless of `log_strategy`.
+
+This is the right tool when:
+- You need full detail for synthesis quality (long order lists, raw API responses, document text)
+- You don't want that data in the audit trail or materialized log
+- You still want other context fields (counts, summaries, IDs) persisted for debugging
+
+It is not a substitute for `log_strategy` — if you want no storage at all for an episode type, use `:none` or `:summary_only`. `__transient__` is surgical; `log_strategy` is wholesale.
 
 Materialized logs are stored in `cyclium_episode_logs` by `Cyclium.LogProjector` and can be queried via `Cyclium.Episodes.get_log(episode_id)`.
 

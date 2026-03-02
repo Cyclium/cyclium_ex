@@ -22,7 +22,8 @@ defmodule Cyclium.EpisodeTask do
     lease_seconds = lease_seconds()
 
     case Cyclium.WorkClaims.gate_acquire(episode.dedupe_key, node_name(),
-           lease_seconds: lease_seconds
+           lease_seconds: lease_seconds,
+           work_type: "episode"
          ) do
       {:ok, :passthrough} -> :ok
       {:ok, _claim} -> :ok

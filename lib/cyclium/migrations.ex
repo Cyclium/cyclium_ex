@@ -21,7 +21,8 @@ defmodule Cyclium.Migrations do
     7 => Cyclium.Migrations.V7,
     8 => Cyclium.Migrations.V8,
     9 => Cyclium.Migrations.V9,
-    10 => Cyclium.Migrations.V10
+    10 => Cyclium.Migrations.V10,
+    11 => Cyclium.Migrations.V11
   }
 
   def up(opts) do
