@@ -228,6 +228,13 @@ defmodule Cyclium.Actor.Server do
         :persistent_term.put({:cyclium_actor_strategy, config.actor_id, exp.id}, exp.strategy)
       end
 
+      if exp.synthesizer do
+        :persistent_term.put(
+          {:cyclium_expectation_synthesizer, config.actor_id, exp.id},
+          exp.synthesizer
+        )
+      end
+
       if exp.service_levels do
         Cyclium.ServiceLevels.register(config.actor_id, exp.id, exp.service_levels)
       end

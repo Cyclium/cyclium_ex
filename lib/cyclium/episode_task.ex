@@ -148,6 +148,11 @@ defmodule Cyclium.EpisodeTask do
       end
 
     registry_result ||
+      :persistent_term.get(
+        {:cyclium_expectation_synthesizer, safe_to_atom(episode.actor_id),
+         safe_to_atom(episode.expectation_id)},
+        nil
+      ) ||
       :persistent_term.get({:cyclium_actor_synthesizer, safe_to_atom(episode.actor_id)}, nil) ||
       Application.get_env(:cyclium, :synthesizer)
   end

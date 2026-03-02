@@ -190,6 +190,8 @@ defmodule Cyclium.ActorTest do
         :persistent_term.erase({:cyclium_actor_synthesizer, :registration_actor})
         :persistent_term.erase({:cyclium_actor_strategy, :registration_actor, :do_work})
         :persistent_term.erase({:cyclium_actor_strategy, :registration_actor, :do_other_work})
+        :persistent_term.erase({:cyclium_expectation_synthesizer, :registration_actor, :do_work})
+        :persistent_term.erase({:cyclium_expectation_synthesizer, :registration_actor, :do_other_work})
       end)
 
       :ok
@@ -208,15 +210,23 @@ defmodule Cyclium.ActorTest do
                RegistrationActor.OtherStrategy
     end
 
-    test "expectation-level synthesizer overrides actor-level in persistent_term" do
-      # :do_work inherits actor-level synthesizer
-      assert :persistent_term.get({:cyclium_actor_synthesizer, :registration_actor}) ==
-               RegistrationActor.FakeSynthesizer
+    test "expectation-level synthesizer is registered in persistent_term" do
+      # :do_other_work declares its own synthesizer — should be in persistent_term
+      assert :persistent_term.get(
+               {:cyclium_expectation_synthesizer, :registration_actor, :do_other_work}
+             ) == RegistrationActor.OtherSynthesizer
+    end
 
-      # :do_other_work declares its own — but synthesizer is registered per-actor not per-expectation
-      # so the expectation struct holds it directly
-      state = :sys.get_state(:registration_actor_test)
-      assert state.expectations[:do_other_work].synthesizer == RegistrationActor.OtherSynthesizer
+    test "expectation inherits actor-level synthesizer in persistent_term" do
+      # :do_work has no explicit synthesizer — inherits actor-level FakeSynthesizer
+      assert :persistent_term.get(
+               {:cyclium_expectation_synthesizer, :registration_actor, :do_work}
+             ) == RegistrationActor.FakeSynthesizer
+
+      # :do_other_work overrides with OtherSynthesizer
+      assert :persistent_term.get(
+               {:cyclium_expectation_synthesizer, :registration_actor, :do_other_work}
+             ) == RegistrationActor.OtherSynthesizer
     end
 
     test "strategy field is set on expectation struct" do
@@ -234,6 +244,26 @@ defmodule Cyclium.ActorTest do
                :not_found
              ) ==
                :not_found
+    end
+
+    test "persistent_term keys are atoms, matching safe_to_atom conversion" do
+      # EpisodeTask receives string actor_id/expectation_id from DB records
+      # and converts them with String.to_existing_atom/1 before lookup.
+      # Verify the registered keys use atoms so the conversion will match.
+      key = {:cyclium_actor_strategy, :registration_actor, :do_work}
+      assert :persistent_term.get(key) == RegistrationActor.FakeStrategy
+
+      # Simulate what EpisodeTask does: convert strings to existing atoms
+      actor_atom = String.to_existing_atom("registration_actor")
+      exp_atom = String.to_existing_atom("do_work")
+      assert :persistent_term.get({:cyclium_actor_strategy, actor_atom, exp_atom}) ==
+               RegistrationActor.FakeStrategy
+
+      # Same for expectation-level synthesizer
+      exp_synth_atom = String.to_existing_atom("do_other_work")
+      assert :persistent_term.get(
+               {:cyclium_expectation_synthesizer, actor_atom, exp_synth_atom}
+             ) == RegistrationActor.OtherSynthesizer
     end
   end
 end
