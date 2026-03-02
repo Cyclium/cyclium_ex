@@ -233,6 +233,7 @@ defmodule Cyclium.Findings do
             attrs =
               params
               |> Map.put(:raised_by_episode_id, episode.id)
+              |> Map.put(:expectation_id, episode.expectation_id)
               |> Map.put_new(:raised_at, now)
               |> Map.put_new(:status, :active)
               |> Map.put(:updated_at, now)

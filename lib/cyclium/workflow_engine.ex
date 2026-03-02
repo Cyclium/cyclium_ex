@@ -732,13 +732,19 @@ defmodule Cyclium.WorkflowEngine do
       end
     end)
 
-    # Update step_states: mark all non-done, non-failed steps as canceled
+    # Update step_states: mark the triggering step as failed,
+    # and all non-done, non-failed sibling steps as canceled
     step_states =
       Enum.map(instance.step_states, fn {sid, step_state} ->
-        if sid != step_id and step_state["status"] in ["pending", "retrying"] do
-          {sid, Map.put(step_state, "status", "canceled")}
-        else
-          {sid, step_state}
+        cond do
+          sid == step_id ->
+            {sid, Map.put(step_state, "status", "failed")}
+
+          step_state["status"] in ["pending", "retrying"] ->
+            {sid, Map.put(step_state, "status", "canceled")}
+
+          true ->
+            {sid, step_state}
         end
       end)
       |> Enum.into(%{})

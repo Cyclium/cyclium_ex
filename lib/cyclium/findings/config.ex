@@ -82,37 +82,27 @@ defmodule Cyclium.Findings.Config do
   end
 
   @doc """
-  Collect all registered escalation rules across all expectations.
+  Return all registered (actor_id, expectation_id, rules_by_class) tuples
+  that have escalation rules configured.
 
-  Returns a merged map of `%{class => rules}`. When multiple expectations
-  register rules for the same class, rules are merged (later registrations
-  override earlier ones for the same class).
-
-  Falls back to `Application.get_env(:cyclium, :escalation_rules, %{})` when
-  no per-expectation rules are registered.
+  Used by `Cyclium.Findings.Escalation.sweep/0` to scope rules to the
+  correct actor + expectation pair rather than merging them globally by class.
   """
-  def all_escalation_rules do
+  def escalation_pairs do
     ensure_table()
 
-    per_expectation =
-      :ets.foldl(
-        fn {_key, config}, acc ->
-          case Map.get(config, :escalation_rules) do
-            rules when is_map(rules) and map_size(rules) > 0 ->
-              Map.merge(acc, rules)
+    :ets.foldl(
+      fn {{actor_id, exp_id}, config}, acc ->
+        case Map.get(config, :escalation_rules) do
+          rules when is_map(rules) and map_size(rules) > 0 ->
+            [{actor_id, exp_id, rules} | acc]
 
-            _ ->
-              acc
-          end
-        end,
-        %{},
-        @table
-      )
-
-    if map_size(per_expectation) > 0 do
-      per_expectation
-    else
-      Application.get_env(:cyclium, :escalation_rules, %{})
-    end
+          _ ->
+            acc
+        end
+      end,
+      [],
+      @table
+    )
   end
 end

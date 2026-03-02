@@ -8,7 +8,6 @@ defmodule Cyclium.Findings.ConfigTest do
 
     on_exit(fn ->
       Application.delete_env(:cyclium, :finding_enrichment)
-      Application.delete_env(:cyclium, :escalation_rules)
     end)
 
     :ok
@@ -69,8 +68,10 @@ defmodule Cyclium.Findings.ConfigTest do
     end
   end
 
-  describe "all_escalation_rules/0" do
-    test "collects rules from registered expectations" do
+  describe "escalation_pairs/0" do
+    test "collects scoped rules from registered expectations" do
+      :ets.delete_all_objects(:cyclium_findings_config)
+
       Config.register("actor_1", "exp_1", %{
         escalation_rules: %{
           "vendor_delay" => [%{after_minutes: 60, escalate_to: :high}]
@@ -83,38 +84,33 @@ defmodule Cyclium.Findings.ConfigTest do
         }
       })
 
-      rules = Config.all_escalation_rules()
-      assert Map.has_key?(rules, "vendor_delay")
-      assert Map.has_key?(rules, "service_outage")
+      pairs = Config.escalation_pairs()
+      assert length(pairs) == 2
+
+      assert Enum.any?(pairs, fn {a, e, _} -> a == "actor_1" and e == "exp_1" end)
+      assert Enum.any?(pairs, fn {a, e, _} -> a == "actor_2" and e == "exp_2" end)
     end
 
-    test "falls back to app env when no per-expectation rules" do
-      Application.put_env(:cyclium, :escalation_rules, %{
-        "fallback_class" => [%{after_minutes: 120, escalate_to: :high}]
-      })
-
-      # Clear any registered rules by re-creating table
+    test "excludes expectations without escalation rules" do
       :ets.delete_all_objects(:cyclium_findings_config)
 
-      rules = Config.all_escalation_rules()
-      assert Map.has_key?(rules, "fallback_class")
-    end
+      Config.register("actor_a", "exp_a", %{default_ttl_seconds: 3600})
 
-    test "prefers per-expectation rules over app env" do
-      Application.put_env(:cyclium, :escalation_rules, %{
-        "from_app" => [%{after_minutes: 60, escalate_to: :high}]
-      })
-
-      Config.register("actor_p", "exp_p", %{
+      Config.register("actor_b", "exp_b", %{
         escalation_rules: %{
-          "from_dsl" => [%{after_minutes: 30, escalate_to: :critical}]
+          "delay" => [%{after_minutes: 60, escalate_to: :high}]
         }
       })
 
-      rules = Config.all_escalation_rules()
-      # Should have DSL rules, not app env
-      assert Map.has_key?(rules, "from_dsl")
-      refute Map.has_key?(rules, "from_app")
+      pairs = Config.escalation_pairs()
+      assert length(pairs) == 1
+      assert [{_actor, _exp, rules}] = pairs
+      assert Map.has_key?(rules, "delay")
+    end
+
+    test "returns empty list when nothing registered" do
+      :ets.delete_all_objects(:cyclium_findings_config)
+      assert Config.escalation_pairs() == []
     end
   end
 end

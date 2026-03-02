@@ -76,6 +76,18 @@ defmodule Cyclium.Findings.ExpirationSweep do
           0
 
         ids ->
+          # Archive any already-cleared findings with the same finding_keys
+          # to avoid unique constraint violation on (finding_key, status)
+          finding_keys =
+            from(f in Finding, where: f.id in ^ids, select: f.finding_key)
+            |> repo().all()
+
+          from(f in Finding,
+            where: f.finding_key in ^finding_keys,
+            where: f.status == :cleared
+          )
+          |> repo().update_all(set: [status: :superseded, archived_at: now, updated_at: now])
+
           {n, _} =
             from(f in Finding, where: f.id in ^ids)
             |> repo().update_all(set: [status: :cleared, cleared_at: now, updated_at: now])

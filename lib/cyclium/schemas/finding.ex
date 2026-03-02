@@ -10,6 +10,7 @@ defmodule Cyclium.Schemas.Finding do
 
   schema "cyclium_findings" do
     field(:actor_id, :string)
+    field(:expectation_id, :string)
     field(:finding_key, :string)
     field(:status, Ecto.Enum, values: @statuses, default: :active)
     field(:class, :string)
@@ -36,6 +37,7 @@ defmodule Cyclium.Schemas.Finding do
     finding
     |> cast(attrs, [
       :actor_id,
+      :expectation_id,
       :finding_key,
       :status,
       :class,

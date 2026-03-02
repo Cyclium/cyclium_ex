@@ -5,6 +5,10 @@ defmodule Cyclium.Findings.Escalation do
   Evaluates escalation rules against active findings and bumps severity
   when findings have been active longer than the configured thresholds.
 
+  Rules are scoped to the (actor_id, expectation_id) pair that registered
+  them, so two actors using the same finding class can have independent
+  escalation thresholds.
+
   ## Rules format
 
   Rules are configured per finding class, declared on the expectation:
@@ -17,10 +21,6 @@ defmodule Cyclium.Findings.Escalation do
             %{after_minutes: 1440, escalate_to: :critical}
           ]
         }
-
-  Falls back to application config for backwards compatibility:
-
-      config :cyclium, :escalation_rules, %{...}
 
   Rules are evaluated from longest `after_minutes` first. The first matching
   rule (where the finding has been active for at least that duration) wins.
@@ -63,53 +63,34 @@ defmodule Cyclium.Findings.Escalation do
   @doc """
   Sweep all active findings and escalate those matching configured rules.
 
+  Rules are scoped per (actor_id, expectation_id) — each pair's findings
+  are only evaluated against that pair's rules.
+
   Returns the count of escalated findings.
   """
-  def sweep(rules_by_class \\ Cyclium.Findings.Config.all_escalation_rules()) do
-    if map_size(rules_by_class) == 0 do
+  def sweep do
+    pairs = Cyclium.Findings.Config.escalation_pairs()
+
+    if pairs == [] do
       0
     else
-      classes = Map.keys(rules_by_class)
       now = DateTime.utc_now() |> DateTime.truncate(:second)
 
-      findings =
-        repo().all(
-          from(f in Finding,
-            where: f.status == :active,
-            where: f.class in ^classes
-          )
-        )
-
       escalated =
-        Enum.reduce(findings, 0, fn finding, count ->
-          rules = Map.get(rules_by_class, finding.class, [])
+        Enum.reduce(pairs, 0, fn {actor_id, exp_id, rules_by_class}, count ->
+          classes = Map.keys(rules_by_class)
 
-          case check(finding, rules) do
-            {:escalate, new_severity} ->
-              case finding
-                   |> Finding.changeset(%{severity: new_severity, updated_at: now})
-                   |> repo().update() do
-                {:ok, _} ->
-                  :telemetry.execute(
-                    [:cyclium, :finding, :escalated],
-                    %{count: 1},
-                    %{
-                      finding_key: finding.finding_key,
-                      class: finding.class,
-                      from: finding.severity,
-                      to: new_severity
-                    }
-                  )
+          findings =
+            repo().all(
+              from(f in Finding,
+                where: f.status == :active,
+                where: f.actor_id == ^actor_id,
+                where: f.expectation_id == ^exp_id,
+                where: f.class in ^classes
+              )
+            )
 
-                  count + 1
-
-                {:error, _} ->
-                  count
-              end
-
-            :no_change ->
-              count
-          end
+          count + escalate_findings(findings, rules_by_class, now)
         end)
 
       if escalated > 0 do
@@ -118,6 +99,39 @@ defmodule Cyclium.Findings.Escalation do
 
       escalated
     end
+  end
+
+  defp escalate_findings(findings, rules_by_class, now) do
+    Enum.reduce(findings, 0, fn finding, count ->
+      rules = Map.get(rules_by_class, finding.class, [])
+
+      case check(finding, rules) do
+        {:escalate, new_severity} ->
+          case finding
+               |> Finding.changeset(%{severity: new_severity, updated_at: now})
+               |> repo().update() do
+            {:ok, _} ->
+              :telemetry.execute(
+                [:cyclium, :finding, :escalated],
+                %{count: 1},
+                %{
+                  finding_key: finding.finding_key,
+                  class: finding.class,
+                  from: finding.severity,
+                  to: new_severity
+                }
+              )
+
+              count + 1
+
+            {:error, _} ->
+              count
+          end
+
+        :no_change ->
+          count
+      end
+    end)
   end
 
   defp age_in_minutes(%{raised_at: nil}), do: 0

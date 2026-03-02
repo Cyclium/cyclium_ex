@@ -104,6 +104,7 @@ defmodule Cyclium.Test.Migration do
     create table(:cyclium_findings, primary_key: false) do
       add(:id, :binary_id, primary_key: true)
       add(:actor_id, :string, null: false)
+      add(:expectation_id, :string)
       add(:finding_key, :string, null: false)
       add(:status, :string, null: false, default: "active")
       add(:class, :string, null: false)

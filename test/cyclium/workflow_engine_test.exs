@@ -162,6 +162,28 @@ defmodule Cyclium.WorkflowEngineTest do
       :telemetry.detach("test-wf-failed-#{inspect(ref)}")
     end
 
+    test "abort marks the triggering step as failed in step_states", %{engine: engine} do
+      {:ok, instance_id} =
+        WorkflowEngine.start_workflow(engine, TestWorkflows.TwoStep, %{"order_id" => "ORD-401"})
+
+      instance = WorkflowInstances.get!(instance_id)
+      validate_episode_id = instance.step_states["validate"]["episode_id"]
+
+      Cyclium.Bus.broadcast("episode.failed", %{
+        episode_id: validate_episode_id,
+        actor_id: "fake_actor",
+        status: :failed,
+        workflow_instance_id: instance_id,
+        workflow_step_id: "validate"
+      })
+
+      Process.sleep(50)
+
+      instance = WorkflowInstances.get!(instance_id)
+      assert instance.step_states["validate"]["status"] == "failed"
+      assert instance.step_states["fulfill"]["status"] == "canceled"
+    end
+
     test "retry policy creates new episode", %{engine: engine} do
       {:ok, instance_id} =
         WorkflowEngine.start_workflow(engine, TestWorkflows.TwoStep, %{"order_id" => "ORD-500"})

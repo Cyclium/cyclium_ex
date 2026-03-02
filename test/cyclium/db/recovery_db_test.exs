@@ -259,8 +259,11 @@ defmodule Cyclium.RecoveryDbTest do
       ep_id = episode.id
 
       assert_receive {:bus, "episode.completed",
-                      %{episode_id: ^ep_id, workflow_instance_id: ^wf_id,
-                        workflow_step_id: "analyze"}}
+                      %{
+                        episode_id: ^ep_id,
+                        workflow_instance_id: ^wf_id,
+                        workflow_step_id: "analyze"
+                      }}
     end
 
     test "replays episode.failed for failed episode with running step_state" do
@@ -295,8 +298,11 @@ defmodule Cyclium.RecoveryDbTest do
       ep_id = episode.id
 
       assert_receive {:bus, "episode.failed",
-                      %{episode_id: ^ep_id, workflow_instance_id: ^wf_id,
-                        workflow_step_id: "summarize"}}
+                      %{
+                        episode_id: ^ep_id,
+                        workflow_instance_id: ^wf_id,
+                        workflow_step_id: "summarize"
+                      }}
     end
 
     test "skips steps whose episodes are still running" do
@@ -344,7 +350,9 @@ defmodule Cyclium.RecoveryDbTest do
         id: Ecto.UUID.generate(),
         workflow_id: "test_workflow",
         status: :failed,
-        step_states: %{"analyze" => %{"status" => "running", "episode_id" => Ecto.UUID.generate()}},
+        step_states: %{
+          "analyze" => %{"status" => "running", "episode_id" => Ecto.UUID.generate()}
+        },
         started_at: now,
         created_at: now
       })
