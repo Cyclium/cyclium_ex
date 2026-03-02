@@ -6,7 +6,7 @@ defmodule Cyclium.Schemas.Episode do
   @foreign_key_type :binary_id
 
   @statuses [:running, :blocked, :done, :failed, :partially_failed, :canceled]
-  @trigger_types [:schedule, :event, :drift, :manual, :workflow]
+  @trigger_types [:schedule, :event, :manual, :workflow]
 
   schema "cyclium_episodes" do
     field(:actor_id, :string)

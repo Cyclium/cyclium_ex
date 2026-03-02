@@ -1,6 +1,6 @@
 # Cyclium
 
-> **Expectation-driven autonomous agents** — declare what should be true, act when reality diverges.
+> **Autonomous agent framework for Elixir** — actors monitor domains, run multi-turn episodes with budget enforcement, and produce persistent findings and typed outputs.
 
 Cyclium is an Elixir library for building agentic systems that monitor domains, run multi-turn episodes, classify situations, and produce typed outputs. Actors declare expectations about how things should be; when triggers fire, episodes execute strategies that can gather data, call tools, synthesize with LLMs, and converge into findings and outputs. Think of it as an OTP-native agent framework where the episode — not the request — is the unit of work.
 
@@ -35,7 +35,7 @@ Cyclium is designed for Elixir teams building **autonomous agent systems** where
 - Multiple actors need to coordinate through workflows with dependency ordering
 - Real-time visibility into agent state is essential (Phoenix LiveView integration via Bus)
 
-If you need a simple cron job or a one-shot script, Cyclium is overkill. Cyclium shines when you have ongoing, stateful processes that produce findings and outputs — procurement monitoring, customer health scoring, compliance auditing, infrastructure drift detection, or even structured conversational workflows.
+If you need a simple cron job or a one-shot script, Cyclium is overkill. Cyclium shines when you have ongoing, stateful processes that produce findings and outputs — and need the lifecycle, audit trail, and coordination to go with them.
 
 ## How Cyclium differs
 
@@ -107,7 +107,7 @@ Bus event arrives
     → no:  apply overflow policy (queue / drop / shed_oldest)
 
 EpisodeTask starts
-  → Resolve strategy from registry
+  → Resolve strategy (persistent_term registration from actor boot → registry override)
   → strategy.init(episode, trigger)
   → EpisodeRunner.execute_loop:
 
@@ -148,17 +148,25 @@ defmodule MyApp.Actors.ClientHealthActor do
   use Cyclium.Actor
 
   actor do
-    domain :client_health
-    max_concurrent_episodes 5
-    episode_overflow :queue
+    domain(:client_health)
+    spec_rev("v0.1.0")
+    max_concurrent_episodes(5)
+    episode_overflow(:queue)
 
-    expectation :client_should_be_healthy,
-      trigger: {:event, "client.updated"},
+    expectation(:client_should_be_healthy,
+      strategy: MyApp.Strategies.ClientHealth,
+      trigger: {:event, "client.health_check_requested"},
+      subject_key: :client_id,
+      debounce_ms: :timer.seconds(3),
       budget: %{max_turns: 3, max_tokens: 1_000, max_wall_ms: 10_000}
+    )
 
-    expectation :contract_review,
+    expectation(:contract_review,
+      strategy: MyApp.Strategies.ContractReview,
       trigger: {:schedule, :timer.hours(24)},
+      recovery_policy: :restart,
       budget: %{max_turns: 12, max_tokens: 25_000, max_wall_ms: 120_000}
+    )
   end
 end
 ```
@@ -166,7 +174,6 @@ end
 **Trigger types:**
 - `{:event, "event.name"}` — fires when a matching Bus event arrives
 - `{:schedule, interval_ms}` — fires on a recurring timer
-- `:drift` — fires when a signature changes (polling-based)
 - `:manual` — fires on explicit request
 - `:workflow` — fires as part of a multi-actor workflow
 - **List** — combine multiple triggers: `[{:event, "client.health_check_requested"}, :workflow]`
@@ -174,11 +181,13 @@ end
 **List triggers** allow an expectation to fire from multiple sources. Event subscriptions and schedule timers are extracted from the list automatically. This is the recommended pattern when an expectation participates in a workflow but should also be independently triggerable:
 
 ```elixir
-expectation :client_should_be_healthy,
+expectation(:client_should_be_healthy,
+  strategy: MyApp.Strategies.ClientHealth,
   trigger: [{:event, "client.health_check_requested"}, :workflow],
   subject_key: :client_id,
   debounce_ms: :timer.seconds(3),
   budget: %{max_turns: 3, max_tokens: 1_000, max_wall_ms: 10_000}
+)
 ```
 
 The actor subscribes to `"client.health_check_requested"` for standalone use (with debounce), while the `:workflow` marker documents that workflows can also invoke this expectation. Workflow-triggered episodes bypass the actor GenServer entirely — the workflow engine creates episodes directly — so actor-level debounce/cooldown only applies to event triggers.
@@ -192,7 +201,9 @@ The actor subscribes to `"client.health_check_requested"` for standalone use (wi
 
 | Option | Default | Description |
 |---|---|---|
+| `strategy` | required | Strategy module for this expectation. Declared inline — Cyclium registers it when the actor boots |
 | `trigger` | required | What fires the episode. Single trigger or list (e.g. `[{:event, "..."}, :workflow]`) |
+| `synthesizer` | `nil` | Synthesizer module override for this expectation. Overrides the actor-level `synthesizer(...)` declaration |
 | `filter` | `%{}` | Payload predicates — only fire when all match |
 | `debounce_ms` | `nil` | Coalesce rapid events into one firing |
 | `cooldown_ms` | `nil` | Minimum gap between firings |
@@ -304,18 +315,16 @@ defmodule MyApp.Strategies.ClientAdvisor do
 
   @impl true
   def init(_episode, trigger) do
+    # Load data in init — next_step should be pure routing, not queries
     client_id = trigger.payload["client_id"]
-    {:ok, %{phase: :gather, client_id: client_id, client_data: nil, ai_summary: nil}}
+    client = MyApp.Clients.get!(client_id)
+    client_data = Map.take(client, [:name, :status, :mrr])
+    {:ok, %{phase: :synthesize, client_id: client_id, client_data: client_data, ai_summary: nil}}
   end
 
-  # --- next_step: dispatch on phase ---
+  # --- next_step: pure routing based on phase ---
 
   @impl true
-  def next_step(%{phase: :gather} = state, _episode_ctx) do
-    client = MyApp.Clients.get!(state.client_id)
-    {:observe, %{client: %{name: client.name, status: client.status, mrr: client.mrr}}}
-  end
-
   def next_step(%{phase: :synthesize} = state, _episode_ctx) do
     {:synthesize, %{
       system_prompt: @system_prompt,
@@ -328,10 +337,6 @@ defmodule MyApp.Strategies.ClientAdvisor do
   # --- handle_result: ALWAYS guard on phase ---
 
   @impl true
-  def handle_result(%{phase: :gather} = state, _step, {:ok, %{client: data}}) do
-    {:ok, %{state | phase: :synthesize, client_data: data}}
-  end
-
   def handle_result(%{phase: :synthesize} = state, _step, {:ok, result}) do
     summary = if is_map(result), do: result[:text] || result["text"] || inspect(result), else: inspect(result)
     {:ok, %{state | phase: :done, ai_summary: summary}}
@@ -382,27 +387,22 @@ end
 **Always guard `handle_result` on `:phase`.** The most common multi-step bug is an unguarded `handle_result` clause that matches too broadly, causing the strategy to cycle between phases instead of progressing:
 
 ```elixir
-# BAD — matches ANY observation result, even during :synthesize phase
-def handle_result(state, _step, {:ok, %{client: data}}) do
-  {:ok, %{state | phase: :synthesize, client_data: data}}
-end
-
-# BAD — matches ANY success result, could re-trigger gather
+# BAD — matches ANY success result during any phase
 def handle_result(state, _step, {:ok, result}) do
   {:ok, %{state | phase: :done, ai_summary: inspect(result)}}
 end
 
 # GOOD — each clause is scoped to its phase
-def handle_result(%{phase: :gather} = state, _step, {:ok, %{client: data}}) do
-  {:ok, %{state | phase: :synthesize, client_data: data}}
-end
-
 def handle_result(%{phase: :synthesize} = state, _step, {:ok, result}) do
   {:ok, %{state | phase: :done, ai_summary: extract_text(result)}}
 end
+
+def handle_result(%{phase: :tool_result} = state, _step, {:ok, data}) do
+  {:ok, %{state | phase: :synthesize, gathered: data}}
+end
 ```
 
-Without phase guards, here's what happens: observe → handle_result matches the wrong clause → phase doesn't advance → next_step re-emits the same action → loop. The budget will eventually kill it, but you'll burn turns for no reason.
+Without phase guards, `handle_result` matches the wrong clause → phase doesn't advance → `next_step` re-emits the same action → loop. The budget will eventually kill it, but you'll burn turns for no reason.
 
 **Handle the no-synthesizer passthrough.** When no `Cyclium.Synthesizer` is configured (or the registry returns `nil` for your actor), the runner passes `prompt_ctx` through as-is to `handle_result` with `{:ok, prompt_ctx}`. Your `:synthesize` phase handler must handle both the LLM response shape AND the raw passthrough:
 
@@ -561,9 +561,11 @@ Cyclium.Findings.root_cause("child:key")         # find root (no caused_by_key)
 
 ```elixir
 # Default TTL for all findings raised by this expectation
-expectation :check_temp,
+expectation(:check_temp,
+  strategy: MyApp.Strategies.TempCheck,
   trigger: {:event, "sensor.updated"},
   finding_ttl_seconds: 3600
+)
 
 # Or override per finding in converge:
 {:raise, %{finding_key: "temp:alert:123", ttl_seconds: 7200, ...}}
@@ -581,7 +583,8 @@ config :cyclium, :finding_expiration_batch_size, 100         # per sweep (defaul
 **Severity escalation:** Time-based rules automatically escalate finding severity based on how long a finding has been active. Declare rules on the expectation:
 
 ```elixir
-expectation :check_vendor,
+expectation(:check_vendor,
+  strategy: MyApp.Strategies.VendorHealth,
   trigger: {:event, "vendor.updated"},
   escalation_rules: %{
     "vendor_delay" => [
@@ -589,6 +592,7 @@ expectation :check_vendor,
       %{after_minutes: 1440, escalate_to: :critical}
     ]
   }
+)
 ```
 
 Escalation runs as part of the expiration sweep cycle. Application config (`config :cyclium, :escalation_rules`) is supported as a fallback.
@@ -596,16 +600,20 @@ Escalation runs as part of the expiration sweep cycle. Application config (`conf
 **Post-raise enrichment:** An optional callback enriches findings immediately after they're raised. Declare it on the expectation:
 
 ```elixir
-expectation :check_health,
+expectation(:check_health,
+  strategy: MyApp.Strategies.ClientHealth,
   trigger: {:event, "client.updated"},
   finding_enrichment: fn finding, _episode ->
     {:ok, %{summary: "Enriched: #{finding.summary}", confidence: 0.95}}
   end
+)
 
 # Or use a module/function tuple:
-expectation :check_health,
+expectation(:check_health,
+  strategy: MyApp.Strategies.ClientHealth,
   trigger: {:event, "client.updated"},
   finding_enrichment: {MyApp.FindingEnricher, :enrich}
+)
 ```
 
 The callback receives `(finding, episode)` and returns `{:ok, %{...}}` or `:skip`. Only safe fields are applied: `evidence_refs`, `summary`, `confidence`. Errors in the callback are logged — the finding persists unchanged. Application config (`config :cyclium, :finding_enrichment`) is supported as a fallback.
@@ -658,8 +666,6 @@ Cyclium.Output.Adapter.resolve(:email)    # => MyApp.Adapters.Email
 Cyclium.Output.Adapter.resolve("slack")   # => MyApp.Adapters.Slack
 Cyclium.Output.Adapter.all()              # => [:email, :slack]
 ```
-
-Dynamic actor strategy templates validate their configured outputs against the registry at load time and log warnings for missing adapters.
 
 ### Bus
 
@@ -733,7 +739,9 @@ end
 ```elixir
 # config.exs
 config :cyclium, :repo, MyApp.Repo
-config :cyclium, :strategy_registry, MyApp.StrategyRegistry
+
+# Optional: registry for strategy/synthesizer overrides (see "Strategy registry" section)
+# config :cyclium, :strategy_registry, MyApp.StrategyRegistry
 
 # Optional: episode runner (default: Cyclium.Runner.OTP)
 config :cyclium, :runner, Cyclium.Runner.OTP
@@ -762,15 +770,51 @@ config :cyclium, :reconciler, true
 config :cyclium, :workflows, [MyApp.Workflows.ClientReview]
 ```
 
-### 4. Strategy registry
+### 4. Declare strategies on expectations
 
-Map actor/expectation pairs to strategy modules:
+The preferred approach is declaring the strategy module directly on each expectation in the actor DSL. Cyclium registers the mapping automatically when the actor GenServer boots — no separate registry needed:
 
 ```elixir
+defmodule MyApp.Actors.ClientHealthActor do
+  use Cyclium.Actor
+
+  actor do
+    domain(:client_health)
+    spec_rev("v0.1.0")
+    synthesizer(MyApp.Synthesizers.ClientHealth)  # actor-level default
+    max_concurrent_episodes(5)
+    episode_overflow(:queue)
+
+    expectation(:client_should_be_healthy,
+      strategy: MyApp.Strategies.ClientHealth,
+      trigger: {:event, "client.health_check_requested"},
+      subject_key: :client_id,
+      debounce_ms: :timer.seconds(3),
+      budget: %{max_turns: 3, max_tokens: 1_000, max_wall_ms: 10_000}
+    )
+
+    expectation(:client_ai_summary,
+      strategy: MyApp.Strategies.ClientAdvisor,
+      synthesizer: MyApp.Synthesizers.FastSummary,  # override for this expectation
+      trigger: {:event, "client.summary_requested"},
+      budget: %{max_turns: 5, max_tokens: 5_000, max_wall_ms: 60_000}
+    )
+  end
+end
+```
+
+**Optional: strategy registry for overrides**
+
+If you need to override a strategy or synthesizer without changing the actor code — for example, in a staging environment or during an A/B test — you can configure a registry:
+
+```elixir
+# config.exs (optional)
+config :cyclium, :strategy_registry, MyApp.StrategyRegistry
+
 defmodule MyApp.StrategyRegistry do
-  def strategy_for("client_health_actor", _), do: MyApp.Strategies.ClientHealth
-  def strategy_for("client_advisor_actor", _), do: MyApp.Strategies.ClientAdvisor
-  def strategy_for(actor, exp), do: raise "No strategy for #{actor}/#{exp}"
+  # Only add clauses for explicit overrides — anything not matched here
+  # falls through to the actor's declared strategy.
+  def strategy_for("client_health_actor", _exp), do: MyApp.Strategies.ClientHealthV2
 end
 ```
 
@@ -811,19 +855,23 @@ Cyclium provides three layers of temporal dedup:
 **Actor-level global (`cooldown_ms`)** — enforced by the actor GenServer before an episode starts. Simple and zero-cost, but applies globally to the expectation — *all* subjects are blocked during the window.
 
 ```elixir
-expectation :client_ai_summary,
+expectation(:client_ai_summary,
+  strategy: MyApp.Strategies.ClientAdvisor,
   trigger: {:event, "client.summary_requested"},
   cooldown_ms: :timer.minutes(5)  # no advisor episodes for ANY client for 5 min
+)
 ```
 
 **Actor-level per-subject (`subject_key` + `debounce_ms`/`cooldown_ms`)** — when `subject_key` is set, debounce and cooldown are scoped per subject value. Each unique subject gets its own independent trailing-edge timer and cooldown window. Client A and client B are debounced independently.
 
 ```elixir
-expectation :client_ai_summary,
+expectation(:client_ai_summary,
+  strategy: MyApp.Strategies.ClientAdvisor,
   trigger: {:event, "client.summary_requested"},
   subject_key: :client_id,
   debounce_ms: :timer.seconds(10),   # trailing-edge, per-client
   cooldown_ms: :timer.minutes(5)     # minimum gap, per-client
+)
 ```
 
 When `subject_key` is set but the payload doesn't contain that key, the subject value is `nil` and the key becomes `{expectation_id, nil}` — still isolated from real subjects, never crashing.
@@ -1028,13 +1076,15 @@ Dynamic workflows are event-triggered (via Bus) like compiled workflows. The Wat
 Per-expectation circuit breaker prevents cascading failures when a tool or external service is down. When consecutive episode failures exceed a threshold, the circuit opens and rejects new episodes. After a cooldown period, one probe episode is allowed through (half-open state) — if it succeeds, the circuit closes.
 
 ```elixir
-expectation :check_vendor_api,
+expectation(:check_vendor_api,
+  strategy: MyApp.Strategies.VendorCheck,
   trigger: {:event, "vendor.updated"},
   circuit_breaker: %{
-    threshold: 5,            # consecutive failures to trip
-    half_open_after_ms: 60_000,  # cooldown before probe
-    cancel_in_flight: false  # cancel running episodes when circuit trips
+    threshold: 5,               # consecutive failures to trip
+    half_open_after_ms: 60_000, # cooldown before probe
+    cancel_in_flight: false     # cancel running episodes when circuit trips
   }
+)
 ```
 
 **States:** `:closed` (normal) → `:open` (rejecting) → `:half_open` (probe) → `:closed`
@@ -1052,9 +1102,11 @@ Query state: `Cyclium.CircuitBreaker.get_state(actor_id, expectation_id)`
 Probabilistic episode firing for high-frequency triggers. Set `sample_rate` on an expectation to control what fraction of triggers actually fire episodes:
 
 ```elixir
-expectation :health_check,
+expectation(:health_check,
+  strategy: MyApp.Strategies.MetricsCheck,
   trigger: {:event, "metrics.updated"},
   sample_rate: 0.1  # fire ~10% of triggers
+)
 ```
 
 - `nil` or `1.0` = always fire (default)
@@ -1067,13 +1119,15 @@ expectation :health_check,
 Declarative performance objectives with automatic breach detection. Define success rate and duration thresholds per expectation:
 
 ```elixir
-expectation :process_order,
+expectation(:process_order,
+  strategy: MyApp.Strategies.OrderProcessor,
   trigger: {:event, "order.created"},
   service_levels: %{
-    max_duration_ms: 30_000,     # p95 target
-    success_rate: 0.95,          # 95% success target
-    window_episodes: 20          # rolling window size
+    max_duration_ms: 30_000,  # p95 target
+    success_rate: 0.95,       # 95% success target
+    window_episodes: 20       # rolling window size
   }
+)
 ```
 
 Breaches emit `[:cyclium, :service_levels, :breach]` telemetry and a `"service_levels.breach"` Bus event with details:
@@ -1090,9 +1144,11 @@ Query metrics: `Cyclium.ServiceLevels.metrics(actor_id, expectation_id)` returns
 Advisory budget tracking based on historical episode resource usage. When enabled, Cyclium records turns, tokens, and wall time for each completed episode and recommends budgets based on p95 values with 25% headroom.
 
 ```elixir
-expectation :classify_ticket,
+expectation(:classify_ticket,
+  strategy: MyApp.Strategies.TicketClassifier,
   trigger: {:event, "ticket.created"},
   adaptive_budget: true
+)
 ```
 
 Query recommendations:
@@ -1363,10 +1419,12 @@ Add `recovery_policy` to the expectation DSL:
 
 ```elixir
 actor do
-  expectation :evaluate_project,
+  expectation(:evaluate_project,
+    strategy: MyApp.Strategies.ProjectHealth,
     trigger: {:event, "project_health.check_requested"},
     recovery_policy: :restart,
     budget: %{max_turns: 5, max_tokens: 25_000, max_wall_ms: 120_000}
+  )
 end
 ```
 
@@ -1662,7 +1720,7 @@ Insert a row into `cyclium_agent_definitions`:
 %Cyclium.Schemas.AgentDefinition{
   actor_id: "custom_health_check",
   domain: "monitoring",
-  strategy_ref: "MyApp.Strategies.GenericHealthCheck",
+  strategy_template: "observe_classify_converge",   # built-in template
   config: Jason.encode!(%{max_concurrent_episodes: 3, episode_overflow: "queue"}),
   expectations: Jason.encode!([
     %{
@@ -1691,10 +1749,6 @@ Cyclium.DynamicActor.Loader.reload("custom_health_check")
 # Stop a dynamic actor
 Cyclium.DynamicActor.Loader.stop("custom_health_check")
 ```
-
-### Strategy resolution
-
-Dynamic actors use the same `:strategy_registry` as compiled actors. The registry's `strategy_for/2` receives the dynamic actor's `actor_id` and `expectation_id` and must return a strategy module. The `strategy_ref` field in the DB definition is available for the registry to use as a lookup hint.
 
 ### Database table
 
@@ -1824,21 +1878,9 @@ Fan-out pattern. Calls a gatherer that returns a list of entities, broadcasts an
 
 #### Strategy resolution for dynamic actors
 
-The consuming app's strategy registry can delegate to the template system:
+Dynamic actors use the same `:persistent_term` registration path as compiled actors. When a dynamic actor boots, `Loader` resolves the strategy from `strategy_template` and injects it into each expectation — `init_state_from_config` then registers it automatically. No strategy registry entries needed.
 
-```elixir
-defmodule MyApp.StrategyRegistry do
-  def strategy_for("my_compiled_actor", _exp), do: MyApp.Strategies.Compiled
-
-  # Fallback: resolve from DB template
-  def strategy_for(actor_id, _exp) do
-    case Cyclium.DynamicActor.Loader.strategy_for(actor_id) do
-      nil -> raise "No strategy for #{actor_id}"
-      strategy -> strategy
-    end
-  end
-end
-```
+If you need to override a strategy without updating the DB record, add a `strategy_for/2` clause to your registry as usual.
 
 Custom templates can be registered in app config:
 
@@ -1950,7 +1992,8 @@ fire-time overrides > expectation-level DSL > real execution
 2. **Expectation-level DSL** — defined in the actor definition:
 
 ```elixir
-expectation :evaluate_project,
+expectation(:evaluate_project,
+  strategy: MyApp.Strategies.ProjectHealth,
   trigger: {:event, "project_health.check_requested"},
   dry_run: [
     tool_overrides: %{
@@ -1958,6 +2001,7 @@ expectation :evaluate_project,
     },
     synthesis_override: {:ok, %{"class" => "healthy"}}
   ]
+)
 ```
 
 3. **No overrides** — real tool calls and synthesis execute normally, only findings and outputs are skipped
@@ -1990,9 +2034,11 @@ Cyclium.Findings.active_for_mode([actor: "po_monitor"], episode)
 This can also be set at the expectation level in the actor DSL:
 
 ```elixir
-expectation :check_pos,
-  trigger: {:interval, 300_000},
+expectation(:check_pos,
+  strategy: MyApp.Strategies.PoCheck,
+  trigger: {:schedule, 300_000},
   dry_run: [persist_findings: true]
+)
 ```
 
 ### Via the Actor GenServer
@@ -2256,15 +2302,18 @@ defmodule MyApp.Actors.ProjectHealthActor do
   use Cyclium.Actor
 
   actor do
-    domain :project_health
-    max_concurrent_episodes 5
-    episode_overflow :queue
+    domain(:project_health)
+    spec_rev("v0.1.0")
+    max_concurrent_episodes(5)
+    episode_overflow(:queue)
 
-    expectation :project_should_be_healthy,
+    expectation(:project_should_be_healthy,
+      strategy: MyApp.Strategies.ProjectHealth,
       trigger: {:event, "project.updated"},
       subject_key: :project_id,
       debounce_ms: :timer.seconds(2),
       budget: %{max_turns: 3, max_tokens: 1_000, max_wall_ms: 10_000}
+    )
   end
 end
 ```
@@ -2364,46 +2413,54 @@ end
 
 Synthesizers can be declared at two levels:
 
-**Actor-level** — inherited by all expectations in the actor:
+**Actor-level** — inherited by all expectations in the actor that use `:synthesize`. Declare it when most or all expectations share the same synthesizer:
 
 ```elixir
 defmodule MyApp.Actors.ProjectAdvisorActor do
   use Cyclium.Actor
 
   actor do
-    domain :project_advisory
-    synthesizer MyApp.Synthesizers.ProjectAnalysis
+    domain(:project_advisory)
+    spec_rev("v0.1.0")
+    synthesizer(MyApp.Synthesizers.ProjectAnalysis)
+    max_concurrent_episodes(3)
+    episode_overflow(:queue)
 
-    max_concurrent_episodes 3
-    episode_overflow :queue
-
-    expectation :project_ai_summary,
+    expectation(:project_ai_summary,
+      strategy: MyApp.Strategies.ProjectAdvisor,
       trigger: {:event, "project.summary_requested"},
       budget: %{max_turns: 5, max_tokens: 10_000, max_wall_ms: 30_000}
+    )
 
-    expectation :project_risk_assessment,
+    expectation(:project_risk_assessment,
+      strategy: MyApp.Strategies.ProjectRisk,
       trigger: {:event, "project.risk_review_requested"},
       budget: %{max_turns: 8, max_tokens: 15_000, max_wall_ms: 60_000}
+    )
   end
 end
 ```
 
 Both expectations above use `MyApp.Synthesizers.ProjectAnalysis`.
 
-**Expectation-level** — overrides the actor-level synthesizer for a specific expectation:
+**Expectation-level** — overrides the actor-level synthesizer for a specific expectation. Use this when one expectation needs a different model or configuration:
 
 ```elixir
 actor do
-  domain :project_advisory
-  synthesizer MyApp.Synthesizers.ProjectAnalysis   # default for this actor
+  domain(:project_advisory)
+  synthesizer(MyApp.Synthesizers.ProjectAnalysis)   # default for this actor
 
-  expectation :project_ai_summary,
+  expectation(:project_ai_summary,
+    strategy: MyApp.Strategies.ProjectAdvisor,
     trigger: {:event, "project.summary_requested"},
-    synthesizer: MyApp.Synthesizers.FastSummary     # override for this expectation
+    synthesizer: MyApp.Synthesizers.FastSummary      # override for this expectation
+  )
 
-  expectation :project_risk_assessment,
+  expectation(:project_risk_assessment,
+    strategy: MyApp.Strategies.ProjectRisk,
     trigger: {:event, "project.risk_review_requested"}
     # uses ProjectAnalysis (inherited from actor)
+  )
 end
 ```
 

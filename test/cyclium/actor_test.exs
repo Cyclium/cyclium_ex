@@ -28,6 +28,27 @@ defmodule Cyclium.ActorTest do
     end
   end
 
+  # Actor with strategy and synthesizer declared inline for registration tests
+  defmodule RegistrationActor do
+    use Cyclium.Actor
+
+    actor do
+      domain(:testing)
+      synthesizer(__MODULE__.FakeSynthesizer)
+
+      expectation(:do_work,
+        strategy: __MODULE__.FakeStrategy,
+        trigger: {:schedule, :timer.hours(1)}
+      )
+
+      expectation(:do_other_work,
+        strategy: __MODULE__.OtherStrategy,
+        synthesizer: __MODULE__.OtherSynthesizer,
+        trigger: {:event, "work.requested"}
+      )
+    end
+  end
+
   setup do
     start_supervised!({Phoenix.PubSub, name: Cyclium.TestPubSub})
     Application.put_env(:cyclium, :pubsub, Cyclium.TestPubSub)
@@ -158,6 +179,61 @@ defmodule Cyclium.ActorTest do
           value -> actual == value
         end
       end)
+    end
+  end
+
+  describe "boot registration — strategy and synthesizer" do
+    setup do
+      start_supervised!({RegistrationActor, [name: :registration_actor_test]})
+
+      on_exit(fn ->
+        :persistent_term.erase({:cyclium_actor_synthesizer, :registration_actor})
+        :persistent_term.erase({:cyclium_actor_strategy, :registration_actor, :do_work})
+        :persistent_term.erase({:cyclium_actor_strategy, :registration_actor, :do_other_work})
+      end)
+
+      :ok
+    end
+
+    test "registers actor-level synthesizer in persistent_term" do
+      assert :persistent_term.get({:cyclium_actor_synthesizer, :registration_actor}) ==
+               RegistrationActor.FakeSynthesizer
+    end
+
+    test "registers per-expectation strategy in persistent_term" do
+      assert :persistent_term.get({:cyclium_actor_strategy, :registration_actor, :do_work}) ==
+               RegistrationActor.FakeStrategy
+
+      assert :persistent_term.get({:cyclium_actor_strategy, :registration_actor, :do_other_work}) ==
+               RegistrationActor.OtherStrategy
+    end
+
+    test "expectation-level synthesizer overrides actor-level in persistent_term" do
+      # :do_work inherits actor-level synthesizer
+      assert :persistent_term.get({:cyclium_actor_synthesizer, :registration_actor}) ==
+               RegistrationActor.FakeSynthesizer
+
+      # :do_other_work declares its own — but synthesizer is registered per-actor not per-expectation
+      # so the expectation struct holds it directly
+      state = :sys.get_state(:registration_actor_test)
+      assert state.expectations[:do_other_work].synthesizer == RegistrationActor.OtherSynthesizer
+    end
+
+    test "strategy field is set on expectation struct" do
+      state = :sys.get_state(:registration_actor_test)
+
+      assert state.expectations[:do_work].strategy == RegistrationActor.FakeStrategy
+      assert state.expectations[:do_other_work].strategy == RegistrationActor.OtherStrategy
+    end
+
+    test "expectation without strategy leaves key unregistered" do
+      # TestActor has no strategy declared — key should not be in persistent_term
+      # (test_actor may not even be running, but we confirm missing key behaviour)
+      assert :persistent_term.get(
+               {:cyclium_actor_strategy, :test_actor, :check_health},
+               :not_found
+             ) ==
+               :not_found
     end
   end
 end

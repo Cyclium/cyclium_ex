@@ -214,8 +214,20 @@ defmodule Cyclium.Actor.Server do
       cyclium_domain: config[:domain]
     )
 
-    # Register service levels configs
+    # Register synthesizer so EpisodeTask can resolve it without manual config.
+    # Works for both compiled actors (synthesizer from DSL) and dynamic actors
+    # (synthesizer from DB config). nil is stored intentionally — it means "use fallback".
+    if synthesizer = config[:synthesizer] do
+      :persistent_term.put({:cyclium_actor_synthesizer, config.actor_id}, synthesizer)
+    end
+
+    # Register per-expectation strategy and service level configs so EpisodeTask
+    # can resolve them without a manually maintained strategy registry.
     Enum.each(expectations, fn {_id, exp} ->
+      if exp.strategy do
+        :persistent_term.put({:cyclium_actor_strategy, config.actor_id, exp.id}, exp.strategy)
+      end
+
       if exp.service_levels do
         Cyclium.ServiceLevels.register(config.actor_id, exp.id, exp.service_levels)
       end
@@ -475,6 +487,7 @@ defmodule Cyclium.Actor.Server do
       audit_level: Keyword.get(opts, :audit_level, :standard),
       retention_days: Keyword.get(opts, :retention_days, 90),
       description: Keyword.get(opts, :description, ""),
+      strategy: Keyword.get(opts, :strategy),
       synthesizer: Keyword.get(opts, :synthesizer) || config.synthesizer,
       recovery_policy: Keyword.get(opts, :recovery_policy, :fail),
       window: Keyword.get(opts, :window) || infer_window(opts),
@@ -962,7 +975,6 @@ defmodule Cyclium.Actor.Server do
 
   defp trigger_type_atom(%Cyclium.Trigger.Schedule{}), do: :schedule
   defp trigger_type_atom(%Cyclium.Trigger.Event{}), do: :event
-  defp trigger_type_atom(%Cyclium.Trigger.Drift{}), do: :drift
   defp trigger_type_atom(%Cyclium.Trigger.Manual{}), do: :manual
   defp trigger_type_atom(%Cyclium.Trigger.Workflow{}), do: :workflow
 

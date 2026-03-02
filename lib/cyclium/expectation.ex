@@ -1,9 +1,8 @@
 defmodule Cyclium.Expectation do
   @moduledoc """
-  A declarative "contract with reality." The smallest unit of responsibility.
+  Declarative configuration for a single expectation.
 
   Expectations are defined in code via the Actor DSL, not stored in the database.
-  They declare what should be true and how to investigate when things drift.
   """
 
   @type t :: %__MODULE__{
@@ -23,6 +22,7 @@ defmodule Cyclium.Expectation do
           audit_level: atom(),
           retention_days: non_neg_integer() | nil,
           description: binary(),
+          strategy: module() | nil,
           synthesizer: module() | nil,
           recovery_policy: :fail | :restart,
           window: Cyclium.Window.window_size() | nil,
@@ -41,6 +41,7 @@ defmodule Cyclium.Expectation do
     :actor_id,
     :domain,
     :trigger,
+    :strategy,
     :synthesizer,
     subscribes_to: [],
     filter: %{},

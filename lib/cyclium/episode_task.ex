@@ -118,23 +118,38 @@ defmodule Cyclium.EpisodeTask do
   defp resolve_strategy(episode) do
     registry = Application.get_env(:cyclium, :strategy_registry)
 
-    if registry do
-      registry.strategy_for(episode.actor_id, episode.expectation_id)
-    else
-      raise "No :strategy_registry configured for :cyclium"
-    end
+    # 1. Registry explicit override — for special-case overrides without changing actor code
+    # 2. Expectation-declared strategy — registered in persistent_term when actor boots
+    # 3. Raise — a strategy is required
+    registry_result =
+      if registry && function_exported?(registry, :strategy_for, 2) do
+        registry.strategy_for(episode.actor_id, episode.expectation_id)
+      end
+
+    registry_result ||
+      :persistent_term.get(
+        {:cyclium_actor_strategy, safe_to_atom(episode.actor_id),
+         safe_to_atom(episode.expectation_id)},
+        nil
+      ) ||
+      raise "No strategy found for #{episode.actor_id}/#{episode.expectation_id}. " <>
+              "Declare `strategy: MyModule` on the expectation or configure a :strategy_registry."
   end
 
   defp resolve_synthesizer(episode) do
     registry = Application.get_env(:cyclium, :strategy_registry)
 
-    cond do
-      registry && function_exported?(registry, :synthesizer_for, 2) ->
+    # 1. Registry explicit override — kept for per-expectation overrides
+    # 2. Actor registration — set in persistent_term when actor GenServer boots
+    # 3. Global fallback
+    registry_result =
+      if registry && function_exported?(registry, :synthesizer_for, 2) do
         registry.synthesizer_for(episode.actor_id, episode.expectation_id)
+      end
 
-      true ->
-        Application.get_env(:cyclium, :synthesizer)
-    end
+    registry_result ||
+      :persistent_term.get({:cyclium_actor_synthesizer, safe_to_atom(episode.actor_id)}, nil) ||
+      Application.get_env(:cyclium, :synthesizer)
   end
 
   defp load_checkpoint(episode_id) do
@@ -154,13 +169,15 @@ defmodule Cyclium.EpisodeTask do
 
   defp deserialize_trigger(:schedule, ref), do: struct(Cyclium.Trigger.Schedule, atomize(ref))
   defp deserialize_trigger(:event, ref), do: struct(Cyclium.Trigger.Event, atomize(ref))
-  defp deserialize_trigger(:drift, ref), do: struct(Cyclium.Trigger.Drift, atomize(ref))
   defp deserialize_trigger(:manual, ref), do: struct(Cyclium.Trigger.Manual, atomize(ref))
   defp deserialize_trigger(:workflow, ref), do: struct(Cyclium.Trigger.Workflow, atomize(ref))
 
   defp deserialize_trigger(type, ref) when is_binary(type) do
     deserialize_trigger(String.to_existing_atom(type), ref)
   end
+
+  defp safe_to_atom(value) when is_atom(value), do: value
+  defp safe_to_atom(value) when is_binary(value), do: String.to_existing_atom(value)
 
   defp atomize(nil), do: %{}
 

@@ -23,18 +23,6 @@ defmodule Cyclium.TriggerTest do
     assert trigger.payload == %{new_status: "STALLED"}
   end
 
-  test "Drift struct has ref and signatures" do
-    trigger = %Trigger.Drift{
-      ref: "config-v2",
-      previous_signature: "abc123",
-      current_signature: "def456"
-    }
-
-    assert trigger.ref == "config-v2"
-    assert trigger.previous_signature == "abc123"
-    assert trigger.current_signature == "def456"
-  end
-
   test "Manual struct has requested_by and reason" do
     trigger = %Trigger.Manual{
       requested_by: "admin@example.com",

@@ -4,6 +4,7 @@ defmodule Cyclium.Strategy.Template.Dispatch do
 
   Fan-out pattern. Calls a gatherer that returns a list of entities,
   then broadcasts a bus event for each entity to trigger downstream actors.
+  All gathering and broadcasting happens in `init` — no step loop needed.
 
   ## Strategy config shape
 
@@ -27,106 +28,29 @@ defmodule Cyclium.Strategy.Template.Dispatch do
 
   @impl true
   def init(episode, trigger) do
-    strategy_config = load_strategy_config(episode.actor_id)
+    config = load_strategy_config(episode.actor_id)
     trigger_payload = extract_trigger_payload(trigger)
 
-    {:ok,
-     %{
-       phase: :gather,
-       strategy_config: strategy_config,
-       trigger_payload: trigger_payload,
-       entities: [],
-       dispatched: 0
-     }}
-  end
+    entities = gather_entities(config, trigger_payload)
 
-  @impl true
-  def next_step(%{phase: :gather} = state, _episode_ctx) do
-    gatherer_name = state.strategy_config["gatherer"]
-    gatherer = Cyclium.Gatherer.resolve(gatherer_name)
-
-    if gatherer do
-      result =
-        try do
-          gatherer.gather(state.trigger_payload, state.strategy_config)
-        catch
-          kind, reason ->
-            Logger.error("Gatherer raised: #{inspect({kind, reason})}",
-              template: "Dispatch",
-              gatherer: gatherer_name
-            )
-
-            {:error, {kind, reason}}
-        end
-
-      case result do
-        {:ok, %{entities: entities}} when is_list(entities) ->
-          {:observe, %{entities: entities}}
-
-        {:ok, data} when is_map(data) ->
-          # Try to find a list in the data
-          entities = find_entities(data)
-          {:observe, %{entities: entities}}
-
-        {:error, reason} ->
-          Logger.error("Gatherer failed: #{inspect(reason)}",
-            template: "Dispatch",
-            gatherer: gatherer_name
-          )
-
-          {:observe, %{entities: []}}
-      end
+    if event_type = config["event_type"] do
+      Enum.each(entities, fn entity ->
+        Cyclium.Bus.broadcast(event_type, build_entity_payload(entity, config))
+      end)
     else
-      Logger.error("No gatherer registered as #{inspect(gatherer_name)}",
+      Logger.warning("Dispatch template has no event_type configured",
         template: "Dispatch",
-        gatherer: gatherer_name
+        actor_id: episode.actor_id
       )
-
-      {:observe, %{entities: []}}
     end
+
+    {:ok, %{dispatched: length(entities)}}
   end
-
-  def next_step(%{phase: :dispatch, entities: []}, _episode_ctx), do: :converge
-
-  def next_step(%{phase: :dispatch, entities: [entity | _]} = state, _episode_ctx) do
-    config = state.strategy_config
-    payload_fields = config["entity_payload_fields"] || Map.keys(entity)
-
-    payload =
-      entity
-      |> Map.take(payload_fields)
-      |> Map.new(fn {k, v} -> {to_string(k), v} end)
-
-    {:observe, %{action: "dispatch", entity: payload}}
-  end
-
-  def next_step(%{phase: :done}, _episode_ctx), do: :converge
 
   @impl true
-  def handle_result(%{phase: :gather} = state, _step, {:ok, %{entities: entities}}) do
-    {:ok, %{state | phase: :dispatch, entities: entities}}
-  end
+  def next_step(_state, _episode_ctx), do: :converge
 
-  def handle_result(%{phase: :dispatch} = state, _step, {:ok, %{entity: entity}}) do
-    config = state.strategy_config
-    event_type = config["event_type"]
-    entity_id_field = config["entity_id_field"] || "id"
-
-    if event_type do
-      entity_payload =
-        entity
-        |> Map.put(
-          entity_id_field,
-          entity[entity_id_field] || entity[String.to_atom(entity_id_field)]
-        )
-
-      Cyclium.Bus.broadcast(event_type, entity_payload)
-    end
-
-    [_ | rest] = state.entities
-    {:ok, %{state | entities: rest, dispatched: state.dispatched + 1}}
-  end
-
+  @impl true
   def handle_result(state, _step, _result), do: {:ok, state}
 
   @impl true
@@ -142,6 +66,57 @@ defmodule Cyclium.Strategy.Template.Dispatch do
   end
 
   # --- Private ---
+
+  defp gather_entities(config, trigger_payload) do
+    gatherer_name = config["gatherer"]
+    gatherer = Cyclium.Gatherer.resolve(gatherer_name)
+
+    if gatherer do
+      result =
+        try do
+          gatherer.gather(trigger_payload, config)
+        catch
+          kind, reason ->
+            Logger.error("Gatherer raised: #{inspect({kind, reason})}",
+              template: "Dispatch",
+              gatherer: gatherer_name
+            )
+
+            {:error, {kind, reason}}
+        end
+
+      case result do
+        {:ok, %{entities: entities}} when is_list(entities) ->
+          entities
+
+        {:ok, data} when is_map(data) ->
+          find_entities(data)
+
+        {:error, reason} ->
+          Logger.error("Gatherer failed: #{inspect(reason)}",
+            template: "Dispatch",
+            gatherer: gatherer_name
+          )
+
+          []
+      end
+    else
+      Logger.error("No gatherer registered as #{inspect(gatherer_name)}",
+        template: "Dispatch",
+        gatherer: gatherer_name
+      )
+
+      []
+    end
+  end
+
+  defp build_entity_payload(entity, config) do
+    payload_fields = config["entity_payload_fields"] || Map.keys(entity)
+
+    entity
+    |> Map.take(payload_fields)
+    |> Map.new(fn {k, v} -> {to_string(k), v} end)
+  end
 
   defp load_strategy_config(actor_id) do
     import Ecto.Query
@@ -171,7 +146,6 @@ defmodule Cyclium.Strategy.Template.Dispatch do
   defp extract_trigger_payload(_), do: %{}
 
   defp find_entities(data) when is_map(data) do
-    # Look for the first list value in the data map
     Enum.find_value(data, [], fn
       {_k, v} when is_list(v) -> v
       _ -> nil

@@ -19,15 +19,6 @@ defmodule Cyclium.Trigger do
     defstruct [:event_id, :event_type, :entity_id, :payload]
   end
 
-  defmodule Drift do
-    @type t :: %__MODULE__{
-            ref: binary(),
-            previous_signature: binary(),
-            current_signature: binary()
-          }
-    defstruct [:ref, :previous_signature, :current_signature]
-  end
-
   defmodule Manual do
     @type t :: %__MODULE__{requested_by: binary(), reason: binary()}
     defstruct [:requested_by, :reason]
@@ -42,5 +33,5 @@ defmodule Cyclium.Trigger do
     defstruct [:workflow_instance_id, :workflow_step_id, :input]
   end
 
-  @type t :: Schedule.t() | Event.t() | Drift.t() | Manual.t() | Workflow.t()
+  @type t :: Schedule.t() | Event.t() | Manual.t() | Workflow.t()
 end
