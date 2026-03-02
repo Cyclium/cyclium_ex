@@ -8,6 +8,7 @@ defmodule Cyclium.Actor do
         use Cyclium.Actor
 
         actor do
+          identifier :po_status
           domain :procurement
           synthesizer MyApp.Synthesizers.Procurement
           capabilities [:erp_read, :vendor_read, :email_write]
@@ -41,6 +42,7 @@ defmodule Cyclium.Actor do
       Module.register_attribute(__MODULE__, :cyclium_capabilities, accumulate: false)
       Module.register_attribute(__MODULE__, :cyclium_max_concurrent, accumulate: false)
       Module.register_attribute(__MODULE__, :cyclium_overflow, accumulate: false)
+      Module.register_attribute(__MODULE__, :cyclium_identifier, accumulate: false)
       Module.register_attribute(__MODULE__, :cyclium_expectations, accumulate: true)
 
       @before_compile Cyclium.Actor
@@ -88,7 +90,8 @@ defmodule Cyclium.Actor do
     spec_rev = Module.get_attribute(env.module, :cyclium_spec_rev)
 
     actor_id =
-      env.module |> Module.split() |> List.last() |> Macro.underscore() |> String.to_atom()
+      Module.get_attribute(env.module, :cyclium_identifier) ||
+        env.module |> Module.split() |> List.last() |> Macro.underscore() |> String.to_atom()
 
     quote do
       def __cyclium_config__ do
@@ -115,6 +118,12 @@ defmodule Cyclium.Actor.DSL do
 
   defmacro actor(do: block) do
     block
+  end
+
+  defmacro identifier(id) do
+    quote do
+      @cyclium_identifier unquote(id)
+    end
   end
 
   defmacro domain(name) do

@@ -222,7 +222,17 @@ The actor subscribes to `"client.health_check_requested"` for standalone use (wi
 | `escalation_rules` | `nil` | Time-based severity escalation: `%{"class" => [%{after_minutes: 60, escalate_to: :high}]}` |
 | `finding_ttl_seconds` | `nil` | Default TTL for findings raised by this expectation. Individual findings can override with explicit `ttl_seconds` |
 
-**Actor ID convention:** Actor IDs are **atoms in-process** and **strings in the database**. The ID is derived from the module name: `MyApp.Actors.ClientHealthActor` becomes `:client_health_actor` in the GenServer state and `"client_health_actor"` when stored in episode rows, findings, and strategy registry lookups. The boundary is at episode creation — `Cyclium.Actor.Server` calls `to_string(state.actor_id)` when building the episode params. Everything upstream is atoms, everything downstream (DB, strategies, findings) is strings.
+**Actor ID convention:** Actor IDs are **atoms in-process** and **strings in the database**. Use `identifier/1` in the DSL to set a stable actor ID that survives module renames:
+
+```elixir
+actor do
+  identifier(:client_health)   # explicit, rename-proof
+  domain(:health)
+  # ...
+end
+```
+
+If omitted, the ID is derived from the module name (`MyApp.Actors.ClientHealthActor` → `:client_health_actor`). The boundary is at episode creation — `Cyclium.Actor.Server` calls `to_string(state.actor_id)` when building the episode params. Everything upstream is atoms, everything downstream (DB, strategies, findings) is strings. **Actors with persisted episodes should always declare an explicit identifier.**
 
 ### Strategies
 
@@ -1413,6 +1423,23 @@ This is an atomic `UPDATE ... WHERE` — the first node to execute it sets `phas
    - `:fail` (default) — mark `:failed` with `error_class: "orphaned"`
 4. Emit `[:cyclium, :recovery, :sweep]` telemetry with counts
 
+Policy resolution checks the compiled `:actor_registry` map first, then falls back to the `cyclium_agent_definitions` table for dynamic actors. Unknown actors default to `:fail`.
+
+### Workflow reconciliation
+
+`Cyclium.Recovery.reconcile_workflows/0` handles a related problem: workflow instances stuck in `:running` because the WorkflowEngine missed a Bus event during a restart.
+
+The WorkflowEngine is purely event-driven — it advances workflows when it receives `episode.completed` or `episode.failed` Bus events. If the engine wasn't running when those events fired (e.g. during a deploy), the workflow step_states become stale and the workflow hangs.
+
+Reconciliation fixes this by:
+
+1. Finding all `:running` / `:blocked` workflow instances
+2. For each step marked `"running"` in step_states, loading the actual episode
+3. If the episode has already reached a terminal state, re-broadcasting the appropriate Bus event
+4. The WorkflowEngine handles the replayed event through its normal path — no special logic needed
+
+Call `reconcile_workflows/0` **after** `sweep/1` and after workflow configs are registered (compiled modules booted, dynamic workflows loaded).
+
 ### Setting recovery policy
 
 Add `recovery_policy` to the expectation DSL:
@@ -1432,9 +1459,11 @@ Use `:restart` for idempotent strategies that re-query data from the DB. Use `:f
 
 ### Wiring up recovery in your app
 
-Add a delayed recovery task to your Cyclium supervisor with an `:actor_registry` map that maps actor ID strings to their modules. Cyclium looks up the `recovery_policy` from each actor's compiled expectations automatically.
+Add a delayed recovery task to your Cyclium supervisor with an `:actor_registry` map that maps actor `identifier()` strings to their modules. Cyclium looks up the `recovery_policy` from each actor's compiled expectations automatically. Dynamic actors not in the registry are resolved from the DB.
 
 ```elixir
+# Maps identifier (as DB string) → actor module for recovery sweep.
+# Must match the identifier() declared in each actor's DSL block.
 @actor_registry %{
   "project_health_actor" => MyApp.Actors.ProjectHealthActor,
   "client_health_actor" => MyApp.Actors.ClientHealthActor
@@ -1448,6 +1477,7 @@ children = [
     # Wait for cluster to settle after deploy
     Process.sleep(:timer.minutes(2))
     Cyclium.Recovery.sweep(actor_registry: @actor_registry)
+    Cyclium.Recovery.reconcile_workflows()
   end}
 ]
 ```
@@ -1470,6 +1500,7 @@ Cyclium.Recovery.sweep(
 4. After boot, each node waits 2 minutes before running recovery sweep
 5. Sweep finds stale episodes via step journal recency
 6. First node to claim each orphan via optimistic update handles recovery
+7. Workflow reconciliation replays missed Bus events for stale workflow steps
 
 ## Step Retry Helper
 

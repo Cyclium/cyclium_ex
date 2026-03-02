@@ -49,6 +49,22 @@ defmodule Cyclium.ActorTest do
     end
   end
 
+  # Actor with explicit identifier — survives module renames
+  defmodule IdentifiedActor do
+    use Cyclium.Actor
+
+    actor do
+      identifier(:my_stable_id)
+      domain(:testing)
+      synthesizer(__MODULE__.FakeSynthesizer)
+
+      expectation(:do_work,
+        strategy: __MODULE__.FakeStrategy,
+        trigger: {:event, "work.requested"}
+      )
+    end
+  end
+
   setup do
     start_supervised!({Phoenix.PubSub, name: Cyclium.TestPubSub})
     Application.put_env(:cyclium, :pubsub, Cyclium.TestPubSub)
@@ -191,7 +207,10 @@ defmodule Cyclium.ActorTest do
         :persistent_term.erase({:cyclium_actor_strategy, :registration_actor, :do_work})
         :persistent_term.erase({:cyclium_actor_strategy, :registration_actor, :do_other_work})
         :persistent_term.erase({:cyclium_expectation_synthesizer, :registration_actor, :do_work})
-        :persistent_term.erase({:cyclium_expectation_synthesizer, :registration_actor, :do_other_work})
+
+        :persistent_term.erase(
+          {:cyclium_expectation_synthesizer, :registration_actor, :do_other_work}
+        )
       end)
 
       :ok
@@ -256,14 +275,47 @@ defmodule Cyclium.ActorTest do
       # Simulate what EpisodeTask does: convert strings to existing atoms
       actor_atom = String.to_existing_atom("registration_actor")
       exp_atom = String.to_existing_atom("do_work")
+
       assert :persistent_term.get({:cyclium_actor_strategy, actor_atom, exp_atom}) ==
                RegistrationActor.FakeStrategy
 
       # Same for expectation-level synthesizer
       exp_synth_atom = String.to_existing_atom("do_other_work")
-      assert :persistent_term.get(
-               {:cyclium_expectation_synthesizer, actor_atom, exp_synth_atom}
-             ) == RegistrationActor.OtherSynthesizer
+
+      assert :persistent_term.get({:cyclium_expectation_synthesizer, actor_atom, exp_synth_atom}) ==
+               RegistrationActor.OtherSynthesizer
+    end
+  end
+
+  describe "explicit identifier" do
+    setup do
+      start_supervised!({IdentifiedActor, [name: :identified_actor_test]})
+
+      on_exit(fn ->
+        :persistent_term.erase({:cyclium_actor_synthesizer, :my_stable_id})
+        :persistent_term.erase({:cyclium_actor_strategy, :my_stable_id, :do_work})
+        :persistent_term.erase({:cyclium_expectation_synthesizer, :my_stable_id, :do_work})
+      end)
+
+      :ok
+    end
+
+    test "identifier/1 overrides module-derived actor_id" do
+      config = IdentifiedActor.__cyclium_config__()
+      assert config.actor_id == :my_stable_id
+    end
+
+    test "persistent_term keys use the explicit identifier" do
+      assert :persistent_term.get({:cyclium_actor_synthesizer, :my_stable_id}) ==
+               IdentifiedActor.FakeSynthesizer
+
+      assert :persistent_term.get({:cyclium_actor_strategy, :my_stable_id, :do_work}) ==
+               IdentifiedActor.FakeStrategy
+    end
+
+    test "GenServer state uses the explicit identifier" do
+      state = :sys.get_state(:identified_actor_test)
+      assert state.actor_id == :my_stable_id
     end
   end
 end

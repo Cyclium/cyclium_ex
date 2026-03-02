@@ -197,6 +197,7 @@ defmodule Cyclium.Test.Migration do
       add(:strategy_template, :string)
       add(:strategy_config, :text)
       add(:enabled, :boolean, default: true)
+      add(:created_by, :string)
       add(:inserted_at, :utc_datetime)
       add(:updated_at, :utc_datetime)
     end
