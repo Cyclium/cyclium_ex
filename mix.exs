@@ -31,6 +31,7 @@ defmodule Cyclium.MixProject do
       {:ecto_sql, "~> 3.10"},
       {:jason, "~> 1.2"},
       {:phoenix_pubsub, "~> 2.1"},
+      {:ecto_sqlite3, ">= 0.0.0", only: :test},
       {:dialyxir, "~> 1.4", only: [:dev, :test], runtime: false}
     ]
   end
