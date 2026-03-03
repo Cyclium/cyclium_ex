@@ -27,6 +27,9 @@ defmodule Cyclium.Findings.ExpirationSweep do
   @default_interval_ms :timer.minutes(5)
   @default_batch_size 100
 
+  @sweep_dedupe_key "cyclium:sweep:expiration"
+  @sweep_lease_seconds 60
+
   def start_link(opts \\ []) do
     GenServer.start_link(__MODULE__, opts, name: __MODULE__)
   end
@@ -40,14 +43,34 @@ defmodule Cyclium.Findings.ExpirationSweep do
 
   @impl true
   def handle_info(:sweep, state) do
-    count = sweep_expired(state.batch_size)
+    case Cyclium.WorkClaims.gate_acquire(@sweep_dedupe_key, node_name(),
+           lease_seconds: @sweep_lease_seconds,
+           work_type: "sweep"
+         ) do
+      {:error, :busy} ->
+        :skipped
 
-    if count > 0 do
-      Logger.info("Expiration sweep cleared #{count} expired finding(s)")
+      _acquired ->
+        try do
+          count = sweep_expired(state.batch_size)
+
+          if count > 0 do
+            Logger.info("Expiration sweep cleared #{count} expired finding(s)")
+          end
+
+          Cyclium.Findings.Escalation.sweep()
+
+          Cyclium.WorkClaims.gate_complete(@sweep_dedupe_key, node_name())
+        rescue
+          e ->
+            Cyclium.WorkClaims.gate_fail(@sweep_dedupe_key, node_name(), %{
+              "reason" => "exception",
+              "message" => Exception.message(e)
+            })
+
+            Logger.error("Expiration sweep failed: #{Exception.message(e)}")
+        end
     end
-
-    # Run escalation sweep after expiration
-    Cyclium.Findings.Escalation.sweep()
 
     schedule_sweep(state.interval)
     {:noreply, state}
@@ -117,6 +140,8 @@ defmodule Cyclium.Findings.ExpirationSweep do
   defp batch_size do
     Application.get_env(:cyclium, :finding_expiration_batch_size, @default_batch_size)
   end
+
+  defp node_name, do: node() |> to_string()
 
   defp repo, do: Cyclium.repo()
 end

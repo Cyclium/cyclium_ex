@@ -311,6 +311,24 @@ end
 | `{:approval, request}` | Block episode until human approval |
 | `{:wait, external_ref}` | Block episode until external event resolves |
 
+**`handle_result` step kinds:**
+
+The `step` argument passed to `handle_result/3` is an `%EpisodeStep{}` struct. Pattern-match on `kind` to distinguish which action produced the result:
+
+| `step.kind` | Produced by | `result` on success | `result` on failure |
+|---|---|---|---|
+| `:tool_call` | `{:tool_call, capability, action, args}` | `{:ok, tool_return_value}` | `{:error, {error_class, detail}}` |
+| `:synthesis` | `{:synthesize, prompt_ctx}` | `{:ok, llm_response}` | `{:error, {error_class, detail}}` |
+| `:observation` | `{:observe, data}` | `{:ok, data}` | *(never fails — data is passed through as-is)* |
+
+The step struct also carries `tool_name` (for `:tool_call` steps) which is useful for per-tool retry tracking:
+
+```elixir
+def handle_result(state, %{kind: :synthesis}, {:ok, result}), do: ...
+def handle_result(state, %{kind: :tool_call, tool_name: "erp_read"}, {:ok, data}), do: ...
+def handle_result(state, %{kind: :observation}, {:ok, data}), do: ...
+```
+
 ### Multi-turn strategies
 
 Strategies can run multiple turns before converging. `next_step` decides actions, `handle_result` absorbs outcomes — expensive work like LLM calls should be delegated to actions (`:synthesize`, `:tool_call`), not done inside `handle_result`.

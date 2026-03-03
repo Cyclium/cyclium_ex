@@ -90,4 +90,69 @@ defmodule Cyclium.Findings.ExpirationSweepTest do
       assert [:cyclium, :finding, :expired] in events
     end
   end
+
+  describe "cluster safety" do
+    setup do
+      case Cyclium.WorkClaims.FakeClaims.start_link() do
+        {:ok, _} -> :ok
+        {:error, {:already_started, _}} -> :ok
+      end
+
+      Application.put_env(:cyclium, :work_claims, Cyclium.WorkClaims.FakeClaims)
+
+      on_exit(fn ->
+        Application.delete_env(:cyclium, :work_claims)
+      end)
+
+      :ok
+    end
+
+    test "sweep runs and completes claim" do
+      # Start the GenServer with a long interval so it doesn't auto-fire
+      {:ok, pid} = ExpirationSweep.start_link(interval_ms: :timer.hours(1))
+
+      # Manually trigger the sweep
+      send(pid, :sweep)
+      # Give handle_info time to process
+      :sys.get_state(pid)
+
+      claims = Cyclium.WorkClaims.FakeClaims.get_claims()
+      claim = Map.get(claims, "cyclium:sweep:expiration")
+      assert claim != nil
+      assert claim.state == :done
+
+      GenServer.stop(pid)
+    end
+
+    test "sweep skipped when busy" do
+      Cyclium.WorkClaims.FakeClaims.set_busy("cyclium:sweep:expiration")
+
+      {:ok, pid} = ExpirationSweep.start_link(interval_ms: :timer.hours(1))
+
+      send(pid, :sweep)
+      :sys.get_state(pid)
+
+      claims = Cyclium.WorkClaims.FakeClaims.get_claims()
+      # No claim should have been created — sweep was skipped
+      assert Map.get(claims, "cyclium:sweep:expiration") == nil
+
+      GenServer.stop(pid)
+    end
+
+    test "sweep runs normally when work claims unconfigured" do
+      Application.delete_env(:cyclium, :work_claims)
+
+      {:ok, pid} = ExpirationSweep.start_link(interval_ms: :timer.hours(1))
+
+      # Should not raise — passthrough mode
+      send(pid, :sweep)
+      :sys.get_state(pid)
+
+      # No claims created since work_claims is unconfigured
+      claims = Cyclium.WorkClaims.FakeClaims.get_claims()
+      assert Map.get(claims, "cyclium:sweep:expiration") == nil
+
+      GenServer.stop(pid)
+    end
+  end
 end
