@@ -84,7 +84,7 @@ YourApp.Supervisor
 │   ├── Cyclium.TaskSupervisor (Task.Supervisor)
 │   ├── Cyclium.Reconciler (optional — spec change detection)
 │   ├── Cyclium.WorkflowEngine (optional — multi-actor workflows)
-│   └── Cyclium.Findings.ExpirationSweep (optional — TTL + escalation)
+│   └── Cyclium.Findings.FindingSweep (optional — expiration + escalation)
 └── YourAppWeb.Endpoint
 ```
 
@@ -599,13 +599,13 @@ expectation(:check_temp,
 {:raise, %{finding_key: "temp:alert:123", ttl_seconds: 7200, ...}}
 ```
 
-Expired findings are cleared by `Cyclium.Findings.ExpirationSweep`, an optional GenServer that runs on a configurable interval:
+Expired findings are cleared and active findings are escalated by `Cyclium.Findings.FindingSweep`, an optional GenServer that runs on a configurable interval:
 
 ```elixir
 # config/config.exs
-config :cyclium, :finding_expiration_sweep, true
-config :cyclium, :finding_expiration_interval_ms, 300_000   # 5 minutes (default)
-config :cyclium, :finding_expiration_batch_size, 100         # per sweep (default)
+config :cyclium, :finding_sweep, true
+config :cyclium, :finding_sweep_interval_ms, 300_000   # 5 minutes (default)
+config :cyclium, :finding_sweep_batch_size, 100         # per sweep (default)
 ```
 
 **Severity escalation:** Time-based rules automatically escalate finding severity based on how long a finding has been active. Declare rules on the expectation:

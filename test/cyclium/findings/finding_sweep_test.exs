@@ -1,8 +1,8 @@
-defmodule Cyclium.Findings.ExpirationSweepTest do
+defmodule Cyclium.Findings.FindingSweepTest do
   use ExUnit.Case, async: false
 
   alias Cyclium.Findings
-  alias Cyclium.Findings.ExpirationSweep
+  alias Cyclium.Findings.FindingSweep
 
   setup do
     case Cyclium.FakeRepo.start_link() do
@@ -79,10 +79,10 @@ defmodule Cyclium.Findings.ExpirationSweepTest do
     end
   end
 
-  describe "ExpirationSweep" do
+  describe "FindingSweep" do
     test "sweep_expired calls update_all and returns count" do
       # FakeRepo.update_all returns {0, nil}
-      assert ExpirationSweep.sweep_expired() == 0
+      assert FindingSweep.sweep_expired() == 0
     end
 
     test "expired telemetry event is declared" do
@@ -109,7 +109,7 @@ defmodule Cyclium.Findings.ExpirationSweepTest do
 
     test "sweep runs and completes claim" do
       # Start the GenServer with a long interval so it doesn't auto-fire
-      {:ok, pid} = ExpirationSweep.start_link(interval_ms: :timer.hours(1))
+      {:ok, pid} = FindingSweep.start_link(interval_ms: :timer.hours(1))
 
       # Manually trigger the sweep
       send(pid, :sweep)
@@ -117,7 +117,7 @@ defmodule Cyclium.Findings.ExpirationSweepTest do
       :sys.get_state(pid)
 
       claims = Cyclium.WorkClaims.FakeClaims.get_claims()
-      claim = Map.get(claims, "cyclium:sweep:expiration")
+      claim = Map.get(claims, "cyclium:sweep:findings")
       assert claim != nil
       assert claim.state == :done
 
@@ -125,16 +125,16 @@ defmodule Cyclium.Findings.ExpirationSweepTest do
     end
 
     test "sweep skipped when busy" do
-      Cyclium.WorkClaims.FakeClaims.set_busy("cyclium:sweep:expiration")
+      Cyclium.WorkClaims.FakeClaims.set_busy("cyclium:sweep:findings")
 
-      {:ok, pid} = ExpirationSweep.start_link(interval_ms: :timer.hours(1))
+      {:ok, pid} = FindingSweep.start_link(interval_ms: :timer.hours(1))
 
       send(pid, :sweep)
       :sys.get_state(pid)
 
       claims = Cyclium.WorkClaims.FakeClaims.get_claims()
       # No claim should have been created — sweep was skipped
-      assert Map.get(claims, "cyclium:sweep:expiration") == nil
+      assert Map.get(claims, "cyclium:sweep:findings") == nil
 
       GenServer.stop(pid)
     end
@@ -142,7 +142,7 @@ defmodule Cyclium.Findings.ExpirationSweepTest do
     test "sweep runs normally when work claims unconfigured" do
       Application.delete_env(:cyclium, :work_claims)
 
-      {:ok, pid} = ExpirationSweep.start_link(interval_ms: :timer.hours(1))
+      {:ok, pid} = FindingSweep.start_link(interval_ms: :timer.hours(1))
 
       # Should not raise — passthrough mode
       send(pid, :sweep)
@@ -150,7 +150,7 @@ defmodule Cyclium.Findings.ExpirationSweepTest do
 
       # No claims created since work_claims is unconfigured
       claims = Cyclium.WorkClaims.FakeClaims.get_claims()
-      assert Map.get(claims, "cyclium:sweep:expiration") == nil
+      assert Map.get(claims, "cyclium:sweep:findings") == nil
 
       GenServer.stop(pid)
     end

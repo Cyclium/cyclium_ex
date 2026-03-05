@@ -1,13 +1,12 @@
 defmodule Cyclium.Findings.Escalation do
   @moduledoc """
-  Time-based severity escalation for active findings.
+  Time-based severity escalation rules for active findings.
 
-  Evaluates escalation rules against active findings and bumps severity
-  when findings have been active longer than the configured thresholds.
+  Evaluates escalation rules against a finding and determines whether it
+  should be bumped to a higher severity based on how long it has been active.
 
-  Rules are scoped to the (actor_id, expectation_id) pair that registered
-  them, so two actors using the same finding class can have independent
-  escalation thresholds.
+  Rules are evaluated from longest `after_minutes` first. The first matching
+  rule (where the finding has been active for at least that duration) wins.
 
   ## Rules format
 
@@ -21,21 +20,7 @@ defmodule Cyclium.Findings.Escalation do
             %{after_minutes: 1440, escalate_to: :critical}
           ]
         }
-
-  Rules are evaluated from longest `after_minutes` first. The first matching
-  rule (where the finding has been active for at least that duration) wins.
-
-  ## Usage
-
-  Typically run as part of the `ExpirationSweep` cycle, or manually:
-
-      Cyclium.Findings.Escalation.sweep()
   """
-
-  require Logger
-
-  import Ecto.Query
-  alias Cyclium.Schemas.Finding
 
   @severity_order [:low, :medium, :high, :critical]
 
@@ -60,80 +45,6 @@ defmodule Cyclium.Findings.Escalation do
     end
   end
 
-  @doc """
-  Sweep all active findings and escalate those matching configured rules.
-
-  Rules are scoped per (actor_id, expectation_id) — each pair's findings
-  are only evaluated against that pair's rules.
-
-  Returns the count of escalated findings.
-  """
-  def sweep do
-    pairs = Cyclium.Findings.Config.escalation_pairs()
-
-    if pairs == [] do
-      0
-    else
-      now = DateTime.utc_now() |> DateTime.truncate(:second)
-
-      escalated =
-        Enum.reduce(pairs, 0, fn {actor_id, exp_id, rules_by_class}, count ->
-          classes = Map.keys(rules_by_class)
-
-          findings =
-            repo().all(
-              from(f in Finding,
-                where: f.status == :active,
-                where: f.actor_id == ^actor_id,
-                where: f.expectation_id == ^exp_id,
-                where: f.class in ^classes
-              )
-            )
-
-          count + escalate_findings(findings, rules_by_class, now)
-        end)
-
-      if escalated > 0 do
-        Logger.info("Escalation sweep escalated #{escalated} finding(s)")
-      end
-
-      escalated
-    end
-  end
-
-  defp escalate_findings(findings, rules_by_class, now) do
-    Enum.reduce(findings, 0, fn finding, count ->
-      rules = Map.get(rules_by_class, finding.class, [])
-
-      case check(finding, rules) do
-        {:escalate, new_severity} ->
-          case finding
-               |> Finding.changeset(%{severity: new_severity, updated_at: now})
-               |> repo().update() do
-            {:ok, _} ->
-              :telemetry.execute(
-                [:cyclium, :finding, :escalated],
-                %{count: 1},
-                %{
-                  finding_key: finding.finding_key,
-                  class: finding.class,
-                  from: finding.severity,
-                  to: new_severity
-                }
-              )
-
-              count + 1
-
-            {:error, _} ->
-              count
-          end
-
-        :no_change ->
-          count
-      end
-    end)
-  end
-
   defp age_in_minutes(%{raised_at: nil}), do: 0
 
   defp age_in_minutes(%{raised_at: raised_at}) do
@@ -143,6 +54,4 @@ defmodule Cyclium.Findings.Escalation do
   defp severity_index(severity) do
     Enum.find_index(@severity_order, &(&1 == severity)) || 0
   end
-
-  defp repo, do: Cyclium.repo()
 end

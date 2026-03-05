@@ -157,8 +157,8 @@ defmodule Cyclium.FindingsDbTest do
     end
   end
 
-  describe "ExpirationSweep.sweep_expired (DB)" do
-    alias Cyclium.Findings.ExpirationSweep
+  describe "FindingSweep.sweep_expired (DB)" do
+    alias Cyclium.Findings.FindingSweep
 
     defp insert_finding(attrs) do
       now = DateTime.utc_now() |> DateTime.truncate(:second)
@@ -184,7 +184,7 @@ defmodule Cyclium.FindingsDbTest do
       expired = DateTime.add(DateTime.utc_now(), -60, :second) |> DateTime.truncate(:second)
       finding = insert_finding(%{expires_at: expired})
 
-      assert ExpirationSweep.sweep_expired() > 0
+      assert FindingSweep.sweep_expired() > 0
 
       cleared = Repo.get!(Finding, finding.id)
       assert cleared.status == :cleared
@@ -194,7 +194,7 @@ defmodule Cyclium.FindingsDbTest do
       future = DateTime.add(DateTime.utc_now(), 3600, :second) |> DateTime.truncate(:second)
       finding = insert_finding(%{expires_at: future})
 
-      assert ExpirationSweep.sweep_expired() == 0
+      assert FindingSweep.sweep_expired() == 0
 
       still_active = Repo.get!(Finding, finding.id)
       assert still_active.status == :active
@@ -221,7 +221,7 @@ defmodule Cyclium.FindingsDbTest do
         })
 
       # This would crash with unique_violation before the fix
-      assert ExpirationSweep.sweep_expired() > 0
+      assert FindingSweep.sweep_expired() > 0
 
       # Old cleared finding should now be superseded and archived
       archived = Repo.get!(Finding, old_cleared.id)
@@ -234,9 +234,9 @@ defmodule Cyclium.FindingsDbTest do
     end
   end
 
-  describe "Escalation.sweep scoped by (actor, expectation)" do
+  describe "FindingSweep.sweep_escalations scoped by (actor, expectation)" do
     alias Cyclium.Findings.Config
-    alias Cyclium.Findings.Escalation
+    alias Cyclium.Findings.FindingSweep
 
     setup do
       Config.ensure_table()
@@ -274,7 +274,7 @@ defmodule Cyclium.FindingsDbTest do
           raised_at: old
         })
 
-      assert Escalation.sweep() == 1
+      assert FindingSweep.sweep_escalations() == 1
 
       assert Repo.get!(Finding, f_a.id).severity == :high
       assert Repo.get!(Finding, f_b.id).severity == :low
@@ -313,7 +313,7 @@ defmodule Cyclium.FindingsDbTest do
           raised_at: old
         })
 
-      assert Escalation.sweep() == 2
+      assert FindingSweep.sweep_escalations() == 2
 
       assert Repo.get!(Finding, f_x.id).severity == :high
       assert Repo.get!(Finding, f_y.id).severity == :critical
@@ -337,7 +337,7 @@ defmodule Cyclium.FindingsDbTest do
           raised_at: old
         })
 
-      assert Escalation.sweep() == 0
+      assert FindingSweep.sweep_escalations() == 0
       assert Repo.get!(Finding, f.id).severity == :low
     end
   end

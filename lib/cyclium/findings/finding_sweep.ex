@@ -1,16 +1,13 @@
-defmodule Cyclium.Findings.ExpirationSweep do
+defmodule Cyclium.Findings.FindingSweep do
   @moduledoc """
-  Periodic GenServer that clears expired findings.
-
-  Queries active findings where `expires_at <= now` and sets their status
-  to `:cleared` in batches. Emits `[:cyclium, :finding, :expired]` telemetry.
+  Periodic GenServer that maintains finding health: clears expired findings
+  and escalates active findings based on time-based severity rules.
 
   ## Configuration
 
-      # In your application config:
-      config :cyclium, :finding_expiration_sweep, true
-      config :cyclium, :finding_expiration_interval_ms, :timer.minutes(5)
-      config :cyclium, :finding_expiration_batch_size, 100
+      config :cyclium, :finding_sweep, true
+      config :cyclium, :finding_sweep_interval_ms, :timer.minutes(5)
+      config :cyclium, :finding_sweep_batch_size, 100
 
   ## Supervisor
 
@@ -22,12 +19,13 @@ defmodule Cyclium.Findings.ExpirationSweep do
   require Logger
 
   import Ecto.Query
+  alias Cyclium.Findings.Escalation
   alias Cyclium.Schemas.Finding
 
   @default_interval_ms :timer.minutes(5)
   @default_batch_size 100
 
-  @sweep_dedupe_key "cyclium:sweep:expiration"
+  @sweep_dedupe_key "cyclium:sweep:findings"
   @sweep_lease_seconds 60
 
   def start_link(opts \\ []) do
@@ -52,13 +50,17 @@ defmodule Cyclium.Findings.ExpirationSweep do
 
       _acquired ->
         try do
-          count = sweep_expired(state.batch_size)
+          expired_count = sweep_expired(state.batch_size)
 
-          if count > 0 do
-            Logger.info("Expiration sweep cleared #{count} expired finding(s)")
+          if expired_count > 0 do
+            Logger.info("Finding sweep cleared #{expired_count} expired finding(s)")
           end
 
-          Cyclium.Findings.Escalation.sweep()
+          escalated_count = sweep_escalations()
+
+          if escalated_count > 0 do
+            Logger.info("Finding sweep escalated #{escalated_count} finding(s)")
+          end
 
           Cyclium.WorkClaims.gate_complete(@sweep_dedupe_key, node_name())
         rescue
@@ -68,7 +70,7 @@ defmodule Cyclium.Findings.ExpirationSweep do
               "message" => Exception.message(e)
             })
 
-            Logger.error("Expiration sweep failed: #{Exception.message(e)}")
+            Logger.error("Finding sweep failed: #{Exception.message(e)}")
         end
     end
 
@@ -77,7 +79,7 @@ defmodule Cyclium.Findings.ExpirationSweep do
   end
 
   @doc """
-  Run the expiration sweep manually. Returns the count of cleared findings.
+  Clear expired findings. Returns the count of cleared findings.
   """
   def sweep_expired(batch_size \\ batch_size()) do
     now = DateTime.utc_now() |> DateTime.truncate(:second)
@@ -129,16 +131,79 @@ defmodule Cyclium.Findings.ExpirationSweep do
     count
   end
 
+  @doc """
+  Escalate active findings based on configured time-based rules.
+  Returns the count of escalated findings.
+  """
+  def sweep_escalations do
+    pairs = Cyclium.Findings.Config.escalation_pairs()
+
+    if pairs == [] do
+      0
+    else
+      now = DateTime.utc_now() |> DateTime.truncate(:second)
+
+      Enum.reduce(pairs, 0, fn {actor_id, exp_id, rules_by_class}, count ->
+        classes = Map.keys(rules_by_class)
+
+        findings =
+          repo().all(
+            from(f in Finding,
+              where: f.status == :active,
+              where: f.actor_id == ^actor_id,
+              where: f.expectation_id == ^exp_id,
+              where: f.class in ^classes
+            )
+          )
+
+        count + escalate_findings(findings, rules_by_class, now)
+      end)
+    end
+  end
+
+  defp escalate_findings(findings, rules_by_class, now) do
+    Enum.reduce(findings, 0, fn finding, count ->
+      rules = Map.get(rules_by_class, finding.class, [])
+
+      case Escalation.check(finding, rules) do
+        {:escalate, new_severity} ->
+          case finding
+               |> Finding.changeset(%{severity: new_severity, updated_at: now})
+               |> repo().update() do
+            {:ok, _} ->
+              :telemetry.execute(
+                [:cyclium, :finding, :escalated],
+                %{count: 1},
+                %{
+                  finding_key: finding.finding_key,
+                  class: finding.class,
+                  from: finding.severity,
+                  to: new_severity
+                }
+              )
+
+              count + 1
+
+            {:error, _} ->
+              count
+          end
+
+        :no_change ->
+          count
+      end
+    end)
+  end
+
   defp schedule_sweep(interval) do
     Process.send_after(self(), :sweep, interval)
   end
 
   defp interval_ms do
-    Application.get_env(:cyclium, :finding_expiration_interval_ms, @default_interval_ms)
+    Application.get_env(:cyclium, :finding_sweep_interval_ms, @default_interval_ms)
   end
 
   defp batch_size do
-    Application.get_env(:cyclium, :finding_expiration_batch_size, @default_batch_size)
+    Application.get_env(:cyclium, :finding_sweep_batch_size, @default_batch_size)
   end
 
   defp node_name, do: node() |> to_string()

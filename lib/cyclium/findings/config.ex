@@ -14,7 +14,7 @@ defmodule Cyclium.Findings.Config do
   ## Fallback
 
   When no per-expectation config is registered, `Cyclium.Findings` and
-  `Cyclium.Findings.Escalation` fall back to application env for
+  `Cyclium.Findings.FindingSweep` falls back to application env for
   backwards compatibility.
   """
 
@@ -85,7 +85,7 @@ defmodule Cyclium.Findings.Config do
   Return all registered (actor_id, expectation_id, rules_by_class) tuples
   that have escalation rules configured.
 
-  Used by `Cyclium.Findings.Escalation.sweep/0` to scope rules to the
+  Used by `Cyclium.Findings.FindingSweep.sweep_escalations/0` to scope rules to the
   correct actor + expectation pair rather than merging them globally by class.
   """
   def escalation_pairs do

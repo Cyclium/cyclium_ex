@@ -51,13 +51,13 @@ defmodule Cyclium.Supervisor do
         []
       end
 
-    expiration_sweep =
-      if Application.get_env(:cyclium, :finding_expiration_sweep, false) do
-        [Cyclium.Findings.ExpirationSweep]
+    finding_sweep =
+      if Application.get_env(:cyclium, :finding_sweep, false) do
+        [Cyclium.Findings.FindingSweep]
       else
         []
       end
 
-    reconciler ++ workflow_engine ++ work_claims ++ expiration_sweep
+    reconciler ++ workflow_engine ++ work_claims ++ finding_sweep
   end
 end
