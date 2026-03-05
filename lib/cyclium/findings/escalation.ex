@@ -24,6 +24,11 @@ defmodule Cyclium.Findings.Escalation do
 
   @severity_order [:low, :medium, :high, :critical]
 
+  @doc "Returns the integer index of a severity for comparison. Higher = more severe."
+  def severity_index(severity) do
+    Enum.find_index(@severity_order, &(&1 == severity)) || 0
+  end
+
   @doc """
   Check if a single finding should be escalated based on rules.
 
@@ -49,9 +54,5 @@ defmodule Cyclium.Findings.Escalation do
 
   defp age_in_minutes(%{raised_at: raised_at}) do
     DateTime.diff(DateTime.utc_now(), raised_at, :second) / 60
-  end
-
-  defp severity_index(severity) do
-    Enum.find_index(@severity_order, &(&1 == severity)) || 0
   end
 end

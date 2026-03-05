@@ -72,21 +72,22 @@ defmodule Cyclium.WorkClaimsDbTest do
       assert Repo.aggregate(WorkClaim, :count) == 1
     end
 
-    test "acquire re-claims a done claim" do
+    test "acquire re-claims a done claim and resets attempt to 1" do
       key = unique_key()
-      insert_claim(%{dedupe_key: key, state: :done, lease_until: past()})
+      insert_claim(%{dedupe_key: key, state: :done, lease_until: past(), attempt: 5})
 
       assert {:ok, reclaimed} = EctoClaims.acquire(key, "node@new", lease_seconds: 60)
       assert reclaimed.state == :claimed
-      assert reclaimed.attempt == 2
+      assert reclaimed.attempt == 1
     end
 
-    test "acquire re-claims a failed claim" do
+    test "acquire re-claims a failed claim and increments attempt" do
       key = unique_key()
-      insert_claim(%{dedupe_key: key, state: :failed, lease_until: past()})
+      insert_claim(%{dedupe_key: key, state: :failed, lease_until: past(), attempt: 3})
 
       assert {:ok, reclaimed} = EctoClaims.acquire(key, "node@retry")
       assert reclaimed.state == :claimed
+      assert reclaimed.attempt == 4
     end
 
     test "stores work_type when provided" do

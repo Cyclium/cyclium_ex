@@ -623,7 +623,7 @@ expectation(:check_vendor,
 )
 ```
 
-Escalation runs as part of the expiration sweep cycle. Application config (`config :cyclium, :escalation_rules`) is supported as a fallback.
+Escalation runs as part of the finding sweep cycle. Each sweep interval, **every active finding** matching a registered escalation pair (actor + expectation + classes) is loaded from the database and checked against the time-based rules. This means the sweep interval (`finding_sweep_interval_ms`) controls how often escalation is evaluated — rules with `after_minutes` granularity finer than the sweep interval won't fire any faster. For expectations with many active findings, keep this in mind when tuning the sweep interval and batch size. Application config (`config :cyclium, :escalation_rules`) is supported as a fallback.
 
 **Post-raise enrichment:** An optional callback enriches findings immediately after they're raised. Declare it on the expectation:
 

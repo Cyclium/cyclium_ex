@@ -55,6 +55,19 @@ defmodule Cyclium.WorkClaims.EctoClaims do
             |> repo().update!()
           end
 
+        %{state: :done} = completed ->
+          completed
+          |> WorkClaim.changeset(%{
+            state: :claimed,
+            owner_node: owner_node,
+            lease_until: lease_until,
+            claimed_at: now,
+            last_heartbeat_at: nil,
+            finished_at: nil,
+            attempt: 1
+          })
+          |> repo().update!()
+
         %{} = expired ->
           expired
           |> WorkClaim.changeset(%{

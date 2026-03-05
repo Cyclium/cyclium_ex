@@ -145,6 +145,17 @@ defmodule Cyclium.Findings.FindingSweep do
 
       Enum.reduce(pairs, 0, fn {actor_id, exp_id, rules_by_class}, count ->
         classes = Map.keys(rules_by_class)
+        all_rules = rules_by_class |> Map.values() |> List.flatten()
+
+        # Only load findings old enough to potentially match the earliest rule
+        min_after = all_rules |> Enum.map(& &1.after_minutes) |> Enum.min()
+        cutoff = DateTime.add(now, -min_after, :minute)
+
+        # Skip findings already at the highest severity any rule can escalate to
+        max_target =
+          all_rules
+          |> Enum.map(& &1.escalate_to)
+          |> Enum.max_by(&Escalation.severity_index/1)
 
         findings =
           repo().all(
@@ -152,7 +163,9 @@ defmodule Cyclium.Findings.FindingSweep do
               where: f.status == :active,
               where: f.actor_id == ^actor_id,
               where: f.expectation_id == ^exp_id,
-              where: f.class in ^classes
+              where: f.class in ^classes,
+              where: f.raised_at <= ^cutoff,
+              where: f.severity != ^max_target
             )
           )
 
