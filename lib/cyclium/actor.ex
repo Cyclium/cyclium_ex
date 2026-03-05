@@ -109,6 +109,10 @@ defmodule Cyclium.Actor do
       def __cyclium_expectations__ do
         unquote(Macro.escape(expectations))
       end
+
+      def identifier do
+        unquote(actor_id)
+      end
     end
   end
 end

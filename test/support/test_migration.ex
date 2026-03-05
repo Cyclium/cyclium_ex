@@ -128,7 +128,14 @@ defmodule Cyclium.Test.Migration do
     create(index(:cyclium_findings, [:actor_id, :status, :class]))
     create(index(:cyclium_findings, [:status, :class]))
     create(index(:cyclium_findings, [:subject_kind, :subject_id, :status]))
-    create(unique_index(:cyclium_findings, [:finding_key, :status]))
+
+    create(
+      unique_index(:cyclium_findings, [:finding_key, :status],
+        where: "status != 'superseded'",
+        name: :cyclium_findings_finding_key_status_index
+      )
+    )
+
     create(index(:cyclium_findings, [:archived_at]))
     create(index(:cyclium_findings, [:caused_by_key]))
     create(index(:cyclium_findings, [:expires_at]))

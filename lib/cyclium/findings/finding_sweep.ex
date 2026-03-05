@@ -102,7 +102,9 @@ defmodule Cyclium.Findings.FindingSweep do
 
         ids ->
           # Archive any already-cleared findings with the same finding_keys
-          # to avoid unique constraint violation on (finding_key, status)
+          # to avoid unique constraint violation on (finding_key, status).
+          # Note: superseded rows are excluded from the unique index (V13)
+          # so multiple superseded rows per finding_key are allowed.
           finding_keys =
             from(f in Finding, where: f.id in ^ids, select: f.finding_key)
             |> repo().all()
