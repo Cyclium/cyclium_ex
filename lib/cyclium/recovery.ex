@@ -184,7 +184,7 @@ defmodule Cyclium.Recovery do
     end
   end
 
-  defp node_name, do: node() |> to_string()
+  defp node_name, do: Cyclium.NodeIdentity.name()
 
   defp resolve_policy_from_registry(episode, registry) do
     case Map.get(registry, episode.actor_id) do

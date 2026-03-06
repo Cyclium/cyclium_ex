@@ -221,7 +221,7 @@ defmodule Cyclium.Findings.FindingSweep do
     Application.get_env(:cyclium, :finding_sweep_batch_size, @default_batch_size)
   end
 
-  defp node_name, do: node() |> to_string()
+  defp node_name, do: Cyclium.NodeIdentity.name()
 
   defp repo, do: Cyclium.repo()
 end
