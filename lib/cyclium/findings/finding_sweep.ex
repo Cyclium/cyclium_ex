@@ -49,6 +49,8 @@ defmodule Cyclium.Findings.FindingSweep do
         :skipped
 
       _acquired ->
+        start = System.monotonic_time()
+
         try do
           expired_count = sweep_expired(state.batch_size)
 
@@ -62,9 +64,31 @@ defmodule Cyclium.Findings.FindingSweep do
             Logger.info("Finding sweep escalated #{escalated_count} finding(s)")
           end
 
+          duration_ms =
+            System.convert_time_unit(System.monotonic_time() - start, :native, :millisecond)
+
+          :telemetry.execute(
+            [:cyclium, :finding_sweep, :completed],
+            %{
+              duration_ms: duration_ms,
+              expired_count: expired_count,
+              escalated_count: escalated_count
+            },
+            %{node: node_name()}
+          )
+
           Cyclium.WorkClaims.gate_complete(@sweep_dedupe_key, node_name())
         rescue
           e ->
+            duration_ms =
+              System.convert_time_unit(System.monotonic_time() - start, :native, :millisecond)
+
+            :telemetry.execute(
+              [:cyclium, :finding_sweep, :failed],
+              %{duration_ms: duration_ms},
+              %{node: node_name(), reason: Exception.message(e)}
+            )
+
             Cyclium.WorkClaims.gate_fail(@sweep_dedupe_key, node_name(), %{
               "reason" => "exception",
               "message" => Exception.message(e)

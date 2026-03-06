@@ -54,22 +54,39 @@ defmodule Cyclium.TriggerRequests.Poller do
   defp poll(state) do
     node_name = Cyclium.NodeIdentity.name()
 
-    claim_opts =
+    fetch_opts =
       [limit: state.batch_size] ++
         if(state.source_stack, do: [source_stack: state.source_stack], else: [])
 
-    {:ok, requests} = Cyclium.TriggerRequests.claim_pending(node_name, claim_opts)
+    {:ok, requests} = Cyclium.TriggerRequests.fetch_pending(fetch_opts)
 
     if requests != [] do
-      Logger.info("Claimed #{length(requests)} trigger request(s)")
-      Enum.each(requests, &dispatch/1)
+      Logger.info("Found #{length(requests)} pending trigger request(s)")
+      Enum.each(requests, &dispatch(&1, node_name))
     end
 
     # Periodically expire stale requests
     Cyclium.TriggerRequests.expire_stale(@stale_expiry_seconds)
   end
 
-  defp dispatch(request) do
+  defp dispatch(request, node_name) do
+    dedupe_key = "trigger_request:#{request.id}"
+
+    case Cyclium.WorkClaims.gate_acquire(dedupe_key, node_name, work_type: "trigger_request") do
+      {:ok, :passthrough} ->
+        do_dispatch(request, node_name, nil)
+
+      {:ok, _claim} ->
+        do_dispatch(request, node_name, dedupe_key)
+
+      {:error, :busy} ->
+        :ok
+    end
+  end
+
+  defp do_dispatch(request, node_name, dedupe_key) do
+    Cyclium.TriggerRequests.mark_claimed(request.id, node_name)
+
     opts =
       case request.opts do
         %{"resume" => true} -> [resume: true]
@@ -79,6 +96,7 @@ defmodule Cyclium.TriggerRequests.Poller do
     case Cyclium.Runner.OTP.enqueue(request.episode_id, opts) do
       {:ok, _} ->
         Cyclium.TriggerRequests.mark_completed(request.id)
+        Cyclium.WorkClaims.gate_complete(dedupe_key, node_name)
 
       {:error, reason} ->
         Logger.warning("Failed to dispatch trigger request #{request.id}: #{inspect(reason)}",
@@ -86,6 +104,7 @@ defmodule Cyclium.TriggerRequests.Poller do
         )
 
         Cyclium.TriggerRequests.mark_expired(request.id)
+        Cyclium.WorkClaims.gate_fail(dedupe_key, node_name, %{reason: inspect(reason)})
     end
   end
 

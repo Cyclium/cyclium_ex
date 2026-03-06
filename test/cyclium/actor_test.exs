@@ -35,10 +35,13 @@ defmodule Cyclium.ActorTest do
     actor do
       domain(:testing)
       synthesizer(__MODULE__.FakeSynthesizer)
+      spec_rev("v2.0.0")
 
       expectation(:do_work,
         strategy: __MODULE__.FakeStrategy,
-        trigger: {:schedule, :timer.hours(1)}
+        trigger: {:schedule, :timer.hours(1)},
+        budget: %{max_turns: 10, max_tokens: 5_000, max_wall_ms: 30_000},
+        log_strategy: :full_debug
       )
 
       expectation(:do_other_work,
@@ -204,12 +207,21 @@ defmodule Cyclium.ActorTest do
 
       on_exit(fn ->
         :persistent_term.erase({:cyclium_actor_synthesizer, :registration_actor})
+        :persistent_term.erase({:cyclium_actor_spec_rev, :registration_actor})
         :persistent_term.erase({:cyclium_actor_strategy, :registration_actor, :do_work})
         :persistent_term.erase({:cyclium_actor_strategy, :registration_actor, :do_other_work})
         :persistent_term.erase({:cyclium_expectation_synthesizer, :registration_actor, :do_work})
 
         :persistent_term.erase(
           {:cyclium_expectation_synthesizer, :registration_actor, :do_other_work}
+        )
+
+        :persistent_term.erase({:cyclium_expectation_budget, :registration_actor, :do_work})
+        :persistent_term.erase({:cyclium_expectation_budget, :registration_actor, :do_other_work})
+        :persistent_term.erase({:cyclium_expectation_log_strategy, :registration_actor, :do_work})
+
+        :persistent_term.erase(
+          {:cyclium_expectation_log_strategy, :registration_actor, :do_other_work}
         )
       end)
 
@@ -263,6 +275,43 @@ defmodule Cyclium.ActorTest do
                :not_found
              ) ==
                :not_found
+    end
+
+    test "registers spec_rev in persistent_term" do
+      assert :persistent_term.get({:cyclium_actor_spec_rev, :registration_actor}) == "v2.0.0"
+    end
+
+    test "registers per-expectation budget in persistent_term" do
+      budget = :persistent_term.get({:cyclium_expectation_budget, :registration_actor, :do_work})
+      assert budget == %{max_turns: 10, max_tokens: 5_000, max_wall_ms: 30_000}
+    end
+
+    test "registers per-expectation log_strategy in persistent_term" do
+      assert :persistent_term.get(
+               {:cyclium_expectation_log_strategy, :registration_actor, :do_work}
+             ) == :full_debug
+    end
+
+    test "expectation without explicit budget registers the struct default" do
+      budget =
+        :persistent_term.get(
+          {:cyclium_expectation_budget, :registration_actor, :do_other_work},
+          :not_found
+        )
+
+      # Expectation struct defaults: max_turns: 12, max_tokens: 25_000, max_wall_ms: 120_000
+      assert budget == %{max_turns: 12, max_tokens: 25_000, max_wall_ms: 120_000}
+    end
+
+    test "expectation without explicit log_strategy registers the struct default" do
+      log_strategy =
+        :persistent_term.get(
+          {:cyclium_expectation_log_strategy, :registration_actor, :do_other_work},
+          :not_found
+        )
+
+      # Expectation struct defaults to :timeline
+      assert log_strategy == :timeline
     end
 
     test "persistent_term keys are atoms, matching safe_to_atom conversion" do

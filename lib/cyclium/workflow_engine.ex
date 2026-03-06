@@ -646,6 +646,8 @@ defmodule Cyclium.WorkflowEngine do
       workflow_step_id: step_id,
       workflow_step_no: compute_step_depth(step_atom, config),
       spec_rev: resolve_spec_rev(step_config.actor),
+      budget: resolve_expectation_budget(step_config.actor, step_config.expectation),
+      log_strategy: resolve_expectation_log_strategy(step_config.actor, step_config.expectation),
       mode: fresh_instance.mode || "live",
       dry_run_opts: episode_dry_run_opts,
       status: :running,
@@ -967,6 +969,37 @@ defmodule Cyclium.WorkflowEngine do
   end
 
   defp resolve_spec_rev(_actor), do: nil
+
+  defp resolve_expectation_budget(actor, expectation) when is_atom(actor) do
+    if function_exported?(actor, :__cyclium_expectations__, 0) do
+      case List.keyfind(actor.__cyclium_expectations__(), expectation, 0) do
+        {_, opts} when is_list(opts) ->
+          case Keyword.get(opts, :budget) do
+            nil -> nil
+            budget -> Map.new(budget, fn {k, v} -> {to_string(k), v} end)
+          end
+
+        _ ->
+          nil
+      end
+    end
+  end
+
+  defp resolve_expectation_budget(_actor, _expectation), do: nil
+
+  defp resolve_expectation_log_strategy(actor, expectation) when is_atom(actor) do
+    if function_exported?(actor, :__cyclium_expectations__, 0) do
+      case List.keyfind(actor.__cyclium_expectations__(), expectation, 0) do
+        {_, opts} when is_list(opts) -> opts |> Keyword.get(:log_strategy) |> to_string_or_nil()
+        _ -> nil
+      end
+    end
+  end
+
+  defp resolve_expectation_log_strategy(_actor, _expectation), do: nil
+
+  defp to_string_or_nil(nil), do: nil
+  defp to_string_or_nil(val), do: to_string(val)
 
   # Returns the topological depth of a step in the workflow DAG.
   # Steps with no dependencies are depth 0; each dependent layer adds 1.

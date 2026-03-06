@@ -234,6 +234,10 @@ defmodule Cyclium.Actor.Server do
       :persistent_term.put({:cyclium_actor_synthesizer, config.actor_id}, synthesizer)
     end
 
+    if config[:spec_rev] do
+      :persistent_term.put({:cyclium_actor_spec_rev, config.actor_id}, config[:spec_rev])
+    end
+
     # Register per-expectation strategy and service level configs so EpisodeTask
     # can resolve them without a manually maintained strategy registry.
     Enum.each(expectations, fn {_id, exp} ->
@@ -245,6 +249,17 @@ defmodule Cyclium.Actor.Server do
         :persistent_term.put(
           {:cyclium_expectation_synthesizer, config.actor_id, exp.id},
           exp.synthesizer
+        )
+      end
+
+      if exp.budget do
+        :persistent_term.put({:cyclium_expectation_budget, config.actor_id, exp.id}, exp.budget)
+      end
+
+      if exp.log_strategy do
+        :persistent_term.put(
+          {:cyclium_expectation_log_strategy, config.actor_id, exp.id},
+          exp.log_strategy
         )
       end
 

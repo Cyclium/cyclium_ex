@@ -44,6 +44,22 @@ defmodule Cyclium.Telemetry do
       [:cyclium, :finding, :raised]       — %{finding_key, actor_id, class}
       [:cyclium, :finding, :cleared]      — %{finding_key, actor_id, class}
       [:cyclium, :finding, :expired]      — %{count}
+      [:cyclium, :finding, :escalated]    — %{finding_key, class, from, to}
+
+  ### Finding sweep events
+
+      [:cyclium, :finding_sweep, :completed] — %{duration_ms, expired_count, escalated_count}, meta: %{node}
+      [:cyclium, :finding_sweep, :failed]    — %{duration_ms}, meta: %{node, reason}
+
+  ### Work claims events
+
+      [:cyclium, :work_claims, :acquired]     — %{count, duration_ms}, meta: %{dedupe_key, owner_node}
+      [:cyclium, :work_claims, :steal]        — %{count, duration_ms}, meta: %{dedupe_key, owner_node}
+      [:cyclium, :work_claims, :busy]         — %{count, duration_ms}, meta: %{dedupe_key, owner_node}
+      [:cyclium, :work_claims, :renewed]      — %{count}, meta: %{dedupe_key, owner_node}
+      [:cyclium, :work_claims, :renew_failed] — %{count}, meta: %{dedupe_key, owner_node}
+      [:cyclium, :work_claims, :completed]    — %{count}, meta: %{dedupe_key, owner_node}
+      [:cyclium, :work_claims, :failed]       — %{count}, meta: %{dedupe_key, owner_node}
 
   ### Phase events
 
@@ -114,6 +130,17 @@ defmodule Cyclium.Telemetry do
     [:cyclium, :circuit_breaker, :rejected],
     # Guardrails
     [:cyclium, :guardrail, :triggered],
+    # Finding sweep
+    [:cyclium, :finding_sweep, :completed],
+    [:cyclium, :finding_sweep, :failed],
+    # Work claims
+    [:cyclium, :work_claims, :acquired],
+    [:cyclium, :work_claims, :steal],
+    [:cyclium, :work_claims, :busy],
+    [:cyclium, :work_claims, :renewed],
+    [:cyclium, :work_claims, :renew_failed],
+    [:cyclium, :work_claims, :completed],
+    [:cyclium, :work_claims, :failed],
     # Workflows
     [:cyclium, :workflow, :started],
     [:cyclium, :workflow, :step_started],

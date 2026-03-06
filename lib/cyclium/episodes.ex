@@ -31,7 +31,14 @@ defmodule Cyclium.Episodes do
     mode = Keyword.get(opts, :mode, :live)
     payload = Keyword.get(opts, :trigger_payload, %{})
     overrides = Keyword.get(opts, :overrides)
-    spec_rev = Keyword.get(opts, :spec_rev)
+    actor_key = safe_to_atom(actor_id)
+    exp_key = safe_to_atom(expectation_id)
+    spec_rev = Keyword.get(opts, :spec_rev) || resolve_spec_rev(actor_key)
+    budget = Keyword.get(opts, :budget) || resolve_expectation_term(:budget, actor_key, exp_key)
+
+    log_strategy =
+      Keyword.get(opts, :log_strategy) ||
+        resolve_expectation_term(:log_strategy, actor_key, exp_key)
 
     dry_run_opts =
       if mode == :dry_run and overrides do
@@ -52,6 +59,8 @@ defmodule Cyclium.Episodes do
         "payload" => payload
       },
       status: :running,
+      budget: normalize_budget(budget),
+      log_strategy: if(log_strategy, do: to_string(log_strategy)),
       mode: to_string(mode),
       dry_run_opts: dry_run_opts,
       spec_rev: spec_rev,
@@ -393,6 +402,25 @@ defmodule Cyclium.Episodes do
 
     {:ok, canceled}
   end
+
+  defp resolve_spec_rev(actor_key) when is_atom(actor_key) do
+    :persistent_term.get({:cyclium_actor_spec_rev, actor_key}, nil)
+  end
+
+  defp resolve_expectation_term(field, actor_key, exp_key) do
+    :persistent_term.get({:"cyclium_expectation_#{field}", actor_key, exp_key}, nil)
+  rescue
+    ArgumentError -> nil
+  end
+
+  defp normalize_budget(nil), do: nil
+
+  defp normalize_budget(budget) when is_map(budget) do
+    Map.new(budget, fn {k, v} -> {to_string(k), v} end)
+  end
+
+  defp safe_to_atom(value) when is_atom(value), do: value
+  defp safe_to_atom(value) when is_binary(value), do: String.to_existing_atom(value)
 
   defp next_step_no(episode_id) do
     (from(s in EpisodeStep,

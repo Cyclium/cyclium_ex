@@ -39,24 +39,23 @@ defmodule Cyclium.TriggerRequestsTest do
     end
   end
 
-  describe "claim_pending/2" do
-    test "claims pending requests", %{episode: episode} do
+  describe "fetch_pending/1" do
+    test "fetches pending requests", %{episode: episode} do
       {:ok, _} = create_trigger_request(episode)
 
-      assert {:ok, [claimed]} = TriggerRequests.claim_pending("claimer-node")
-      assert claimed.status == :claimed
-      assert claimed.claimed_by == "claimer-node"
+      assert {:ok, [request]} = TriggerRequests.fetch_pending()
+      assert request.status == :pending
     end
 
     test "returns empty list when no pending requests" do
-      assert {:ok, []} = TriggerRequests.claim_pending("claimer-node")
+      assert {:ok, []} = TriggerRequests.fetch_pending()
     end
 
     test "scopes by source_stack when provided", %{episode: episode} do
       {:ok, _} = create_trigger_request(episode, source_stack: "unity")
 
-      assert {:ok, []} = TriggerRequests.claim_pending("node", source_stack: "hatch")
-      assert {:ok, [_]} = TriggerRequests.claim_pending("node", source_stack: "unity")
+      assert {:ok, []} = TriggerRequests.fetch_pending(source_stack: "hatch")
+      assert {:ok, [_]} = TriggerRequests.fetch_pending(source_stack: "unity")
     end
 
     test "respects limit", %{episode: episode} do
@@ -64,24 +63,39 @@ defmodule Cyclium.TriggerRequestsTest do
       {:ok, _} = create_trigger_request(episode)
       {:ok, _} = create_trigger_request(ep2)
 
-      assert {:ok, claimed} = TriggerRequests.claim_pending("node", limit: 1)
-      assert length(claimed) == 1
+      assert {:ok, fetched} = TriggerRequests.fetch_pending(limit: 1)
+      assert length(fetched) == 1
     end
 
-    test "does not reclaim already claimed requests", %{episode: episode} do
+    test "does not return claimed requests", %{episode: episode} do
       {:ok, _} = create_trigger_request(episode)
 
-      assert {:ok, [_]} = TriggerRequests.claim_pending("node-a")
-      assert {:ok, []} = TriggerRequests.claim_pending("node-b")
+      {:ok, [request]} = TriggerRequests.fetch_pending()
+      TriggerRequests.mark_claimed(request.id, "node-a")
+
+      assert {:ok, []} = TriggerRequests.fetch_pending()
+    end
+  end
+
+  describe "mark_claimed/2" do
+    test "marks a request as claimed", %{episode: episode} do
+      {:ok, request} = create_trigger_request(episode)
+
+      assert :ok = TriggerRequests.mark_claimed(request.id, "claimer-node")
+
+      updated = Repo.get!(Cyclium.Schemas.TriggerRequest, request.id)
+      assert updated.status == :claimed
+      assert updated.claimed_by == "claimer-node"
+      assert updated.claimed_at != nil
     end
   end
 
   describe "mark_completed/1" do
     test "marks a request as completed", %{episode: episode} do
       {:ok, request} = create_trigger_request(episode)
-      {:ok, [claimed]} = TriggerRequests.claim_pending("node")
+      TriggerRequests.mark_claimed(request.id, "node")
 
-      assert :ok = TriggerRequests.mark_completed(claimed.id)
+      assert :ok = TriggerRequests.mark_completed(request.id)
 
       updated = Repo.get!(Cyclium.Schemas.TriggerRequest, request.id)
       assert updated.status == :completed

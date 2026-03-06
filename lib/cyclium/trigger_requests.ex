@@ -17,22 +17,20 @@ defmodule Cyclium.TriggerRequests do
   end
 
   @doc """
-  Claims up to `limit` pending trigger requests for the given node.
-
-  Uses an optimistic update: only rows still in `:pending` status are claimed.
+  Fetches up to `limit` pending trigger requests, oldest first.
   Optionally scopes to requests from a specific source stack.
+
+  Does not modify the rows — claiming is handled via `WorkClaims`.
   """
-  def claim_pending(claimer_node, opts \\ []) do
+  def fetch_pending(opts \\ []) do
     limit = Keyword.get(opts, :limit, 10)
     source_stack = Keyword.get(opts, :source_stack)
-    now = DateTime.utc_now() |> DateTime.truncate(:second)
 
     base_query =
       from(r in TriggerRequest,
         where: r.status == :pending,
         order_by: [asc: r.inserted_at],
-        limit: ^limit,
-        select: r.id
+        limit: ^limit
       )
 
     query =
@@ -42,22 +40,18 @@ defmodule Cyclium.TriggerRequests do
         base_query
       end
 
-    ids = repo().all(query)
+    {:ok, repo().all(query)}
+  end
 
-    if ids == [] do
-      {:ok, []}
-    else
-      {_count, claimed} =
-        from(r in TriggerRequest,
-          where: r.id in ^ids and r.status == :pending,
-          select: r
-        )
-        |> repo().update_all(
-          set: [claimed_by: claimer_node, claimed_at: now, status: :claimed, updated_at: now]
-        )
+  def mark_claimed(id, claimer_node) do
+    now = DateTime.utc_now() |> DateTime.truncate(:second)
 
-      {:ok, claimed}
-    end
+    from(r in TriggerRequest, where: r.id == ^id)
+    |> repo().update_all(
+      set: [claimed_by: claimer_node, claimed_at: now, status: :claimed, updated_at: now]
+    )
+
+    :ok
   end
 
   def mark_completed(id) do

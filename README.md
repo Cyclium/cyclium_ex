@@ -1303,6 +1303,8 @@ Key events:
 | `[:cyclium, :finding, :cleared]` | finding_key, actor_id, class |
 | `[:cyclium, :finding, :expired]` | count |
 | `[:cyclium, :finding, :escalated]` | finding_key, actor_id, class |
+| `[:cyclium, :finding_sweep, :completed]` | duration_ms, expired_count, escalated_count, node |
+| `[:cyclium, :finding_sweep, :failed]` | duration_ms, node, reason |
 | `[:cyclium, :output, :delivered]` | type, episode_id |
 | `[:cyclium, :actor, :event_received]` | actor_id, event_type |
 | `[:cyclium, :actor, :overflow]` | actor_id, policy |
@@ -1618,6 +1620,8 @@ For clusters where multiple applications share the same database and actor defin
 3. On completion, the claim is marked `:done`; on crash, `:failed`
 4. If a node dies, the lease expires and another node can steal it
 
+Work claims also coordinate trigger request dispatch — `TriggerRequests.Poller` acquires a claim per request before dispatching to prevent multiple full-mode nodes from processing the same deferred episode.
+
 ### Configuration
 
 ```elixir
@@ -1785,7 +1789,7 @@ Trigger-only mode solves both problems by decoupling event processing from episo
 
 In **`:trigger_only`** mode, the actor supervision tree starts normally — Bus subscriptions, schedule timers, debounce, circuit breakers all work. But the runner is swapped to `Cyclium.Runner.Deferred`, which writes a row to `cyclium_trigger_requests` instead of spawning a Task. The episode record is still created in the DB so the UI can display it.
 
-On **`:full`** mode nodes, a `Cyclium.TriggerRequests.Poller` watches the trigger requests table and dispatches deferred episodes to `Runner.OTP` for local execution. The poller can be scoped by `source_stack` to only pick up requests from specific stacks.
+On **`:full`** mode nodes, a `Cyclium.TriggerRequests.Poller` watches the trigger requests table and dispatches deferred episodes to `Runner.OTP` for local execution. The poller uses `WorkClaims.gate_acquire/3` (with dedupe key `"trigger_request:<id>"`) to coordinate dispatch across nodes — only one full-mode node will pick up a given request. If work claims are not configured, the poller falls through to passthrough mode. The poller can be scoped by `source_stack` to only pick up requests from specific stacks.
 
 ### Configuration
 
