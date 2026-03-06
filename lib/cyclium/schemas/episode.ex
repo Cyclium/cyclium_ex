@@ -6,7 +6,7 @@ defmodule Cyclium.Schemas.Episode do
   @foreign_key_type :binary_id
 
   @statuses [:running, :blocked, :done, :failed, :partially_failed, :canceled]
-  @trigger_types [:schedule, :event, :manual, :workflow]
+  @trigger_types [:schedule, :event, :manual, :workflow, :interactive]
 
   schema "cyclium_episodes" do
     field(:actor_id, :string)
@@ -35,6 +35,8 @@ defmodule Cyclium.Schemas.Episode do
     field(:finished_at, :utc_datetime_usec)
     field(:queued_at, :utc_datetime_usec)
     field(:archived_at, :utc_datetime)
+    field(:conversation_id, :binary_id)
+    field(:parent_episode_id, :string)
     field(:mode, :string, default: "live")
     field(:dry_run_opts, :map)
 
@@ -72,6 +74,8 @@ defmodule Cyclium.Schemas.Episode do
       :finished_at,
       :queued_at,
       :archived_at,
+      :conversation_id,
+      :parent_episode_id,
       :mode,
       :dry_run_opts
     ])

@@ -43,6 +43,7 @@ defmodule Cyclium.Actor do
       Module.register_attribute(__MODULE__, :cyclium_max_concurrent, accumulate: false)
       Module.register_attribute(__MODULE__, :cyclium_overflow, accumulate: false)
       Module.register_attribute(__MODULE__, :cyclium_identifier, accumulate: false)
+      Module.register_attribute(__MODULE__, :cyclium_tools, accumulate: false)
       Module.register_attribute(__MODULE__, :cyclium_expectations, accumulate: true)
 
       @before_compile Cyclium.Actor
@@ -84,6 +85,7 @@ defmodule Cyclium.Actor do
     domain = Module.get_attribute(env.module, :cyclium_domain) || :default
     synthesizer = Module.get_attribute(env.module, :cyclium_synthesizer)
     capabilities = Module.get_attribute(env.module, :cyclium_capabilities) || []
+    tools = Module.get_attribute(env.module, :cyclium_tools) || %{}
     max_concurrent = Module.get_attribute(env.module, :cyclium_max_concurrent) || 3
     overflow = Module.get_attribute(env.module, :cyclium_overflow) || :queue
     expectations = Module.get_attribute(env.module, :cyclium_expectations) || []
@@ -100,6 +102,7 @@ defmodule Cyclium.Actor do
           domain: unquote(domain),
           synthesizer: unquote(synthesizer),
           capabilities: unquote(capabilities),
+          tools: unquote(Macro.escape(tools)),
           max_concurrent_episodes: unquote(max_concurrent),
           episode_overflow: unquote(overflow),
           spec_rev: unquote(spec_rev)
@@ -163,6 +166,12 @@ defmodule Cyclium.Actor.DSL do
   defmacro spec_rev(rev) do
     quote do
       @cyclium_spec_rev unquote(rev)
+    end
+  end
+
+  defmacro tools(mapping) do
+    quote do
+      @cyclium_tools unquote(mapping)
     end
   end
 
@@ -231,11 +240,29 @@ defmodule Cyclium.Actor.Server do
     # Works for both compiled actors (synthesizer from DSL) and dynamic actors
     # (synthesizer from DB config). nil is stored intentionally — it means "use fallback".
     if synthesizer = config[:synthesizer] do
-      :persistent_term.put({:cyclium_actor_synthesizer, config.actor_id}, synthesizer)
+      case synthesizer do
+        {mod, opts} when is_atom(mod) and is_list(opts) ->
+          :persistent_term.put({:cyclium_actor_synthesizer, config.actor_id}, mod)
+
+          if llm = Keyword.get(opts, :llm) do
+            :persistent_term.put({:cyclium_interactive_llm, config.actor_id}, llm)
+          end
+
+        mod when is_atom(mod) ->
+          :persistent_term.put({:cyclium_actor_synthesizer, config.actor_id}, mod)
+      end
     end
 
     if config[:spec_rev] do
       :persistent_term.put({:cyclium_actor_spec_rev, config.actor_id}, config[:spec_rev])
+    end
+
+    # Register tool mappings (capability atom → tool module) so ToolExec
+    # can resolve them without a separate capability registry module.
+    if tools = config[:tools] do
+      Enum.each(tools, fn {capability, tool_module} ->
+        :persistent_term.put({:cyclium_tool, config.actor_id, capability}, tool_module)
+      end)
     end
 
     # Register per-expectation strategy and service level configs so EpisodeTask
@@ -260,6 +287,13 @@ defmodule Cyclium.Actor.Server do
         :persistent_term.put(
           {:cyclium_expectation_log_strategy, config.actor_id, exp.id},
           exp.log_strategy
+        )
+      end
+
+      if exp.strategy_config do
+        :persistent_term.put(
+          {:cyclium_strategy_config, config.actor_id, exp.id},
+          normalize_strategy_config(exp.strategy_config)
         )
       end
 
@@ -524,6 +558,7 @@ defmodule Cyclium.Actor.Server do
       description: Keyword.get(opts, :description, ""),
       strategy: Keyword.get(opts, :strategy),
       synthesizer: Keyword.get(opts, :synthesizer) || config.synthesizer,
+      strategy_config: Keyword.get(opts, :strategy_config),
       recovery_policy: Keyword.get(opts, :recovery_policy, :fail),
       window: Keyword.get(opts, :window) || infer_window(opts),
       dry_run: Keyword.get(opts, :dry_run),
@@ -536,6 +571,28 @@ defmodule Cyclium.Actor.Server do
       finding_ttl_seconds: Keyword.get(opts, :finding_ttl_seconds)
     }
   end
+
+  # Normalize strategy_config from DSL (atom keys) to the string-key format
+  # expected by the Interactive template (consistent with DB-loaded JSON).
+  defp normalize_strategy_config(config) when is_map(config) do
+    Map.new(config, fn
+      {k, v} when is_atom(k) -> {to_string(k), normalize_strategy_config_value(v)}
+      {k, v} -> {k, normalize_strategy_config_value(v)}
+    end)
+  end
+
+  defp normalize_strategy_config_value(list) when is_list(list) do
+    Enum.map(list, fn
+      item when is_map(item) -> normalize_strategy_config(item)
+      item -> item
+    end)
+  end
+
+  defp normalize_strategy_config_value(map) when is_map(map) do
+    normalize_strategy_config(map)
+  end
+
+  defp normalize_strategy_config_value(val), do: val
 
   @h24_ms :timer.hours(24)
   @h48_ms :timer.hours(48)

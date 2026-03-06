@@ -409,12 +409,31 @@ defmodule Cyclium.EpisodeRunner do
       }
     )
 
+    # Step 9: Interactive conversation hook (goal evaluation, field collection)
+    maybe_run_conversation_hook(episode, converge_result)
+
     if final_status == :failed do
       {:error, :all_outputs_failed}
     else
       {:ok, converge_result}
     end
   end
+
+  defp maybe_run_conversation_hook(%{conversation_id: conv_id} = episode, converge_result)
+       when is_binary(conv_id) and conv_id != "" do
+    Cyclium.Intent.ConversationHook.after_converge(
+      conv_id,
+      converge_result,
+      episode.tokens_used || 0
+    )
+  rescue
+    e ->
+      Logger.warning("ConversationHook failed: #{inspect(e)}",
+        cyclium_episode_id: episode.id
+      )
+  end
+
+  defp maybe_run_conversation_hook(_episode, _converge_result), do: :ok
 
   defp persist_findings(episode, findings) do
     Enum.each(findings, fn action ->

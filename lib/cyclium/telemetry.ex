@@ -79,6 +79,15 @@ defmodule Cyclium.Telemetry do
       [:cyclium, :workflow, :completed]      — %{workflow_id, instance_id}
       [:cyclium, :workflow, :failed]         — %{workflow_id, instance_id, step_id}
 
+  ### Conversation events
+
+      [:cyclium, :conversation, :started]             — %{conversation_id, actor_id}
+      [:cyclium, :conversation, :claimed]              — %{conversation_id, principal_id}
+      [:cyclium, :conversation, :resolved]             — %{conversation_id, outcome}
+      [:cyclium, :conversation, :abandoned]            — %{conversation_id, reason}
+      [:cyclium, :conversation, :timed_out]            — %{conversation_id}
+      [:cyclium, :conversation, :awaiting_participant] — %{conversation_id, actor_id}
+
   ## Usage
 
       # Attach a simple logger for development
@@ -149,7 +158,14 @@ defmodule Cyclium.Telemetry do
     [:cyclium, :workflow, :step_retried],
     [:cyclium, :workflow, :completed],
     [:cyclium, :workflow, :failed],
-    [:cyclium, :workflow, :step_reused]
+    [:cyclium, :workflow, :step_reused],
+    # Conversations
+    [:cyclium, :conversation, :started],
+    [:cyclium, :conversation, :claimed],
+    [:cyclium, :conversation, :resolved],
+    [:cyclium, :conversation, :abandoned],
+    [:cyclium, :conversation, :timed_out],
+    [:cyclium, :conversation, :awaiting_participant]
   ]
 
   @doc "Returns the list of all Cyclium telemetry event names."

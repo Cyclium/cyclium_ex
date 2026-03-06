@@ -147,14 +147,22 @@ defmodule Cyclium.EpisodeTask do
         registry.synthesizer_for(episode.actor_id, episode.expectation_id)
       end
 
-    registry_result ||
-      :persistent_term.get(
-        {:cyclium_expectation_synthesizer, safe_to_atom(episode.actor_id),
-         safe_to_atom(episode.expectation_id)},
-        nil
-      ) ||
-      :persistent_term.get({:cyclium_actor_synthesizer, safe_to_atom(episode.actor_id)}, nil) ||
-      Application.get_env(:cyclium, :synthesizer)
+    result =
+      registry_result ||
+        :persistent_term.get(
+          {:cyclium_expectation_synthesizer, safe_to_atom(episode.actor_id),
+           safe_to_atom(episode.expectation_id)},
+          nil
+        ) ||
+        :persistent_term.get({:cyclium_actor_synthesizer, safe_to_atom(episode.actor_id)}, nil) ||
+        Application.get_env(:cyclium, :synthesizer)
+
+    # Handle tuple config like {Cyclium.Synthesizer.Interactive, llm: MyLLM}
+    case result do
+      {mod, _opts} when is_atom(mod) -> mod
+      mod when is_atom(mod) -> mod
+      _ -> result
+    end
   end
 
   defp load_checkpoint(episode_id) do
@@ -176,6 +184,9 @@ defmodule Cyclium.EpisodeTask do
   defp deserialize_trigger(:event, ref), do: struct(Cyclium.Trigger.Event, atomize(ref))
   defp deserialize_trigger(:manual, ref), do: struct(Cyclium.Trigger.Manual, atomize(ref))
   defp deserialize_trigger(:workflow, ref), do: struct(Cyclium.Trigger.Workflow, atomize(ref))
+
+  defp deserialize_trigger(:interactive, ref),
+    do: struct(Cyclium.Trigger.Interactive, atomize(ref))
 
   defp deserialize_trigger(type, ref) when is_binary(type) do
     deserialize_trigger(String.to_existing_atom(type), ref)

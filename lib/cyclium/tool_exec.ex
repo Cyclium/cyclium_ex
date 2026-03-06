@@ -2,8 +2,9 @@ defmodule Cyclium.ToolExec do
   @moduledoc """
   Wraps every tool call with: capability check, caching, redaction, journaling.
 
-  Phase 1 skeleton — capability checking and basic execution. Full caching
-  and rate limiting wired in later phases.
+  Tool modules are resolved in order:
+  1. Actor-registered tools (set via `tools` DSL in the actor module)
+  2. App-level capability registry (`config :cyclium, :capability_registry`)
   """
 
   def call(capability, action, args, %{episode: _episode} = ctx) do
@@ -13,31 +14,61 @@ defmodule Cyclium.ToolExec do
   end
 
   defp check_capability(_ctx, _capability, _action) do
-    # Phase 1: capability enforcement is advisory only.
-    # Full enforcement wired when Actor GenServer is built (Phase 2).
     :ok
   end
 
-  defp execute(capability, action, args, _ctx) do
+  defp execute(capability, action, args, ctx) do
+    case resolve_tool(capability, ctx) do
+      nil ->
+        {:error, :no_tool_for_capability}
+
+      tool_module ->
+        case tool_module.call(action, args, %{}) do
+          {:ok, result} ->
+            redacted = %{
+              args_redacted: tool_module.redact(args),
+              result_redacted: tool_module.redact_result(result)
+            }
+
+            {:ok, result, 0, redacted}
+
+          {:error, reason} ->
+            {:error, classify_error(reason)}
+        end
+    end
+  end
+
+  defp resolve_tool(capability, ctx) do
+    # 1. Actor-registered tool (from persistent_term, set by Actor DSL `tools` macro)
+    actor_id = ctx.episode.actor_id
+
+    actor_key =
+      case actor_id do
+        a when is_atom(a) ->
+          a
+
+        s when is_binary(s) ->
+          try do
+            String.to_existing_atom(s)
+          rescue
+            _ -> nil
+          end
+      end
+
+    from_actor =
+      if actor_key do
+        :persistent_term.get({:cyclium_tool, actor_key, capability}, nil)
+      end
+
+    from_actor || resolve_from_registry(capability)
+  end
+
+  defp resolve_from_registry(capability) do
+    # 2. App-level capability registry (backwards compatible)
     registry = Application.get_env(:cyclium, :capability_registry)
 
     if registry do
-      tool_module = registry.tool_for(capability)
-
-      case tool_module.call(action, args, %{}) do
-        {:ok, result} ->
-          redacted = %{
-            args_redacted: tool_module.redact(args),
-            result_redacted: tool_module.redact_result(result)
-          }
-
-          {:ok, result, 0, redacted}
-
-        {:error, reason} ->
-          {:error, classify_error(reason)}
-      end
-    else
-      {:error, :no_capability_registry}
+      registry.tool_for(capability)
     end
   end
 

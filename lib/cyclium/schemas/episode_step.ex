@@ -21,7 +21,8 @@ defmodule Cyclium.Schemas.EpisodeStep do
     :finding_updated,
     :finding_cleared,
     :episode_completed,
-    :episode_failed
+    :episode_failed,
+    :plan_preview
   ]
 
   schema "cyclium_episode_steps" do
