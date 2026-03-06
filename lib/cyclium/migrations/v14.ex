@@ -21,7 +21,7 @@ defmodule Cyclium.Migrations.V14 do
       add(:source_node, :string, null: false)
       add(:source_stack, :string)
       add(:status, :string, null: false, default: "pending")
-      add(:opts, :map, default: %{})
+      add(:opts, :map)
       add(:claimed_by, :string)
       add(:claimed_at, :utc_datetime)
 
