@@ -24,8 +24,8 @@ defmodule Cyclium.Migrations.V14 do
       add(:opts, :map)
       add(:claimed_by, :string)
       add(:claimed_at, :utc_datetime)
-
-      timestamps(type: :utc_datetime)
+      add(:inserted_at, :utc_datetime, null: false)
+      add(:updated_at, :utc_datetime, null: false)
     end
 
     create(index(:cyclium_trigger_requests, [:status, :inserted_at]))
