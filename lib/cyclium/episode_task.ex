@@ -21,7 +21,7 @@ defmodule Cyclium.EpisodeTask do
     # Claim gate — only runs if work_claims is configured
     lease_seconds = lease_seconds()
 
-    case Cyclium.WorkClaims.gate_acquire(episode.dedupe_key, node_name(),
+    case Cyclium.WorkClaims.gate_acquire(episode.dedupe_key, Cyclium.NodeIdentity.name(),
            lease_seconds: lease_seconds,
            work_type: "episode"
          ) do
@@ -50,7 +50,7 @@ defmodule Cyclium.EpisodeTask do
     Cyclium.EpisodeRunner.execute_loop(episode, strategy, state, synthesizer: synthesizer)
 
     # Complete claim and stop heartbeat on successful completion
-    Cyclium.WorkClaims.gate_complete(episode.dedupe_key, node_name())
+    Cyclium.WorkClaims.gate_complete(episode.dedupe_key, Cyclium.NodeIdentity.name())
     if heartbeat_pid, do: Cyclium.WorkClaims.Heartbeat.stop(heartbeat_pid)
   rescue
     e ->
@@ -80,7 +80,7 @@ defmodule Cyclium.EpisodeTask do
 
       # Fail the claim if one was held
       if episode do
-        Cyclium.WorkClaims.gate_fail(episode.dedupe_key, node_name(), %{
+        Cyclium.WorkClaims.gate_fail(episode.dedupe_key, Cyclium.NodeIdentity.name(), %{
           "reason" => "crash",
           "exception" => message
         })
@@ -198,7 +198,7 @@ defmodule Cyclium.EpisodeTask do
       {:ok, pid} =
         Cyclium.WorkClaims.Heartbeat.start_link(
           dedupe_key: episode.dedupe_key,
-          owner_node: node_name(),
+          owner_node: Cyclium.NodeIdentity.name(),
           lease_seconds: lease_seconds
         )
 
@@ -208,9 +208,5 @@ defmodule Cyclium.EpisodeTask do
 
   defp lease_seconds do
     Application.get_env(:cyclium, :work_claims_lease_seconds, 120)
-  end
-
-  defp node_name do
-    node() |> to_string()
   end
 end

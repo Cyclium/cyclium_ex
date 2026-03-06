@@ -18,6 +18,7 @@ defmodule Cyclium.Supervisor do
 
     children =
       [
+        Cyclium.Mode,
         {DynamicSupervisor, name: Cyclium.ActorSupervisor, strategy: :one_for_one},
         {DynamicSupervisor, name: Cyclium.EpisodeSupervisor, strategy: :one_for_one},
         {Task.Supervisor, name: Cyclium.TaskSupervisor}
@@ -58,6 +59,15 @@ defmodule Cyclium.Supervisor do
         []
       end
 
-    reconciler ++ workflow_engine ++ work_claims ++ finding_sweep
+    poller_opts =
+      [
+        interval_ms: Application.get_env(:cyclium, :trigger_poll_interval_ms, 5_000),
+        source_stack: Application.get_env(:cyclium, :trigger_poll_source_stack)
+      ]
+      |> Enum.reject(fn {_k, v} -> is_nil(v) end)
+
+    trigger_poller = [{Cyclium.TriggerRequests.Poller, poller_opts}]
+
+    reconciler ++ workflow_engine ++ work_claims ++ finding_sweep ++ trigger_poller
   end
 end

@@ -656,7 +656,7 @@ defmodule Cyclium.WorkflowEngine do
     case Cyclium.Episodes.create(episode_attrs) do
       {:ok, episode} ->
         # Enqueue episode
-        runner().enqueue(episode.id)
+        Cyclium.Mode.runner_for(actor_id).enqueue(episode.id)
 
         # Update step_states (use fresh_instance to avoid overwriting parallel step updates)
         current_attempts = get_in(fresh_instance.step_states, [step_id, "attempts"]) || 0
@@ -982,9 +982,5 @@ defmodule Cyclium.WorkflowEngine do
       |> Enum.max()
       |> Kernel.+(1)
     end
-  end
-
-  defp runner do
-    Application.get_env(:cyclium, :runner, Cyclium.Runner.OTP)
   end
 end

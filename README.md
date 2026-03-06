@@ -750,9 +750,13 @@ def up do
   Cyclium.Migrations.V4.up()   # archived_at on episodes and findings
   Cyclium.Migrations.V5.up()   # unique index on episode dedupe_key
   Cyclium.Migrations.V6.up()   # work_claims table for lease-based coordination
+  # ...V7 through V13...
+  Cyclium.Migrations.V14.up()  # trigger_requests table for deferred execution
 end
 
 def down do
+  Cyclium.Migrations.V14.down()
+  # ...V13 through V7...
   Cyclium.Migrations.V6.down()
   Cyclium.Migrations.V5.down()
   Cyclium.Migrations.V4.down()
@@ -772,7 +776,11 @@ config :cyclium, :repo, MyApp.Repo
 # config :cyclium, :strategy_registry, MyApp.StrategyRegistry
 
 # Optional: episode runner (default: Cyclium.Runner.OTP)
+# Use Cyclium.Runner.Deferred for trigger-only mode (see "Trigger-Only Mode" section)
 config :cyclium, :runner, Cyclium.Runner.OTP
+
+# Optional: node identity override for shared-name environments (see "Node Identity")
+# config :cyclium, :node_identity, "my-unique-node-name"
 
 # Optional: tool capabilities
 config :cyclium, :capability_registry, %{
@@ -1740,6 +1748,113 @@ end
 2. Kill a node mid-episode, wait for lease expiry, verify another node steals and completes
 3. Monitor telemetry — `steal` events should only appear after the kill, never during normal operation
 
+## Node Identity
+
+By default, Cyclium uses `node()` to identify the current BEAM instance for work claims, trigger requests, and recovery coordination. In environments where multiple instances share the same Erlang node name (e.g., dev containers all starting as `app@app`), this breaks lease semantics — every node looks like the same owner.
+
+`Cyclium.NodeIdentity` provides a pluggable identity layer:
+
+```elixir
+# Static override — set per instance via config or env var
+config :cyclium, :node_identity, "dev-jane"
+
+# MFA callback for dynamic resolution (hostname, env var, etc.)
+config :cyclium, :node_identity, {MyApp.NodeIdentity, :resolve, []}
+```
+
+When unconfigured and running in non-distributed mode (`:nonode@nohost`), a random stable identity is generated per BEAM instance and stored in `:persistent_term` — unique for the process lifetime but not across restarts.
+
+All work claim operations (`EpisodeTask`, `Heartbeat`, `Runner.Deferred`, `TriggerRequests.Poller`) use `Cyclium.NodeIdentity.name()` instead of raw `node()`.
+
+## Trigger-Only Mode (Deferred Execution)
+
+In shared environments — dev machines on a common test DB, QC/sandbox instances, CI — running cyclium actors on every node leads to competing work claims and unpredictable execution. Conversely, disabling cyclium entirely on non-processing nodes leaves the UI hobbled: episodes never fire, statuses never update.
+
+Trigger-only mode solves both problems by decoupling event processing from episode execution.
+
+### Three operating modes
+
+| Mode | Actors start? | Events flow? | Episodes execute locally? | Trigger requests written? |
+|------|-------------|-------------|--------------------------|--------------------------|
+| `:full` | yes | yes | yes | no (direct) |
+| `:trigger_only` | yes | yes | no | yes (to DB) |
+| `:disabled` | no | no | no | no |
+
+### How it works
+
+In **`:trigger_only`** mode, the actor supervision tree starts normally — Bus subscriptions, schedule timers, debounce, circuit breakers all work. But the runner is swapped to `Cyclium.Runner.Deferred`, which writes a row to `cyclium_trigger_requests` instead of spawning a Task. The episode record is still created in the DB so the UI can display it.
+
+On **`:full`** mode nodes, a `Cyclium.TriggerRequests.Poller` watches the trigger requests table and dispatches deferred episodes to `Runner.OTP` for local execution. The poller can be scoped by `source_stack` to only pick up requests from specific stacks.
+
+### Configuration
+
+```elixir
+# Host app config — set per environment
+config :my_app, :cyclium_mode, :full          # :full | :trigger_only | :disabled
+
+# On full-mode nodes: enable the poller
+config :cyclium, :trigger_poller, true
+config :cyclium, :trigger_poll_interval_ms, 5_000      # default
+config :cyclium, :trigger_poll_source_stack, "unity"   # nil = pick up all
+
+# On trigger-only nodes: runner is set automatically
+# config :cyclium, :runner, Cyclium.Runner.Deferred
+# config :cyclium, :stack_slug, :unity
+```
+
+### Deployment scenarios
+
+**Dev machines + shared test DB:**
+- QC/test node runs `:full` with the poller enabled
+- Dev machines run `:trigger_only` — events flow, UI works, episodes defer to the processing node
+- A dev who wants to process locally overrides to `:full` and narrows their actor list
+
+**Sandbox / feature-branch testing:**
+- Sandbox runs `:trigger_only` — UI flows complete, episode records exist, Bus events fire
+- Designated processing node runs `:full` and picks up deferred triggers
+
+**Production (unchanged):**
+- All nodes run `:full` as before; work claims handle multi-node coordination
+- The trigger requests table stays empty
+
+### Database table
+
+The `cyclium_trigger_requests` table (V14 migration):
+
+| Column | Type | Notes |
+|--------|------|-------|
+| `episode_id` | binary_id | FK to `cyclium_episodes` |
+| `actor_id` | string | Actor that created the trigger |
+| `expectation_id` | string | Expectation that fired |
+| `source_node` | string | Node identity of the trigger-only instance |
+| `source_stack` | string | Stack slug for scoped polling |
+| `status` | string | `pending`, `claimed`, `completed`, `expired` |
+| `opts` | map | Runner options (e.g., resume flag) |
+| `claimed_by` | string | Node identity of the full-mode instance |
+
+Indexed on `(status, inserted_at)` for efficient polling.
+
+### Runtime mode switching
+
+`Cyclium.Mode` supports live mode changes without restart — both node-wide and per-actor:
+
+```elixir
+# Switch the whole node (via remote console, admin endpoint, etc.)
+Cyclium.Mode.set(:trigger_only)   # stop local execution, defer to DB
+Cyclium.Mode.set(:full)           # resume local execution + polling
+
+# Per-actor override — yield one actor to another node while keeping the rest
+Cyclium.Mode.set_actor_override(:client_health, :trigger_only)
+Cyclium.Mode.clear_actor_override(:client_health)
+Cyclium.Mode.clear_all_overrides()
+
+# Inspect current state
+Cyclium.Mode.status()
+# %{node_mode: :full, overrides: %{client_health: :trigger_only}, node_identity: "..."}
+```
+
+Mode reads are ETS-backed (`read_concurrency: true`) for zero overhead in hot paths. The trigger request poller self-gates on each cycle — it only polls when the node-wide mode is `:full`.
+
 ## Dynamic Actors
 
 Dynamic actors allow agent definitions to be stored in the database and hydrated into running supervised processes at runtime — without requiring compiled Elixir modules.
@@ -2280,6 +2395,7 @@ All tables use `binary_id` primary keys and are SQL Server 2017 compatible (no J
 | `cyclium_work_claims` | V6 | Lease-based distributed work coordination |
 | `cyclium_agent_definitions` | V7 | DB-stored actor definitions for dynamic actors |
 | `cyclium_workflow_definitions` | V8 | DB-stored workflow definitions for dynamic workflows |
+| `cyclium_trigger_requests` | V14 | Deferred episode execution for trigger-only nodes |
 
 V4 adds `archived_at` to episodes and findings. V5 replaces the non-unique `dedupe_key` index on episodes with a filtered unique index (`WHERE dedupe_key IS NOT NULL AND archived_at IS NULL`) for multi-node coordination. V6 adds the `cyclium_work_claims` table for lease-based distributed coordination across clustered nodes. V7 adds `cyclium_agent_definitions` for dynamic actors and `mode`/`dry_run_opts` columns to episodes for simulation support. V8 adds `cyclium_workflow_definitions` for dynamic workflows. V10 adds `caused_by_key` (finding causality chains) and `expires_at` (TTL-based expiration) to `cyclium_findings`.
 

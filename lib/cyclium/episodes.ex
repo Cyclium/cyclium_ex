@@ -60,7 +60,7 @@ defmodule Cyclium.Episodes do
 
     case create(attrs) do
       {:ok, episode} ->
-        runner().enqueue(episode.id)
+        Cyclium.Mode.runner_for(actor_id).enqueue(episode.id)
 
         Cyclium.Bus.broadcast("expectation.triggered", %{
           actor_id: actor_id,
@@ -75,8 +75,6 @@ defmodule Cyclium.Episodes do
         error
     end
   end
-
-  defp runner, do: Application.get_env(:cyclium, :runner, Cyclium.Runner.OTP)
 
   def get!(id) do
     repo().get!(Episode, id)

@@ -146,7 +146,7 @@ defmodule Cyclium.Recovery do
 
         # Reset status to :running (clear the "recovering" phase)
         Episodes.update_status(episode.id, :running, phase: nil)
-        runner().enqueue(episode.id)
+        Cyclium.Mode.runner_for(episode.actor_id).enqueue(episode.id)
         :restarted
 
       :fail ->
@@ -329,9 +329,5 @@ defmodule Cyclium.Recovery do
       workflow_instance_id: instance.id,
       workflow_step_id: step_id
     })
-  end
-
-  defp runner do
-    Application.get_env(:cyclium, :runner, Cyclium.Runner.OTP)
   end
 end

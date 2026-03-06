@@ -865,7 +865,7 @@ defmodule Cyclium.Actor.Server do
   defp enqueue_episode(state, params) do
     case Cyclium.Episodes.create(params) do
       {:ok, episode} ->
-        runner().enqueue(episode.id)
+        runner(state.actor_id).enqueue(episode.id)
 
         Bus.broadcast("expectation.triggered", %{
           actor_id: state.actor_id,
@@ -967,7 +967,7 @@ defmodule Cyclium.Actor.Server do
 
     case :queue.out(state.queued_episodes) do
       {{:value, queued_id}, rest} ->
-        runner().enqueue(queued_id)
+        runner(state.actor_id).enqueue(queued_id)
 
         state
         |> Map.put(:queued_episodes, rest)
@@ -1037,7 +1037,7 @@ defmodule Cyclium.Actor.Server do
     |> Enum.any?(fn {_msg, opts} -> opts[:constraint] == :unique end)
   end
 
-  defp runner do
-    Application.get_env(:cyclium, :runner, Cyclium.Runner.OTP)
+  defp runner(actor_id) do
+    Cyclium.Mode.runner_for(actor_id)
   end
 end
