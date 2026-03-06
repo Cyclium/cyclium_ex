@@ -22,6 +22,7 @@ Cyclium is an Elixir library for building agentic systems that monitor domains, 
 - **Log Projection** — Materialized human-readable logs at configurable verbosity (none → full_debug)
 - **Telemetry** — 36 structured telemetry events for observability
 - **OTP-Native** — No Oban or external job queue required; episodes run as Tasks under DynamicSupervisor
+- **Test Kit** — Assertion macros and fakes for validating actors, strategies, synthesizers, output adapters, workflows, and checkpoint migrations in host apps
 - **SQL Server 2017 Compatible** — Transaction-based upserts, denormalized query columns, no JSON operators in DDL
 
 ## Who is this for?
@@ -2710,6 +2711,127 @@ defp parse_confidence(_), do: 0.5
 The `parse_confidence/1` helper clamps to `[0.0, 1.0]` and falls back to `0.5` if the LLM returns something unexpected. The same confidence flows into both the `ConvergeResult` (episode-level) and the finding (queryable).
 
 **When to hardcode instead:** If the classification is deterministic (rule-based, no LLM), use `confidence: 1.0`. The LLM confidence pattern is for cases where the assessment involves judgment — ambiguous data, sparse evidence, or nuanced classification where the LLM's certainty is genuinely informative.
+
+## Test kit
+
+Cyclium ships a test kit in `Cyclium.Test.*` that host apps can use to smoke-test their definitions without running full episodes. Import the helpers with `use`:
+
+### Actor validation
+
+```elixir
+defmodule MyApp.Actors.ClientHealthActorTest do
+  use ExUnit.Case, async: true
+  use Cyclium.Test.ActorCase
+
+  test "actor definition is valid" do
+    assert_valid_actor(MyApp.Actors.ClientHealthActor)
+  end
+
+  test "all expectations have strategies" do
+    assert_strategies_defined(MyApp.Actors.ClientHealthActor)
+  end
+
+  test "budgets are well-formed" do
+    assert_budgets_valid(MyApp.Actors.ClientHealthActor)
+  end
+
+  test "spec_rev is set" do
+    assert_spec_rev_set(MyApp.Actors.ClientHealthActor)
+  end
+end
+```
+
+### Strategy contract verification
+
+```elixir
+defmodule MyApp.Strategies.ClientHealthTest do
+  use ExUnit.Case, async: true
+  use Cyclium.Test.StrategyCase
+
+  @episode build_test_episode(actor_id: "client_health", expectation_id: "health_check")
+  @trigger %Cyclium.Trigger.Manual{requested_by: "test"}
+
+  test "init returns valid state" do
+    assert_valid_init(MyApp.Strategies.ClientHealth, @episode, @trigger)
+  end
+
+  test "strategy terminates within budget" do
+    assert_strategy_terminates(MyApp.Strategies.ClientHealth, @episode, @trigger,
+      max_steps: 20
+    )
+  end
+end
+```
+
+### Synthesizer testing
+
+```elixir
+use Cyclium.Test.SynthesizerCase
+
+# Contract validation
+assert_valid_synthesize(MySynthesizer, prompt_ctx, episode_ctx)
+assert_valid_estimate_tokens(MySynthesizer, prompt_ctx)
+
+# FakeSynthesizer for strategy tests
+{:ok, _} = Cyclium.Test.FakeSynthesizer.start_link()
+Cyclium.Test.FakeSynthesizer.set_response(%{"answer" => "42"})
+# ... run strategy, then inspect calls:
+Cyclium.Test.FakeSynthesizer.calls()
+```
+
+### Output adapter testing
+
+```elixir
+use Cyclium.Test.OutputCase
+
+# Contract validation
+assert_valid_deliver(MyApp.Adapters.Slack, :slack, payload, ctx)
+
+# FakeOutputAdapter for integration tests
+{:ok, _} = Cyclium.Test.FakeOutputAdapter.start_link()
+# ... run episode, then inspect deliveries:
+Cyclium.Test.FakeOutputAdapter.deliveries()
+```
+
+### Workflow validation
+
+```elixir
+defmodule MyApp.Workflows.VendorOnboardingTest do
+  use ExUnit.Case, async: true
+  use Cyclium.Test.WorkflowCase
+
+  test "workflow is valid" do
+    assert_valid_workflow(MyApp.Workflows.VendorOnboarding)
+  end
+
+  test "all steps have failure policies" do
+    assert_failure_policies_complete(MyApp.Workflows.VendorOnboarding)
+  end
+
+  test "step inputs don't crash" do
+    assert_step_inputs_safe(MyApp.Workflows.VendorOnboarding,
+      trigger: %{"vendor_id" => "v123"}
+    )
+  end
+end
+```
+
+### Checkpoint migration fuzzing
+
+Property-based testing for `migrate/2` chains using StreamData:
+
+```elixir
+use Cyclium.Test.CheckpointMigration
+
+# Fuzz test: generate random states, migrate through version chain, assert no crashes
+assert_migration_safe(MyCheckpoint, iterations: 200)
+
+# Specific version migration
+assert_migration(MyCheckpoint, %{"old_field" => 1}, 1, 3)
+
+# Idempotency: migrating an already-current state is a no-op
+assert_migration_idempotent(MyCheckpoint, iterations: 100)
+```
 
 ## Demo application
 
