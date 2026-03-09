@@ -107,22 +107,15 @@ defmodule Cyclium.Conversations.LiveHelpers do
         end
       end
   """
-  def on_episode_completed(episode_id, conversation_id, current_messages) do
+  def on_episode_completed(episode_id, conversation_id, _current_messages) do
     case Episodes.get(episode_id) do
-      %{conversation_id: ^conversation_id} = episode ->
-        summary = episode.summary || "Done."
-
-        assistant_msg = %{
-          role: :assistant,
-          content: summary,
-          timestamp: episode.finished_at || DateTime.utc_now()
-        }
-
+      %{conversation_id: ^conversation_id} ->
         conversation = Conversations.get!(conversation_id)
+        messages = load_messages_from_episodes(conversation_id)
 
         {:ok,
          %{
-           messages: current_messages ++ [assistant_msg],
+           messages: messages,
            sending: false,
            conversation: conversation
          }}

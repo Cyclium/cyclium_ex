@@ -20,6 +20,7 @@ defmodule Cyclium.Schemas.Conversation do
              :resolved_outcome,
              :principal,
              :principal_id,
+             :principal_type,
              :collected_fields,
              :turns_used,
              :tokens_used,
@@ -45,6 +46,7 @@ defmodule Cyclium.Schemas.Conversation do
     field(:resolved_outcome, :string)
     field(:principal, :string)
     field(:principal_id, :string)
+    field(:principal_type, :string)
     field(:collected_fields, :string)
     field(:turns_used, :integer, default: 0)
     field(:tokens_used, :integer, default: 0)
@@ -67,6 +69,7 @@ defmodule Cyclium.Schemas.Conversation do
       :resolved_outcome,
       :principal,
       :principal_id,
+      :principal_type,
       :collected_fields,
       :turns_used,
       :tokens_used

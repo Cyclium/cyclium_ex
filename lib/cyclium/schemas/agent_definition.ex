@@ -19,6 +19,9 @@ defmodule Cyclium.Schemas.AgentDefinition do
     field(:strategy_config, :string)
     field(:enabled, :boolean, default: true)
     field(:created_by, :string)
+    field(:principal_id, :string)
+    field(:principal, :string)
+    field(:principal_type, :string)
     field(:inserted_at, :utc_datetime)
     field(:updated_at, :utc_datetime)
   end
@@ -35,6 +38,9 @@ defmodule Cyclium.Schemas.AgentDefinition do
       :strategy_config,
       :enabled,
       :created_by,
+      :principal_id,
+      :principal,
+      :principal_type,
       :inserted_at,
       :updated_at
     ])

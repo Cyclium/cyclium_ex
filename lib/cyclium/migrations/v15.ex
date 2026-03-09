@@ -33,7 +33,9 @@ defmodule Cyclium.Migrations.V15 do
     alter table(:cyclium_episodes) do
       add(
         :conversation_id,
-        references(:cyclium_conversations, type: :binary_id, on_delete: :nilify_all), null: true)
+        references(:cyclium_conversations, type: :binary_id, on_delete: :nilify_all),
+        null: true
+      )
 
       add(:parent_episode_id, :string, null: true)
     end
@@ -44,7 +46,9 @@ defmodule Cyclium.Migrations.V15 do
     alter table(:cyclium_workflow_instances) do
       add(
         :conversation_id,
-        references(:cyclium_conversations, type: :binary_id, on_delete: :nilify_all), null: true)
+        references(:cyclium_conversations, type: :binary_id, on_delete: :nilify_all),
+        null: true
+      )
     end
 
     create(index(:cyclium_workflow_instances, [:conversation_id]))

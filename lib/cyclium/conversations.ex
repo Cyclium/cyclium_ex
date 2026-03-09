@@ -60,6 +60,7 @@ defmodule Cyclium.Conversations do
       audience_target: encode_json(audience_target),
       principal: encode_json(principal),
       principal_id: get_in_map(principal, "id"),
+      principal_type: get_in_map(principal, "type"),
       collected_fields: encode_json(%{}),
       turns_used: 0,
       tokens_used: 0
@@ -97,7 +98,8 @@ defmodule Cyclium.Conversations do
         |> Conversation.changeset(%{
           status: "open",
           principal: encode_json(principal),
-          principal_id: principal["id"]
+          principal_id: principal["id"],
+          principal_type: principal["type"]
         })
         |> Cyclium.repo().update()
 
@@ -108,7 +110,8 @@ defmodule Cyclium.Conversations do
         conv
         |> Conversation.changeset(%{
           principal: encode_json(principal),
-          principal_id: principal["id"]
+          principal_id: principal["id"],
+          principal_type: principal["type"]
         })
         |> Cyclium.repo().update()
     end

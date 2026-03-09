@@ -194,6 +194,7 @@ defmodule Cyclium.Test.Migration do
       add(:resolved_outcome, :string)
       add(:principal, :string)
       add(:principal_id, :string)
+      add(:principal_type, :string)
       add(:collected_fields, :string)
       add(:turns_used, :integer, default: 0)
       add(:tokens_used, :integer, default: 0)
@@ -235,6 +236,9 @@ defmodule Cyclium.Test.Migration do
       add(:strategy_config, :text)
       add(:enabled, :boolean, default: true)
       add(:created_by, :string)
+      add(:principal_id, :string)
+      add(:principal, :text)
+      add(:principal_type, :string)
       add(:inserted_at, :utc_datetime)
       add(:updated_at, :utc_datetime)
     end
