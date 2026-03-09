@@ -7,6 +7,8 @@ defmodule Cyclium.ToolExec do
   2. App-level capability registry (`config :cyclium, :capability_registry`)
   """
 
+  require Logger
+
   def call(capability, action, args, %{episode: _episode} = ctx) do
     with :ok <- check_capability(ctx, capability, action) do
       execute(capability, action, args, ctx)
@@ -20,10 +22,14 @@ defmodule Cyclium.ToolExec do
   defp execute(capability, action, args, ctx) do
     case resolve_tool(capability, ctx) do
       nil ->
+        Logger.warning(
+          "[ToolExec] No tool found for capability=#{inspect(capability)} actor=#{inspect(ctx.episode.actor_id)}"
+        )
+
         {:error, :no_tool_for_capability}
 
       tool_module ->
-        case tool_module.call(action, args, %{}) do
+        case tool_module.call(action, args, ctx) do
           {:ok, result} ->
             redacted = %{
               args_redacted: tool_module.redact(args),
@@ -33,6 +39,10 @@ defmodule Cyclium.ToolExec do
             {:ok, result, 0, redacted}
 
           {:error, reason} ->
+            Logger.warning(
+              "[ToolExec] Tool returned error: #{inspect(reason)} for #{inspect(capability)}.#{inspect(action)}"
+            )
+
             {:error, classify_error(reason)}
         end
     end
