@@ -33,5 +33,15 @@ defmodule Cyclium.Trigger do
     defstruct [:workflow_instance_id, :workflow_step_id, :input]
   end
 
-  @type t :: Schedule.t() | Event.t() | Manual.t() | Workflow.t()
+  defmodule Interactive do
+    @type t :: %__MODULE__{
+            conversation_id: binary(),
+            message: binary(),
+            principal: map() | nil,
+            history: [map()]
+          }
+    defstruct [:conversation_id, :message, principal: nil, history: []]
+  end
+
+  @type t :: Schedule.t() | Event.t() | Manual.t() | Workflow.t() | Interactive.t()
 end

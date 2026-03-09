@@ -403,6 +403,76 @@ defmodule Cyclium.Episodes do
     {:ok, canceled}
   end
 
+  @doc """
+  Resolve an approval on a blocked interactive episode.
+  Verifies the plan_hash matches the approval_requested step.
+  """
+  def resolve_approval(episode_id, plan_hash, approved? \\ true) do
+    episode = get!(episode_id)
+
+    unless episode.status == :blocked do
+      {:error, :not_blocked}
+    else
+      # Find the approval_requested step and verify plan_hash
+      approval_step =
+        from(s in EpisodeStep,
+          where: s.episode_id == ^episode_id and s.kind == :approval_requested,
+          order_by: [desc: s.step_no],
+          limit: 1
+        )
+        |> repo().one()
+
+      stored_hash =
+        case approval_step do
+          %{args_redacted: %{"plan_hash" => h}} -> h
+          _ -> nil
+        end
+
+      cond do
+        is_nil(approval_step) ->
+          {:error, :no_pending_approval}
+
+        stored_hash != nil and stored_hash != plan_hash ->
+          {:error, :plan_hash_mismatch}
+
+        true ->
+          now = DateTime.utc_now() |> DateTime.truncate(:second)
+
+          repo().insert!(%EpisodeStep{
+            episode_id: episode_id,
+            step_no: next_step_no(episode_id),
+            kind: :approval_resolved,
+            result_ref: %{
+              "approved" => approved?,
+              "plan_hash" => plan_hash
+            },
+            created_at: now
+          })
+
+          if approved? do
+            update_status(episode_id, :running)
+            Cyclium.Mode.runner_for(episode.actor_id).enqueue(episode_id, resume: true)
+            {:ok, :resumed}
+          else
+            update_status(episode_id, :canceled)
+            {:ok, :denied}
+          end
+      end
+    end
+  end
+
+  @doc "List episodes for a conversation, ordered by start time."
+  def list_for_conversation(conversation_id, opts \\ []) do
+    limit = Keyword.get(opts, :limit, 50)
+
+    from(e in Episode,
+      where: e.conversation_id == ^conversation_id,
+      order_by: [asc: e.started_at],
+      limit: ^limit
+    )
+    |> repo().all()
+  end
+
   defp resolve_spec_rev(actor_key) when is_atom(actor_key) do
     :persistent_term.get({:cyclium_actor_spec_rev, actor_key}, nil)
   end

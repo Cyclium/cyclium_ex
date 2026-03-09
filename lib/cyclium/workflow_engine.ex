@@ -148,6 +148,7 @@ defmodule Cyclium.WorkflowEngine do
   def handle_info({:bus, event_type, payload}, state) do
     state = maybe_trigger_workflow(event_type, payload, state)
     state = maybe_handle_episode_terminal(event_type, payload, state)
+    state = maybe_handle_conversation_resolved(event_type, payload, state)
     {:noreply, state}
   end
 
@@ -308,6 +309,86 @@ defmodule Cyclium.WorkflowEngine do
       ref ->
         Process.cancel_timer(ref)
         %{state | debounce_timers: Map.delete(state.debounce_timers, key)}
+    end
+  end
+
+  defp maybe_handle_conversation_resolved("conversation.resolved", payload, state) do
+    conv_id = payload[:conversation_id] || payload["conversation_id"]
+    outcome = payload[:outcome] || payload["outcome"]
+    result = payload[:result] || payload["result"] || %{}
+
+    if conv_id do
+      # Find workflow instances with a blocked step waiting on this conversation
+      import Ecto.Query
+
+      instances =
+        from(wi in WorkflowInstance,
+          where: wi.status in [:running, :blocked],
+          select: wi
+        )
+        |> Cyclium.repo().all()
+
+      Enum.reduce(instances, state, fn instance, acc ->
+        # Check if any step is blocked on this conversation
+        case find_step_waiting_on_conversation(instance, conv_id) do
+          nil ->
+            acc
+
+          {step_id, _step_state} ->
+            config = resolve_config(instance.workflow_id, acc)
+
+            if config do
+              step_config = Map.get(config.steps, String.to_existing_atom(step_id))
+              _next_step_id = resolve_outcome_branch(step_config, outcome)
+
+              # Mark step as done with conversation result
+              step_states =
+                Map.put(instance.step_states, step_id, %{
+                  "status" => "done",
+                  "conversation_id" => conv_id,
+                  "result" => result,
+                  "outcome" => outcome
+                })
+
+              {:ok, updated} = WorkflowInstances.update_step_states(instance.id, step_states)
+
+              # Unblock workflow if it was blocked
+              if instance.status == :blocked do
+                WorkflowInstances.update_status(instance.id, :running)
+              end
+
+              # Check if all done
+              all_done? = Enum.all?(step_states, fn {_k, v} -> v["status"] == "done" end)
+
+              if all_done? do
+                complete_workflow(updated, config, acc)
+              else
+                start_ready_steps(updated, config, acc)
+              end
+            else
+              acc
+            end
+        end
+      end)
+    else
+      state
+    end
+  end
+
+  defp maybe_handle_conversation_resolved(_event_type, _payload, state), do: state
+
+  defp find_step_waiting_on_conversation(instance, conv_id) do
+    Enum.find(instance.step_states || %{}, fn {_step_id, step_state} ->
+      step_state["status"] == "blocked" and step_state["conversation_id"] == conv_id
+    end)
+  end
+
+  defp resolve_outcome_branch(nil, _outcome), do: nil
+
+  defp resolve_outcome_branch(step_config, outcome) do
+    case step_config.on_outcome do
+      %{} = outcomes -> Map.get(outcomes, outcome) || Map.get(outcomes, to_string(outcome))
+      _ -> nil
     end
   end
 
@@ -541,6 +622,65 @@ defmodule Cyclium.WorkflowEngine do
     step_atom = String.to_existing_atom(step_id)
     step_config = Map.fetch!(config.steps, step_atom)
 
+    if Map.get(step_config, :type) == :interactive_conversation do
+      do_start_interactive_step(instance, config, step_id, step_atom, step_config, state)
+    else
+      do_start_episode_step(instance, config, step_id, step_atom, step_config, state)
+    end
+  end
+
+  defp do_start_interactive_step(instance, config, step_id, step_atom, step_config, state) do
+    fresh_instance = Cyclium.WorkflowInstances.get!(instance.id)
+    prior = build_prior_results(fresh_instance.step_states)
+    input = resolve_step_input(config, step_atom, fresh_instance.trigger_ref, prior, state)
+
+    actor_id = resolve_actor_id(step_config.actor)
+
+    conv_attrs = %{
+      actor_id: actor_id,
+      name: "Workflow conversation: #{step_id}",
+      origin: %{
+        "type" => "workflow",
+        "workflow_ref" => %{
+          "instance_id" => instance.id,
+          "step_id" => step_id
+        },
+        "actor_id" => actor_id
+      },
+      audience_target: step_config.audience_target,
+      goal: Map.merge(step_config.goal || %{}, %{"context" => input}),
+      status: "awaiting_participant"
+    }
+
+    case Cyclium.Conversations.start(conv_attrs) do
+      {:ok, conversation} ->
+        step_states =
+          Map.put(fresh_instance.step_states, step_id, %{
+            "status" => "blocked",
+            "conversation_id" => conversation.id,
+            "attempts" => get_in(fresh_instance.step_states, [step_id, "attempts"]) || 1
+          })
+
+        Cyclium.WorkflowInstances.update_step_states(instance.id, step_states)
+        Cyclium.WorkflowInstances.update_status(instance.id, :blocked)
+
+        Logger.info("Workflow step spawned interactive conversation",
+          cyclium_step_id: step_id,
+          cyclium_conversation_id: conversation.id
+        )
+
+        state
+
+      {:error, reason} ->
+        Logger.error("Failed to create conversation for workflow step: #{inspect(reason)}",
+          cyclium_step_id: step_id
+        )
+
+        state
+    end
+  end
+
+  defp do_start_episode_step(instance, config, step_id, step_atom, step_config, state) do
     # Re-read instance to get latest step_states (important for parallel step starts)
     fresh_instance = WorkflowInstances.get!(instance.id)
 
