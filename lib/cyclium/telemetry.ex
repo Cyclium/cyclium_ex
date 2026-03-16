@@ -187,6 +187,14 @@ defmodule Cyclium.Telemetry do
   end
 
   @doc false
+  def handle_event(
+        [:cyclium, :actor, :event_received],
+        _measurements,
+        %{event_type: "episode.step_journaled"},
+        _config
+      ),
+      do: :ok
+
   def handle_event(event, measurements, metadata, %{log_level: level}) do
     require Logger
     Logger.log(level, "[Cyclium] #{inspect(event)} #{inspect(measurements)} #{inspect(metadata)}")

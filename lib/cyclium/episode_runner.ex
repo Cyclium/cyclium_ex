@@ -214,7 +214,7 @@ defmodule Cyclium.EpisodeRunner do
                         journal_step!(episode, :synthesis, %{
                           args_redacted: prompt_for_storage,
                           error_class: to_string(error_class),
-                          error_detail: inspect(detail)
+                          error_detail: %{reason: inspect(detail)}
                         })
 
                       handle_strategy_result(
