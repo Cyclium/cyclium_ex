@@ -59,6 +59,29 @@ defmodule Cyclium.EpisodeRunner do
         })
 
         {:error, :budget_exceeded}
+
+      {:EXIT, _from, reason} ->
+        Logger.warning(
+          "Episode task received EXIT (#{inspect(reason)}), terminating episode",
+          cyclium_episode_id: episode.id
+        )
+
+        journal_step!(episode, :episode_failed, %{
+          error_class: "process_terminated",
+          error_detail: %{exit_reason: inspect(reason)}
+        })
+
+        Cyclium.Episodes.update_status(episode.id, :failed, error_class: "process_terminated")
+
+        Cyclium.Bus.broadcast("episode.failed", %{
+          episode_id: episode.id,
+          actor_id: episode.actor_id,
+          status: :failed,
+          workflow_instance_id: episode.workflow_instance_id,
+          workflow_step_id: episode.workflow_step_id
+        })
+
+        {:error, :process_terminated}
     after
       0 -> :ok
     end
@@ -188,9 +211,8 @@ defmodule Cyclium.EpisodeRunner do
                   case synthesizer.synthesize(prompt_for_synth, episode_ctx) do
                     {:ok, result} ->
                       token_cost =
-                        if function_exported?(synthesizer, :estimate_tokens, 1),
-                          do: synthesizer.estimate_tokens(prompt_for_synth),
-                          else: 0
+                        extract_api_token_cost(result) ||
+                          fallback_estimate_tokens(synthesizer, prompt_for_synth)
 
                       step =
                         journal_step!(episode, :synthesis, %{
@@ -584,6 +606,29 @@ defmodule Cyclium.EpisodeRunner do
 
     from(e in Episode, where: e.id == ^episode.id)
     |> repo().update_all(inc: [turns_used: 1])
+  end
+
+  # Extract actual input + output token counts from the API response.
+  # Returns nil if no usage data is present (e.g. non-API synthesizer).
+  defp extract_api_token_cost(result) do
+    usage = result[:usage] || result["usage"]
+
+    case usage do
+      %{} = u ->
+        input = u[:input_tokens] || u["input_tokens"] || 0
+        output = u[:output_tokens] || u["output_tokens"] || 0
+        total = input + output
+        if total > 0, do: total, else: nil
+
+      _ ->
+        nil
+    end
+  end
+
+  defp fallback_estimate_tokens(synthesizer, prompt_ctx) do
+    if function_exported?(synthesizer, :estimate_tokens, 1),
+      do: synthesizer.estimate_tokens(prompt_ctx),
+      else: 0
   end
 
   defp increment_budget(%Episode{} = episode, token_cost) when is_integer(token_cost) do

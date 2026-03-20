@@ -11,12 +11,13 @@ defmodule Cyclium.EpisodeTask do
   end
 
   defp run(episode_id, opts) do
-    # Trap exits so current step can finish during graceful shutdown
+    # Trap exits so current step can finish during graceful shutdown.
+    # EXIT signals are handled in do_loop's receive block instead of
+    # killing the process mid-step.
     Process.flag(:trap_exit, true)
 
     episode = Cyclium.Episodes.get!(episode_id)
-    # Store for rescue block
-    Process.put(:cyclium_episode, episode)
+    Process.put(:cyclium_episode_id, episode_id)
 
     # Claim gate — only runs if work_claims is configured
     lease_seconds = lease_seconds()
@@ -47,46 +48,77 @@ defmodule Cyclium.EpisodeTask do
           initial_state
       end
 
-    Cyclium.EpisodeRunner.execute_loop(episode, strategy, state, synthesizer: synthesizer)
+    try do
+      Cyclium.EpisodeRunner.execute_loop(episode, strategy, state, synthesizer: synthesizer)
 
-    # Complete claim and stop heartbeat on successful completion
-    Cyclium.WorkClaims.gate_complete(episode.dedupe_key, Cyclium.NodeIdentity.name())
-    if heartbeat_pid, do: Cyclium.WorkClaims.Heartbeat.stop(heartbeat_pid)
-  rescue
-    e ->
-      require Logger
+      # Complete claim on successful completion
+      Cyclium.WorkClaims.gate_complete(episode.dedupe_key, Cyclium.NodeIdentity.name())
+    rescue
+      e ->
+        require Logger
 
-      message = Exception.message(e)
-      stacktrace = Exception.format_stacktrace(__STACKTRACE__)
-      episode = Process.get(:cyclium_episode)
+        message = Exception.message(e)
+        stacktrace = Exception.format_stacktrace(__STACKTRACE__)
 
-      Logger.error(
-        "[Cyclium.EpisodeTask] Episode #{episode_id} crashed: #{message}\n#{stacktrace}"
-      )
+        Logger.error(
+          "[Cyclium.EpisodeTask] Episode #{episode_id} crashed: #{message}\n#{stacktrace}"
+        )
 
-      Cyclium.Episodes.update_status(episode_id, :failed,
-        error_class: "crash",
-        error_detail: %{
-          "exception" => message,
-          "stacktrace" => stacktrace |> String.slice(0, 4000)
-        }
-      )
+        Cyclium.Episodes.update_status(episode_id, :failed,
+          error_class: "crash",
+          error_detail: %{
+            "exception" => message,
+            "stacktrace" => stacktrace |> String.slice(0, 4000)
+          }
+        )
 
-      Cyclium.Bus.broadcast("episode.failed", %{
-        episode_id: episode_id,
-        actor_id: if(episode, do: episode.actor_id),
-        status: :failed
-      })
+        Cyclium.Bus.broadcast("episode.failed", %{
+          episode_id: episode_id,
+          actor_id: episode.actor_id,
+          status: :failed
+        })
 
-      # Fail the claim if one was held
-      if episode do
         Cyclium.WorkClaims.gate_fail(episode.dedupe_key, Cyclium.NodeIdentity.name(), %{
           "reason" => "crash",
           "exception" => message
         })
-      end
+    after
+      # Safety net: ensure episode is never left in running state regardless
+      # of how the process terminates. Catches cases where rescue doesn't fire
+      # (e.g. throw, abnormal exit). The only case this can't cover is :kill,
+      # which is handled by the StaleEpisodeWatchdog.
+      ensure_episode_not_running(episode_id)
+      if heartbeat_pid, do: Cyclium.WorkClaims.Heartbeat.stop(heartbeat_pid)
+    end
+  end
 
-      reraise e, __STACKTRACE__
+  defp ensure_episode_not_running(episode_id) do
+    current = Cyclium.Episodes.get!(episode_id)
+
+    if current.status == :running do
+      require Logger
+
+      Logger.warning(
+        "[Cyclium.EpisodeTask] Episode #{episode_id} still running at task exit — marking failed"
+      )
+
+      Cyclium.Episodes.update_status(episode_id, :failed,
+        error_class: "process_terminated",
+        error_detail: %{"reason" => "Task exited while episode still running"}
+      )
+
+      Cyclium.Bus.broadcast("episode.failed", %{
+        episode_id: episode_id,
+        actor_id: current.actor_id,
+        status: :failed
+      })
+
+      Cyclium.WorkClaims.gate_fail(current.dedupe_key, Cyclium.NodeIdentity.name(), %{
+        "reason" => "process_terminated"
+      })
+    end
+  rescue
+    _ -> :ok
   end
 
   defp migrate_checkpoint(episode, strategy, checkpoint) do
