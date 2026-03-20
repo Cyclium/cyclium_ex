@@ -34,7 +34,7 @@ defmodule Cyclium.Schemas.Episode do
     field(:started_at, :utc_datetime_usec)
     field(:finished_at, :utc_datetime_usec)
     field(:queued_at, :utc_datetime_usec)
-    field(:archived_at, :utc_datetime)
+    field(:archived_at, :utc_datetime_usec)
     field(:conversation_id, :binary_id)
     field(:parent_episode_id, :string)
     field(:mode, :string, default: "live")

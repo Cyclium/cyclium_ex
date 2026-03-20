@@ -67,7 +67,7 @@ defmodule Cyclium.DataCase do
       id: Ecto.UUID.generate(),
       step_no: 1,
       kind: :observation,
-      created_at: DateTime.utc_now() |> DateTime.truncate(:second)
+      created_at: DateTime.utc_now()
     }
 
     attrs = Map.merge(defaults, Map.new(attrs))

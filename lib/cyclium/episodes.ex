@@ -334,7 +334,7 @@ defmodule Cyclium.Episodes do
   """
   def cancel(episode_id, reason \\ "manual") do
     episode = get!(episode_id)
-    now = DateTime.utc_now() |> DateTime.truncate(:second)
+    now = DateTime.utc_now()
 
     # 1. Journal cancellation step
     step_no = next_step_no(episode_id)
@@ -436,7 +436,7 @@ defmodule Cyclium.Episodes do
           {:error, :plan_hash_mismatch}
 
         true ->
-          now = DateTime.utc_now() |> DateTime.truncate(:second)
+          now = DateTime.utc_now()
 
           repo().insert!(%EpisodeStep{
             episode_id: episode_id,

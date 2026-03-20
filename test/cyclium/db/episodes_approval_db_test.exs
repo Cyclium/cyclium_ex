@@ -47,7 +47,7 @@ defmodule Cyclium.EpisodesApprovalDbTest do
         step_no: 1,
         kind: :approval_requested,
         args_redacted: %{"plan_hash" => "abc123"},
-        created_at: DateTime.utc_now() |> DateTime.truncate(:second)
+        created_at: DateTime.utc_now()
       })
 
       assert {:ok, :resumed} = Episodes.resolve_approval(episode.id, "abc123", true)
@@ -72,7 +72,7 @@ defmodule Cyclium.EpisodesApprovalDbTest do
         step_no: 1,
         kind: :approval_requested,
         args_redacted: %{"plan_hash" => "abc123"},
-        created_at: DateTime.utc_now() |> DateTime.truncate(:second)
+        created_at: DateTime.utc_now()
       })
 
       assert {:ok, :denied} = Episodes.resolve_approval(episode.id, "abc123", false)
@@ -97,7 +97,7 @@ defmodule Cyclium.EpisodesApprovalDbTest do
         step_no: 1,
         kind: :approval_requested,
         args_redacted: %{"plan_hash" => "abc123"},
-        created_at: DateTime.utc_now() |> DateTime.truncate(:second)
+        created_at: DateTime.utc_now()
       })
 
       assert {:error, :plan_hash_mismatch} =
@@ -143,7 +143,7 @@ defmodule Cyclium.EpisodesApprovalDbTest do
         step_no: 1,
         kind: :approval_requested,
         args_redacted: %{"plan_hash" => "hash1"},
-        created_at: DateTime.utc_now() |> DateTime.truncate(:second)
+        created_at: DateTime.utc_now()
       })
 
       {:ok, :resumed} = Episodes.resolve_approval(episode.id, "hash1")

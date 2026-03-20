@@ -663,7 +663,7 @@ defmodule Cyclium.EpisodeRunner do
   end
 
   defp journal_step!(%Episode{} = episode, kind, attrs) do
-    now = DateTime.utc_now() |> DateTime.truncate(:second)
+    now = DateTime.utc_now()
     step_no = next_step_no(episode.id)
     log_strategy = parse_log_strategy(episode.log_strategy)
 

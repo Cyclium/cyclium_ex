@@ -42,7 +42,7 @@ defmodule Cyclium.EpisodesQueryDbTest do
 
   describe "list_by_actors/2 — exclude_archived" do
     test "includes archived episodes by default" do
-      now = DateTime.utc_now() |> DateTime.truncate(:second)
+      now = DateTime.utc_now()
       insert_episode(%{actor_id: "qa2", archived_at: now})
       insert_episode(%{actor_id: "qa2"})
 
@@ -51,7 +51,7 @@ defmodule Cyclium.EpisodesQueryDbTest do
     end
 
     test "excludes archived episodes when exclude_archived: true" do
-      now = DateTime.utc_now() |> DateTime.truncate(:second)
+      now = DateTime.utc_now()
       _archived = insert_episode(%{actor_id: "qa3", archived_at: now})
       live = insert_episode(%{actor_id: "qa3"})
 
@@ -109,7 +109,7 @@ defmodule Cyclium.EpisodesQueryDbTest do
       insert_step(%{
         episode_id: fresh_ep.id,
         step_no: 1,
-        created_at: DateTime.utc_now() |> DateTime.truncate(:second)
+        created_at: DateTime.utc_now()
       })
 
       results = Episodes.list_stale_running(5_000)
@@ -119,7 +119,7 @@ defmodule Cyclium.EpisodesQueryDbTest do
     end
 
     test "returns running episode whose only step is old" do
-      old_time = DateTime.add(DateTime.utc_now(), -10, :second) |> DateTime.truncate(:second)
+      old_time = DateTime.add(DateTime.utc_now(), -10, :second)
       stale_ep = insert_episode(%{started_at: old_time, status: :running})
 
       insert_step(%{episode_id: stale_ep.id, step_no: 1, created_at: old_time})
@@ -141,7 +141,7 @@ defmodule Cyclium.EpisodesQueryDbTest do
     end
 
     test "excludes archived running episodes" do
-      old_start = DateTime.add(DateTime.utc_now(), -10, :second) |> DateTime.truncate(:second)
+      old_start = DateTime.add(DateTime.utc_now(), -10, :second)
 
       insert_episode(%{
         started_at: old_start,

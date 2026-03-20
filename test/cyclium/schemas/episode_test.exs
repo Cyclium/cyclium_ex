@@ -20,7 +20,7 @@ defmodule Cyclium.Schemas.EpisodeTest do
       expectation_id: "po_delivery_sla",
       trigger_type: :schedule,
       status: :running,
-      started_at: DateTime.utc_now() |> DateTime.truncate(:second),
+      started_at: DateTime.utc_now(),
       budget: %{"max_turns" => 12, "max_tokens" => 25_000, "max_wall_ms" => 120_000}
     }
 
@@ -29,7 +29,7 @@ defmodule Cyclium.Schemas.EpisodeTest do
   end
 
   test "changeset accepts all optional fields" do
-    now = DateTime.utc_now() |> DateTime.truncate(:second)
+    now = DateTime.utc_now()
 
     attrs = %{
       actor_id: "po_status",

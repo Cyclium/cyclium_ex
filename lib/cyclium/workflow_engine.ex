@@ -393,7 +393,7 @@ defmodule Cyclium.WorkflowEngine do
   end
 
   defp start_workflow_instance(%Config{} = config, trigger_data, opts, state) do
-    now = DateTime.utc_now() |> DateTime.truncate(:second)
+    now = DateTime.utc_now()
     mode = Keyword.get(opts, :mode, :live)
 
     dry_run_opts =

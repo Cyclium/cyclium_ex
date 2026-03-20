@@ -38,7 +38,7 @@ defmodule Cyclium.Schemas.EpisodeStep do
     field(:side_effect_key, :string)
     field(:cost_tokens, :integer)
     field(:cost_ms, :integer)
-    field(:created_at, :utc_datetime)
+    field(:created_at, :utc_datetime_usec)
   end
 
   def changeset(step, attrs) do

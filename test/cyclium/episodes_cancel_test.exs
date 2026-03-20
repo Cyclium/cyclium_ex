@@ -23,7 +23,7 @@ defmodule Cyclium.EpisodesCancelTest do
       budget: %{"max_turns" => 10},
       turns_used: 0,
       tokens_used: 0,
-      started_at: DateTime.utc_now() |> DateTime.truncate(:second)
+      started_at: DateTime.utc_now()
     }
 
     # Manually insert into FakeRepo

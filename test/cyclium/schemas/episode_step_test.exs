@@ -24,7 +24,7 @@ defmodule Cyclium.Schemas.EpisodeStepTest do
       result_ref: %{count: 3},
       cost_tokens: 0,
       cost_ms: 450,
-      created_at: DateTime.utc_now() |> DateTime.truncate(:second)
+      created_at: DateTime.utc_now()
     }
 
     changeset = EpisodeStep.changeset(%EpisodeStep{}, attrs)
@@ -55,7 +55,7 @@ defmodule Cyclium.Schemas.EpisodeStepTest do
         episode_id: Ecto.UUID.generate(),
         step_no: 1,
         kind: kind,
-        created_at: DateTime.utc_now() |> DateTime.truncate(:second)
+        created_at: DateTime.utc_now()
       }
 
       changeset = EpisodeStep.changeset(%EpisodeStep{}, attrs)
