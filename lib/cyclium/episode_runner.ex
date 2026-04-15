@@ -35,6 +35,25 @@ defmodule Cyclium.EpisodeRunner do
   end
 
   defp do_loop(episode, strategy, state, started_at) do
+    # Non-blocking check for EXIT signals or wall-time budget.
+    # If matched, stop the loop immediately — do NOT fall through.
+    case drain_exit_signals(episode, started_at) do
+      :ok ->
+        :ok
+
+      {:error, _} = err ->
+        err
+    end
+    |> case do
+      :ok ->
+        continue_loop(episode, strategy, state, started_at)
+
+      {:error, _} = err ->
+        err
+    end
+  end
+
+  defp drain_exit_signals(episode, started_at) do
     receive do
       :budget_wall_exceeded ->
         elapsed = DateTime.diff(DateTime.utc_now(), started_at, :millisecond)
@@ -60,18 +79,28 @@ defmodule Cyclium.EpisodeRunner do
 
         {:error, :budget_exceeded}
 
-      {:EXIT, _from, reason} ->
+      {:EXIT, _from, :normal} ->
+        # Normal exits (e.g. ports closing after System.cmd or HTTP requests)
+        # are harmless — just drain them and continue.
+        :ok
+
+      {:EXIT, from, reason} ->
         Logger.warning(
-          "Episode task received EXIT (#{inspect(reason)}), terminating episode",
+          "Episode task received EXIT from #{inspect(from)} (#{inspect(reason)}), terminating episode",
           cyclium_episode_id: episode.id
         )
 
+        detail = %{exit_reason: inspect(reason), exit_from: inspect(from)}
+
         journal_step!(episode, :episode_failed, %{
           error_class: "process_terminated",
-          error_detail: %{exit_reason: inspect(reason)}
+          error_detail: detail
         })
 
-        Cyclium.Episodes.update_status(episode.id, :failed, error_class: "process_terminated")
+        Cyclium.Episodes.update_status(episode.id, :failed,
+          error_class: "process_terminated",
+          error_detail: detail
+        )
 
         Cyclium.Bus.broadcast("episode.failed", %{
           episode_id: episode.id,
@@ -85,7 +114,9 @@ defmodule Cyclium.EpisodeRunner do
     after
       0 -> :ok
     end
+  end
 
+  defp continue_loop(episode, strategy, state, started_at) do
     with :ok <- check_budget(episode),
          :ok <- check_loop(episode) do
       increment_turn(episode)

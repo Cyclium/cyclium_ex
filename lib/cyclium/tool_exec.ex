@@ -29,21 +29,37 @@ defmodule Cyclium.ToolExec do
         {:error, :no_tool_for_capability}
 
       tool_module ->
-        case tool_module.call(action, args, ctx) do
-          {:ok, result} ->
-            redacted = %{
-              args_redacted: tool_module.redact(args),
-              result_redacted: tool_module.redact_result(result)
-            }
+        try do
+          case tool_module.call(action, args, ctx) do
+            {:ok, result} ->
+              redacted = %{
+                args_redacted: tool_module.redact(args),
+                result_redacted: tool_module.redact_result(result)
+              }
 
-            {:ok, result, 0, redacted}
+              {:ok, result, 0, redacted}
 
-          {:error, reason} ->
+            {:error, reason} ->
+              Logger.warning(
+                "[ToolExec] Tool returned error: #{inspect(reason)} for #{inspect(capability)}.#{inspect(action)}"
+              )
+
+              {:error, classify_error(reason)}
+          end
+        catch
+          :error, %{__struct__: _} = e ->
             Logger.warning(
-              "[ToolExec] Tool returned error: #{inspect(reason)} for #{inspect(capability)}.#{inspect(action)}"
+              "[ToolExec] Tool raised #{inspect(e.__struct__)}: #{Exception.message(e)} for #{inspect(capability)}.#{inspect(action)}"
             )
 
-            {:error, classify_error(reason)}
+            {:error, classify_error("#{inspect(e.__struct__)}: #{Exception.message(e)}")}
+
+          kind, reason ->
+            Logger.warning(
+              "[ToolExec] Tool #{kind}: #{inspect(reason)} for #{inspect(capability)}.#{inspect(action)}"
+            )
+
+            {:error, classify_error("#{kind}: #{inspect(reason)}")}
         end
     end
   end
