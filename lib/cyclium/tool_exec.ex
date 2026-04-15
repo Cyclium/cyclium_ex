@@ -33,7 +33,7 @@ defmodule Cyclium.ToolExec do
           case tool_module.call(action, args, ctx) do
             {:ok, result} ->
               redacted = %{
-                args_redacted: tool_module.redact(args),
+                args_redacted: strip_internal_keys(tool_module.redact(args)),
                 result_redacted: tool_module.redact_result(result)
               }
 
@@ -97,6 +97,22 @@ defmodule Cyclium.ToolExec do
       registry.tool_for(capability)
     end
   end
+
+  # Framework-injected internal args (like "_workspace_root", "_session_pid")
+  # start with an underscore by convention. These are not safe to journal —
+  # they may contain PIDs or other non-JSON-encodable values, and they're
+  # not meaningful to the LLM anyway. Strip them before journaling.
+  defp strip_internal_keys(args) when is_map(args) do
+    args
+    |> Enum.reject(fn
+      {k, _v} when is_binary(k) -> String.starts_with?(k, "_")
+      {k, _v} when is_atom(k) -> k |> Atom.to_string() |> String.starts_with?("_")
+      _ -> false
+    end)
+    |> Map.new()
+  end
+
+  defp strip_internal_keys(args), do: args
 
   defp classify_error(:timeout), do: :tool_timeout
   defp classify_error(:unavailable), do: :tool_unavailable

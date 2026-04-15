@@ -36,6 +36,16 @@ defmodule Cyclium.WorkflowDSLTest do
       assert config.failure_policies.fulfill.policy == :retry
       assert config.failure_policies.fulfill.max_step_attempts == 2
       assert config.failure_policies.fulfill.backoff_ms == 100
+      # Defaults to [] when not specified
+      assert config.failure_policies.fulfill.skip_on_error_class == []
+    end
+
+    test "skip_on_error_class option is captured in failure policy" do
+      config = TestWorkflows.SkipRetryOnBudget.__workflow_config__()
+
+      assert config.failure_policies.fulfill.policy == :retry
+      assert config.failure_policies.fulfill.max_step_attempts == 3
+      assert config.failure_policies.fulfill.skip_on_error_class == ["budget_exceeded"]
     end
 
     test "input function works via __workflow_step_input__/3" do

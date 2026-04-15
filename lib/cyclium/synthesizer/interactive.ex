@@ -127,7 +127,34 @@ defmodule Cyclium.Synthesizer.Interactive do
 
     tools_desc =
       Enum.map_join(tool_menu, "\n", fn t ->
-        "  - #{t[:name]}: side_effect=#{t[:side_effect]}"
+        actions_desc =
+          case t[:actions] do
+            actions when is_list(actions) and actions != [] ->
+              details =
+                Enum.map_join(actions, "\n", fn a ->
+                  name = a["name"] || a[:name]
+                  desc = a["description"] || a[:description] || ""
+                  args = a["args"] || a[:args] || %{}
+
+                  arg_keys =
+                    case args do
+                      m when is_map(m) and map_size(m) > 0 ->
+                        " args: #{inspect(Map.keys(m))}"
+
+                      _ ->
+                        ""
+                    end
+
+                  "      * #{name}#{arg_keys} — #{desc}"
+                end)
+
+              "\n    actions:\n#{details}"
+
+            _ ->
+              ""
+          end
+
+        "  - #{t[:name]}: side_effect=#{t[:side_effect]}#{actions_desc}"
       end)
 
     history_desc =

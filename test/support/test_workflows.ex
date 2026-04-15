@@ -57,6 +57,39 @@ defmodule TestWorkflows.DebouncedNoSubject do
   end
 end
 
+defmodule TestWorkflows.SkipRetryOnBudget do
+  @moduledoc """
+  Workflow used to test `skip_on_error_class` retry filtering. The
+  `fulfill` step retries unless the episode failed with `budget_exceeded`.
+  """
+  use Cyclium.Workflow
+
+  workflow do
+    trigger({:event, "order.created"})
+
+    step(:validate,
+      actor: TestWorkflows.FakeActor,
+      expectation: :validate_order,
+      input: fn trigger, _prior -> %{order_id: trigger["order_id"]} end
+    )
+
+    step(:fulfill,
+      actor: TestWorkflows.FakeActor,
+      expectation: :fulfill_order,
+      depends_on: [:validate],
+      input: fn _trigger, prior -> %{validated: prior[:validate]} end
+    )
+
+    on_failure(:validate, :abort)
+
+    on_failure(:fulfill, :retry,
+      max_step_attempts: 3,
+      backoff_ms: 100,
+      skip_on_error_class: ["budget_exceeded"]
+    )
+  end
+end
+
 defmodule TestWorkflows.Parallel do
   use Cyclium.Workflow
 

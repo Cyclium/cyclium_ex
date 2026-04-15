@@ -481,7 +481,7 @@ defmodule Cyclium.WorkflowEngine do
               handle_step_completed(instance, config, step_id, payload, state)
 
             terminal when terminal in ["episode.failed", "episode.canceled", "episode.dropped"] ->
-              handle_step_failed(instance, config, step_id, state)
+              handle_step_failed(instance, config, step_id, payload, state)
           end
         else
           state
@@ -523,36 +523,44 @@ defmodule Cyclium.WorkflowEngine do
     end
   end
 
-  defp handle_step_failed(instance, config, step_id, state) do
+  defp handle_step_failed(instance, config, step_id, payload, state) do
     step_atom = String.to_existing_atom(step_id)
     policy = Map.get(config.failure_policies, step_atom, %{policy: :abort})
     current_attempts = get_in(instance.step_states, [step_id, "attempts"]) || 1
+    error_class = lookup_error_class(payload)
 
     :telemetry.execute([:cyclium, :workflow, :step_failed], %{count: 1}, %{
       workflow_id: config.workflow_id,
       instance_id: instance.id,
-      step_id: step_atom
+      step_id: step_atom,
+      error_class: error_class
     })
 
     case policy do
       %{policy: :abort} ->
         fail_workflow(instance, config, step_id, state)
 
-      %{policy: :retry, max_step_attempts: max_attempts} = retry_policy ->
-        if current_attempts < max_attempts do
-          retry_step(instance, config, step_id, current_attempts, retry_policy, state)
-        else
-          # Exhausted retries, escalate to abort
-          fail_workflow(instance, config, step_id, state)
-        end
-
       %{policy: :retry} = retry_policy ->
-        max_attempts = Map.get(retry_policy, :max_step_attempts, 3)
+        skip_on = Map.get(retry_policy, :skip_on_error_class, [])
 
-        if current_attempts < max_attempts do
-          retry_step(instance, config, step_id, current_attempts, retry_policy, state)
-        else
-          fail_workflow(instance, config, step_id, state)
+        cond do
+          error_class != nil and error_class in skip_on ->
+            require Logger
+
+            Logger.info(
+              "[WorkflowEngine] Skipping retry for #{step_id} due to error_class=#{error_class}"
+            )
+
+            fail_workflow(instance, config, step_id, state)
+
+          true ->
+            max_attempts = Map.get(retry_policy, :max_step_attempts, 3)
+
+            if current_attempts < max_attempts do
+              retry_step(instance, config, step_id, current_attempts, retry_policy, state)
+            else
+              fail_workflow(instance, config, step_id, state)
+            end
         end
 
       %{policy: :pause} ->
@@ -567,6 +575,25 @@ defmodule Cyclium.WorkflowEngine do
         WorkflowInstances.update_status(instance.id, :blocked)
         state
     end
+  end
+
+  # Resolve the error_class from a terminal bus payload, preferring the
+  # explicit payload field but falling back to the episode record.
+  defp lookup_error_class(payload) do
+    case payload[:error_class] || payload["error_class"] do
+      class when is_binary(class) and class != "" ->
+        class
+
+      _ ->
+        ep_id = payload[:episode_id] || payload["episode_id"]
+
+        case ep_id && Cyclium.Episodes.get(ep_id) do
+          %{error_class: class} when is_binary(class) -> class
+          _ -> nil
+        end
+    end
+  rescue
+    _ -> nil
   end
 
   defp retry_step(instance, config, step_id, current_attempts, retry_policy, state) do

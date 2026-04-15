@@ -346,7 +346,8 @@ defmodule Cyclium.Strategy.Template.Interactive do
         %{
           name: sig["name"],
           side_effect: sig["side_effect"],
-          constraints: sig["constraints"]
+          constraints: sig["constraints"],
+          actions: sig["actions"]
         }
       end)
 

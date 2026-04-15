@@ -227,7 +227,8 @@ defmodule Cyclium.Workflow.DSL do
         %{
           policy: unquote(policy),
           max_step_attempts: Keyword.get(unquote(opts), :max_step_attempts, 3),
-          backoff_ms: Keyword.get(unquote(opts), :backoff_ms, 5_000)
+          backoff_ms: Keyword.get(unquote(opts), :backoff_ms, 5_000),
+          skip_on_error_class: Keyword.get(unquote(opts), :skip_on_error_class, [])
         }
       }
     end

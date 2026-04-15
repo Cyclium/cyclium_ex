@@ -183,12 +183,13 @@ defmodule Cyclium.EpisodeRunner do
                     started_at
                   )
 
-                {:error, _reason} = err ->
+                {:error, reason} = err ->
                   step =
                     journal_step!(episode, :tool_call, %{
                       tool_name: tool_name,
-                      args_redacted: args,
-                      error_class: "tool_error"
+                      args_redacted: drop_internal_keys(args),
+                      error_class: "tool_error",
+                      error_detail: %{reason: format_error_reason(reason)}
                     })
 
                   handle_strategy_result(episode, strategy, state, step, err, started_at)
@@ -248,6 +249,7 @@ defmodule Cyclium.EpisodeRunner do
                       step =
                         journal_step!(episode, :synthesis, %{
                           args_redacted: prompt_for_storage,
+                          result_ref: result,
                           cost_tokens: token_cost
                         })
 
@@ -555,12 +557,23 @@ defmodule Cyclium.EpisodeRunner do
   end
 
   defp abort_episode(episode, reason) do
+    # Extract a specific error_class from structured abort reasons so
+    # downstream workflow retry policies can filter by it. Strategies
+    # can use:
+    #   {:abort, :synthesis_error}
+    #   {:abort, {:synthesis_error, :api_error, detail}}
+    #   {:abort, {error_class, detail}}
+    {error_class, error_detail} = classify_abort_reason(reason)
+
     journal_step!(episode, :episode_failed, %{
-      error_class: "abort",
-      error_detail: %{reason: inspect(reason)}
+      error_class: error_class,
+      error_detail: error_detail
     })
 
-    Cyclium.Episodes.update_status(episode.id, :failed, error_class: "abort")
+    Cyclium.Episodes.update_status(episode.id, :failed,
+      error_class: error_class,
+      error_detail: error_detail
+    )
 
     Cyclium.Bus.broadcast("episode.failed", %{
       episode_id: episode.id,
@@ -571,6 +584,104 @@ defmodule Cyclium.EpisodeRunner do
     })
 
     {:error, reason}
+  end
+
+  # Render a tool error reason as a compact string for UI display.
+  # Today ToolExec always classifies the reason into an atom before it
+  # gets here. If that contract broadens in the future (e.g. tuples or
+  # strings), update this function too.
+  defp format_error_reason(reason) when is_atom(reason), do: to_string(reason)
+
+  # Strip framework-injected internal args (keys prefixed with "_") so
+  # PIDs and other non-JSON values don't end up in the journal.
+  defp drop_internal_keys(args) when is_map(args) do
+    args
+    |> Enum.reject(fn
+      {k, _v} when is_binary(k) -> String.starts_with?(k, "_")
+      {k, _v} when is_atom(k) -> k |> Atom.to_string() |> String.starts_with?("_")
+      _ -> false
+    end)
+    |> Map.new()
+  end
+
+  defp drop_internal_keys(args), do: args
+
+  # Truncate a synthesis result's content blocks so the stored map stays
+  # under roughly `max_bytes`. Preserves shape (content blocks, stop_reason,
+  # usage) so the UI can render it normally. Each text block is cut
+  # individually and annotated with a truncation marker.
+  defp cap_synthesis_result(result, max_bytes) when is_map(result) do
+    content = result[:content] || result["content"]
+
+    if is_list(content) do
+      # Share the byte budget across all text blocks
+      text_blocks = Enum.count(content, &text_block?/1)
+      per_block = if text_blocks > 0, do: div(max_bytes, text_blocks), else: max_bytes
+
+      capped =
+        Enum.map(content, fn block ->
+          if text_block?(block) do
+            cap_text_block(block, per_block)
+          else
+            # Non-text blocks (tool_use, tool_result) kept as-is — they're
+            # structured data the agent may need, not free text.
+            block
+          end
+        end)
+
+      result
+      |> Map.put(:content, capped)
+      |> Map.put("content", capped)
+    else
+      result
+    end
+  end
+
+  defp cap_synthesis_result(result, _), do: result
+
+  defp text_block?(%{"type" => "text"}), do: true
+  defp text_block?(%{type: :text}), do: true
+  defp text_block?(%{type: "text"}), do: true
+  defp text_block?(_), do: false
+
+  defp cap_text_block(block, max_bytes) do
+    text = block["text"] || block[:text] || ""
+
+    cond do
+      not is_binary(text) ->
+        block
+
+      byte_size(text) <= max_bytes ->
+        block
+
+      true ->
+        truncated =
+          String.slice(text, 0, max_bytes) <>
+            "\n\n... [truncated: original #{byte_size(text)} bytes]"
+
+        block
+        |> Map.put("text", truncated)
+        |> Map.put(:text, truncated)
+    end
+  end
+
+  # Extract {error_class_string, error_detail_map} from an abort reason.
+  # Supports bare atoms, {kind, detail} tuples, and {kind, subkind, detail}
+  # nested forms like {:synthesis_error, :api_error, "timeout"}.
+  defp classify_abort_reason(reason) do
+    case reason do
+      atom when is_atom(atom) and atom != nil ->
+        {to_string(atom), %{reason: inspect(reason)}}
+
+      {kind, subkind, detail} when is_atom(kind) and is_atom(subkind) ->
+        {"#{kind}:#{subkind}", %{reason: inspect(reason), detail: inspect(detail)}}
+
+      {kind, detail} when is_atom(kind) ->
+        {to_string(kind), %{reason: inspect(reason), detail: inspect(detail)}}
+
+      _ ->
+        {"abort", %{reason: inspect(reason)}}
+    end
   end
 
   defp check_budget(%Episode{} = episode) do
@@ -738,9 +849,15 @@ defmodule Cyclium.EpisodeRunner do
     inserted
   end
 
+  # Size cap for stored synthesis responses. Larger than this gets truncated
+  # on a per-field basis (content text) to keep DB rows reasonable.
+  @synthesis_result_max_bytes 50_000
+  @synthesis_result_summary_bytes 2_000
+
   # full_debug: store everything, but redact prompt content from synthesis steps
+  # and cap overly-large synthesis responses to prevent DB bloat.
   defp filter_step_data(:full_debug, :synthesis, _tool_name, args, result) do
-    {redact_synthesis_args(args), result}
+    {redact_synthesis_args(args), cap_synthesis_result(result, @synthesis_result_max_bytes)}
   end
 
   defp filter_step_data(:full_debug, _kind, _tool_name, args, result), do: {args, result}
@@ -751,7 +868,8 @@ defmodule Cyclium.EpisodeRunner do
   end
 
   defp filter_step_data(:timeline, :synthesis, _tool_name, args, result) do
-    {redact_synthesis_args(summarize_result(args)), summarize_result(result)}
+    {redact_synthesis_args(summarize_result(args)),
+     cap_synthesis_result(result, @synthesis_result_summary_bytes)}
   end
 
   defp filter_step_data(:timeline, :observation, _tool_name, _args, result) do

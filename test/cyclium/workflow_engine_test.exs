@@ -230,6 +230,105 @@ defmodule Cyclium.WorkflowEngineTest do
       assert length(Cyclium.FakeRunner.enqueued_episodes()) > initial_enqueue_count
     end
 
+    test "retry skipped when error_class is in skip_on_error_class list" do
+      {:ok, skip_engine} =
+        start_supervised(
+          {WorkflowEngine,
+           name: :"engine_skip_#{System.unique_integer([:positive])}",
+           workflows: [TestWorkflows.SkipRetryOnBudget]},
+          id: :"skip_engine_#{System.unique_integer([:positive])}"
+        )
+
+      {:ok, instance_id} =
+        WorkflowEngine.start_workflow(
+          skip_engine,
+          TestWorkflows.SkipRetryOnBudget,
+          %{"order_id" => "ORD-SKIP"}
+        )
+
+      instance = WorkflowInstances.get!(instance_id)
+      validate_episode_id = instance.step_states["validate"]["episode_id"]
+
+      Cyclium.Bus.broadcast("episode.completed", %{
+        episode_id: validate_episode_id,
+        actor_id: "fake_actor",
+        status: :done,
+        workflow_instance_id: instance_id,
+        workflow_step_id: "validate"
+      })
+
+      Process.sleep(50)
+
+      instance = WorkflowInstances.get!(instance_id)
+      fulfill_episode_id = instance.step_states["fulfill"]["episode_id"]
+
+      # Fail with budget_exceeded — should NOT retry even though max_step_attempts=3
+      Cyclium.Bus.broadcast("episode.failed", %{
+        episode_id: fulfill_episode_id,
+        actor_id: "fake_actor",
+        status: :failed,
+        error_class: "budget_exceeded",
+        workflow_instance_id: instance_id,
+        workflow_step_id: "fulfill"
+      })
+
+      Process.sleep(50)
+
+      instance = WorkflowInstances.get!(instance_id)
+      # Should go straight to failed — no retry
+      assert instance.step_states["fulfill"]["status"] == "failed"
+      assert instance.status == :failed
+    end
+
+    test "retry still happens for error_class not in skip list" do
+      {:ok, skip_engine} =
+        start_supervised(
+          {WorkflowEngine,
+           name: :"engine_skip_#{System.unique_integer([:positive])}",
+           workflows: [TestWorkflows.SkipRetryOnBudget]},
+          id: :"skip_engine2_#{System.unique_integer([:positive])}"
+        )
+
+      {:ok, instance_id} =
+        WorkflowEngine.start_workflow(
+          skip_engine,
+          TestWorkflows.SkipRetryOnBudget,
+          %{"order_id" => "ORD-RETRY"}
+        )
+
+      instance = WorkflowInstances.get!(instance_id)
+      validate_episode_id = instance.step_states["validate"]["episode_id"]
+
+      Cyclium.Bus.broadcast("episode.completed", %{
+        episode_id: validate_episode_id,
+        actor_id: "fake_actor",
+        status: :done,
+        workflow_instance_id: instance_id,
+        workflow_step_id: "validate"
+      })
+
+      Process.sleep(50)
+
+      instance = WorkflowInstances.get!(instance_id)
+      fulfill_episode_id = instance.step_states["fulfill"]["episode_id"]
+
+      # Fail with a non-skipped error class — should retry normally
+      Cyclium.Bus.broadcast("episode.failed", %{
+        episode_id: fulfill_episode_id,
+        actor_id: "fake_actor",
+        status: :failed,
+        error_class: "transport_error",
+        workflow_instance_id: instance_id,
+        workflow_step_id: "fulfill"
+      })
+
+      Process.sleep(50)
+
+      instance = WorkflowInstances.get!(instance_id)
+      assert instance.step_states["fulfill"]["status"] == "retrying"
+      assert instance.status == :running
+    end
+
     test "retry exhaustion escalates to abort", %{engine: engine} do
       {:ok, instance_id} =
         WorkflowEngine.start_workflow(engine, TestWorkflows.TwoStep, %{"order_id" => "ORD-600"})
