@@ -50,5 +50,6 @@ defmodule Cyclium.BusTest do
     assert "episode.completed" in events
     assert "finding.raised" in events
     assert "episode.queued" in events
+    assert "episode.started" in events
   end
 end

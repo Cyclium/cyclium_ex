@@ -63,9 +63,7 @@ defmodule Cyclium.ToolExec do
           kind, reason ->
             msg = "#{kind}: #{inspect(reason)}"
 
-            Logger.warning(
-              "[ToolExec] Tool #{msg} for #{inspect(capability)}.#{inspect(action)}"
-            )
+            Logger.warning("[ToolExec] Tool #{msg} for #{inspect(capability)}.#{inspect(action)}")
 
             {:error, msg}
         end
@@ -135,5 +133,4 @@ defmodule Cyclium.ToolExec do
   defp preserve_error(:not_found), do: :tool_not_found
   defp preserve_error(reason) when is_atom(reason), do: reason
   defp preserve_error(reason), do: inspect(reason)
-
 end

@@ -27,6 +27,19 @@ defmodule Cyclium.EpisodeRunner do
     deadline_ref =
       Process.send_after(self(), :budget_wall_exceeded, episode.budget["max_wall_ms"] || 120_000)
 
+    # Include trigger_type/ref so subscribers can identify their own
+    # episodes (e.g. a CLI session comparing a session_id in the trigger
+    # payload) without needing a DB round-trip.
+    Cyclium.Bus.broadcast("episode.started", %{
+      episode_id: episode.id,
+      actor_id: episode.actor_id,
+      expectation_id: episode.expectation_id,
+      trigger_type: episode.trigger_type,
+      trigger_ref: episode.trigger_ref,
+      workflow_instance_id: episode.workflow_instance_id,
+      workflow_step_id: episode.workflow_step_id
+    })
+
     try do
       do_loop(episode, strategy, state, DateTime.utc_now())
     after

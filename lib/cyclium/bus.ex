@@ -28,6 +28,7 @@ defmodule Cyclium.Bus do
     "episode.completed",
     "episode.failed",
     "episode.queued",
+    "episode.started",
     "episode.dropped",
     "episode.canceled",
     "workflow.started",
