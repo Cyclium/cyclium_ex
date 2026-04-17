@@ -44,22 +44,30 @@ defmodule Cyclium.ToolExec do
                 "[ToolExec] Tool returned error: #{inspect(reason)} for #{inspect(capability)}.#{inspect(action)}"
               )
 
-              {:error, classify_error(reason)}
+              # Pass through the original error reason if it's already a
+              # string/atom/binary — only fall back to classify_error for
+              # truly unknown shapes. This preserves the actual error
+              # message for the agent (e.g. "File not found: :enoent").
+              {:error, preserve_error(reason)}
           end
         catch
           :error, %{__struct__: _} = e ->
+            msg = "#{inspect(e.__struct__)}: #{Exception.message(e)}"
+
             Logger.warning(
-              "[ToolExec] Tool raised #{inspect(e.__struct__)}: #{Exception.message(e)} for #{inspect(capability)}.#{inspect(action)}"
+              "[ToolExec] Tool raised #{msg} for #{inspect(capability)}.#{inspect(action)}"
             )
 
-            {:error, classify_error("#{inspect(e.__struct__)}: #{Exception.message(e)}")}
+            {:error, msg}
 
           kind, reason ->
+            msg = "#{kind}: #{inspect(reason)}"
+
             Logger.warning(
-              "[ToolExec] Tool #{kind}: #{inspect(reason)} for #{inspect(capability)}.#{inspect(action)}"
+              "[ToolExec] Tool #{msg} for #{inspect(capability)}.#{inspect(action)}"
             )
 
-            {:error, classify_error("#{kind}: #{inspect(reason)}")}
+            {:error, msg}
         end
     end
   end
@@ -114,10 +122,18 @@ defmodule Cyclium.ToolExec do
 
   defp strip_internal_keys(args), do: args
 
-  defp classify_error(:timeout), do: :tool_timeout
-  defp classify_error(:unavailable), do: :tool_unavailable
-  defp classify_error(:auth_failed), do: :tool_auth_failed
-  defp classify_error(:rate_limited), do: :tool_rate_limited
-  defp classify_error(:not_found), do: :tool_not_found
-  defp classify_error(_), do: :tool_invalid_response
+  # For known classification atoms, pass them through unchanged so the
+  # strategy/runner can pattern-match on them. For arbitrary strings or
+  # other terms, pass them through as-is so the original error message
+  # reaches the journal and the LLM instead of being flattened to
+  # :tool_invalid_response.
+  defp preserve_error(reason) when is_binary(reason), do: reason
+  defp preserve_error(:timeout), do: :tool_timeout
+  defp preserve_error(:unavailable), do: :tool_unavailable
+  defp preserve_error(:auth_failed), do: :tool_auth_failed
+  defp preserve_error(:rate_limited), do: :tool_rate_limited
+  defp preserve_error(:not_found), do: :tool_not_found
+  defp preserve_error(reason) when is_atom(reason), do: reason
+  defp preserve_error(reason), do: inspect(reason)
+
 end

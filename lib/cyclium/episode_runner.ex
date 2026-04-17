@@ -590,6 +590,7 @@ defmodule Cyclium.EpisodeRunner do
   # Today ToolExec always classifies the reason into an atom before it
   # gets here. If that contract broadens in the future (e.g. tuples or
   # strings), update this function too.
+  defp format_error_reason(reason) when is_binary(reason), do: reason
   defp format_error_reason(reason) when is_atom(reason), do: to_string(reason)
 
   # Strip framework-injected internal args (keys prefixed with "_") so
