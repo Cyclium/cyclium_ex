@@ -55,5 +55,4 @@ defmodule Cyclium.Runner.Deferred do
     Cyclium.Episodes.update_status(episode_id, :canceled)
     :ok
   end
-
 end

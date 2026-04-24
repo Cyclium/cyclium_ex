@@ -753,9 +753,12 @@ def up do
   Cyclium.Migrations.V6.up()   # work_claims table for lease-based coordination
   # ...V7 through V13...
   Cyclium.Migrations.V14.up()  # trigger_requests table for deferred execution
+  # ...V15 through V18...
+  Cyclium.Migrations.V19.up()  # SQL Server: convert legacy TEXT columns to nvarchar(max)
 end
 
 def down do
+  Cyclium.Migrations.V19.down()
   Cyclium.Migrations.V14.down()
   # ...V13 through V7...
   Cyclium.Migrations.V6.down()
@@ -766,6 +769,13 @@ def down do
   Cyclium.Migrations.V1.down()
 end
 ```
+
+> **Authoring migrations:** do not use bare `:text`. On `Ecto.Adapters.Tds` it
+> emits SQL Server's legacy non-Unicode `TEXT` type, which silently replaces
+> emoji and other non-CP1252 characters with `?`. Use `{:string, size: :max}`
+> (which becomes `nvarchar(max)` on Tds and `TEXT` on Postgres/SQLite), or
+> branch on `repo().__adapter__()` for finer control. V19 is the one-shot
+> repair migration for columns that were already declared `:text`.
 
 ### 3. Configure
 

@@ -2,7 +2,11 @@ defmodule Cyclium.Migrations.V2 do
   @moduledoc """
   V2: Episode logs table for LogProjector.
 
-  SQL Server 2017 compatible — uses :text (nvarchar(max)) for content.
+  Note: `content` was originally declared `:text`, which becomes `nvarchar(max)`
+  on Postgres but the legacy non-Unicode `TEXT` type on SQL Server. V19
+  converts it (and other affected columns) to `nvarchar(max)` on Tds so emoji
+  and non-CP1252 characters round-trip. New migrations must not use bare
+  `:text` — prefer `{:string, size: :max}` or adapter-branch.
   """
 
   use Ecto.Migration
