@@ -12,7 +12,10 @@ defmodule Cyclium.MixProject do
       dialyzer: [
         plt_add_apps: [:ecto, :ecto_sql, :phoenix_pubsub],
         plt_file: {:no_warn, "priv/plts/dialyzer.plt"}
-      ]
+      ],
+      name: "Cyclium",
+      description: description(),
+      package: package()
     ]
   end
 
@@ -34,6 +37,18 @@ defmodule Cyclium.MixProject do
       {:ecto_sqlite3, ">= 0.0.0", only: :test},
       {:stream_data, "~> 1.0"},
       {:dialyxir, "~> 1.4", only: [:dev, :test], runtime: false}
+    ]
+  end
+
+  defp description do
+    """
+    Cyclium is a framework for building and orchestrating long-running, stateful processes ("actors") in Elixir.
+    """
+  end
+
+  defp package do
+    [
+      licenses: ["MIT"]
     ]
   end
 end
