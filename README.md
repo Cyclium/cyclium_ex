@@ -1775,9 +1775,15 @@ All work claim operations (`EpisodeTask`, `Heartbeat`, `Runner.Deferred`, `Trigg
 
 A **stack** is one logical cyclium cluster that shares a database with other clusters but runs its own Elixir nodes (its own `Phoenix.PubSub`, its own in-memory `persistent_term` / ETS registries). Typical reasons to run multiple stacks against one schema: independent release cadences, blast-radius isolation, or partitioning actors across regions.
 
-### Stacks are cluster-level, not per-actor
+### The library contract is cluster-level
 
-There is no `stack:` option on an actor's DSL block. Instead, the host app's supervisor decides which actors to run on each cluster, and every actor started on that node inherits the node's `:stack_slug`:
+Cyclium itself exposes no per-actor DSL option for stacks. It reads `:stack_slug` once per cluster, stamps every row its actors produce with that value, and scopes Recovery to the matching slug. Which actors actually run on a given cluster is the consumer's decision, implemented in the host app's supervisor.
+
+Episodes, workflow instances, and deferred trigger requests are stamped with the current `source_stack` at insert time. `Cyclium.Recovery.sweep/1` and `Cyclium.Recovery.reconcile_workflows/1` read `:stack_slug` by default and only scan rows from their own stack — this prevents a crashed cluster's work from being re-driven on a cluster whose `persistent_term` / PubSub state doesn't know about it.
+
+### Partitioning actors across stacks
+
+The simplest approach is one actor list per deployment:
 
 ```elixir
 # On the stack_a cluster's host app:
@@ -1789,11 +1795,21 @@ config :cyclium, :stack_slug, System.get_env("CYCLIUM_STACK_SLUG")   # "stack_b"
 config :my_app, :cyclium_actors, [StackBOnlyActor, SharedActor]
 ```
 
-Episodes, workflow instances, and deferred trigger requests are stamped with the current `source_stack` at insert time. `Cyclium.Recovery.sweep/1` and `Cyclium.Recovery.reconcile_workflows/1` read `:stack_slug` by default and only scan rows from their own stack — this prevents a crashed cluster's work from being re-driven on a cluster whose `persistent_term` / PubSub state doesn't know about it.
+A richer approach declares the allowed stacks on each actor's child-spec and has the supervisor filter the list at init time — useful when the same release is deployed to every cluster and you want a single source of truth for which actor runs where:
 
-### Partitioning work
+```elixir
+config :my_app, :cyclium_actors, [
+  {SharedActor, []},
+  {StackAOnlyActor, stacks: [:stack_a]},
+  {CrossStackActor, stacks: [:stack_a, :stack_b]}
+]
 
-To keep an actor confined to one stack, simply omit it from the other cluster's `:cyclium_actors` supervisor list. Shared actors appear in both lists; stack-local actors appear in one. Since each cluster has its own node processes, PubSub, and `persistent_term` cache, a stack-local actor's strategy / budget / log-strategy lookups only exist on the cluster that supervises it — which is exactly why Recovery must be stack-scoped.
+# In the supervisor's init/1:
+stack = Application.get_env(:cyclium, :stack_slug)
+children = Enum.filter(configured_actors, &actor_runs_on_stack?(&1, stack))
+```
+
+Either pattern is fine — cyclium doesn't care how the list was built, only what actually gets supervised. Because each cluster has its own node processes, PubSub, and `persistent_term` cache, a stack-local actor's strategy / budget / log-strategy lookups only exist on the cluster that supervises it — which is exactly why Recovery must be stack-scoped.
 
 ### Runtime configuration
 

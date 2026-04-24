@@ -9,9 +9,13 @@ defmodule Cyclium.StackSlug do
 
   ## Stacks and supervised actors
 
-  Stacks are **cluster-level**, not per-actor. There is no `stack:` option
-  on an actor's DSL block. Instead, the cluster's host app partitions work
-  by choosing which actors to supervise on which node:
+  `Cyclium` itself exposes no per-actor DSL option for stacks — the slug
+  is read once per cluster and stamped onto every row that cluster's
+  actors produce. Which actors actually start on a given cluster is the
+  consumer's decision, implemented in their own supervisor.
+
+  The simplest pattern is to keep a stack-specific actor list per
+  deployment:
 
       # On the stack_a cluster's host app:
       config :cyclium, :stack_slug, "stack_a"
@@ -21,12 +25,25 @@ defmodule Cyclium.StackSlug do
       config :cyclium, :stack_slug, "stack_b"
       config :my_app, :cyclium_actors, [StackBOnlyActor, SharedActor]
 
-  Every actor the supervisor starts on a node inherits that node's
-  `:stack_slug`. Any episode, workflow instance, or deferred trigger
-  request those actors create is stamped with the slug at insertion time,
-  so Recovery on that cluster only sees its own work and does not
-  reschedule episodes whose in-memory state lives on another cluster's
-  nodes.
+  A richer pattern declares the allowed stacks on each actor's child-spec
+  and has the supervisor filter the list at init time:
+
+      config :my_app, :cyclium_actors, [
+        {SharedActor, []},
+        {StackAOnlyActor, stacks: [:stack_a]},
+        {CrossStackActor, stacks: [:stack_a, :stack_b]}
+      ]
+
+      # In the supervisor's init/1:
+      stack = Application.get_env(:cyclium, :stack_slug)
+      actors = Enum.filter(children, &actor_matches_stack?(&1, stack))
+
+  Either way, every actor that does end up starting inherits that
+  cluster's `:stack_slug`. Any episode, workflow instance, or deferred
+  trigger request those actors create is stamped with the slug at
+  insertion time, so Recovery on that cluster only sees its own work and
+  does not reschedule episodes whose in-memory state lives on another
+  cluster's nodes.
 
   ## Configuration
 
