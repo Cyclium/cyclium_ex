@@ -16,6 +16,7 @@ defmodule Cyclium.Schemas.WorkflowInstance do
     field(:conversation_id, :binary_id)
     field(:mode, :string, default: "live")
     field(:dry_run_opts, :map)
+    field(:source_stack, :string)
     field(:created_at, :utc_datetime)
     field(:updated_at, :utc_datetime)
   end
@@ -30,6 +31,7 @@ defmodule Cyclium.Schemas.WorkflowInstance do
       :conversation_id,
       :mode,
       :dry_run_opts,
+      :source_stack,
       :started_at,
       :finished_at,
       :created_at,

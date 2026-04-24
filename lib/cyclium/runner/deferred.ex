@@ -21,7 +21,7 @@ defmodule Cyclium.Runner.Deferred do
             actor_id: episode.actor_id,
             expectation_id: episode.expectation_id,
             source_node: Cyclium.NodeIdentity.name(),
-            source_stack: stack_slug(),
+            source_stack: Cyclium.StackSlug.current(:all),
             opts: Map.new(opts)
           })
 
@@ -56,8 +56,4 @@ defmodule Cyclium.Runner.Deferred do
     :ok
   end
 
-  defp stack_slug do
-    (Application.get_env(:cyclium, :stack_slug) || :all)
-    |> to_string()
-  end
 end

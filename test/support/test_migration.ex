@@ -35,11 +35,12 @@ defmodule Cyclium.Test.Migration do
       add(:started_at, :utc_datetime_usec, null: false)
       add(:finished_at, :utc_datetime_usec)
       add(:queued_at, :utc_datetime_usec)
-      add(:archived_at, :utc_datetime)
+      add(:archived_at, :utc_datetime_usec)
       add(:conversation_id, :binary_id)
       add(:parent_episode_id, :string)
       add(:mode, :string, default: "live")
       add(:dry_run_opts, :map)
+      add(:source_stack, :string)
     end
 
     create(index(:cyclium_episodes, [:actor_id, :expectation_id]))
@@ -49,6 +50,7 @@ defmodule Cyclium.Test.Migration do
     create(index(:cyclium_episodes, [:archived_at]))
     create(index(:cyclium_episodes, [:conversation_id]))
     create(index(:cyclium_episodes, [:parent_episode_id]))
+    create(index(:cyclium_episodes, [:source_stack, :status]))
 
     create table(:cyclium_episode_steps, primary_key: false) do
       add(:id, :binary_id, primary_key: true)
@@ -219,11 +221,13 @@ defmodule Cyclium.Test.Migration do
       add(:dry_run_opts, :map)
       add(:created_at, :utc_datetime)
       add(:updated_at, :utc_datetime)
+      add(:source_stack, :string)
     end
 
     create(index(:cyclium_workflow_instances, [:workflow_id, :status]))
     create(index(:cyclium_workflow_instances, [:status]))
     create(index(:cyclium_workflow_instances, [:conversation_id]))
+    create(index(:cyclium_workflow_instances, [:source_stack, :status]))
 
     create table(:cyclium_agent_definitions, primary_key: false) do
       add(:id, :binary_id, primary_key: true)

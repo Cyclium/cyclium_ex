@@ -362,4 +362,251 @@ defmodule Cyclium.RecoveryDbTest do
       assert counts.skipped == 0
     end
   end
+
+  describe "sweep with source_stack scoping" do
+    test "only restarts episodes from the configured stack, leaving other stacks alone" do
+      old = DateTime.add(DateTime.utc_now(), -300, :second)
+
+      mine =
+        insert_episode(%{
+          actor_id: "restart_actor",
+          expectation_id: "restartable_work",
+          status: :running,
+          started_at: old,
+          source_stack: "stack_a"
+        })
+
+      theirs =
+        insert_episode(%{
+          actor_id: "restart_actor",
+          expectation_id: "restartable_work",
+          status: :running,
+          started_at: old,
+          source_stack: "stack_b"
+        })
+
+      legacy =
+        insert_episode(%{
+          actor_id: "restart_actor",
+          expectation_id: "restartable_work",
+          status: :running,
+          started_at: old,
+          source_stack: nil
+        })
+
+      registry = %{"restart_actor" => RestartActor}
+
+      assert {:ok, counts} =
+               Recovery.sweep(
+                 actor_registry: registry,
+                 stale_after_ms: 1,
+                 source_stack: "stack_a"
+               )
+
+      # Own stack + legacy-NULL rows are in scope; foreign-stack rows are not.
+      assert counts.restarted == 2
+
+      enqueued = Cyclium.FakeRunner.enqueued_episodes()
+      assert mine.id in enqueued
+      assert legacy.id in enqueued
+      refute theirs.id in enqueued
+    end
+
+    test "sweep reads :cyclium :stack_slug by default" do
+      old = DateTime.add(DateTime.utc_now(), -300, :second)
+
+      mine =
+        insert_episode(%{
+          actor_id: "restart_actor",
+          expectation_id: "restartable_work",
+          status: :running,
+          started_at: old,
+          source_stack: "stack_c"
+        })
+
+      theirs =
+        insert_episode(%{
+          actor_id: "restart_actor",
+          expectation_id: "restartable_work",
+          status: :running,
+          started_at: old,
+          source_stack: "stack_a"
+        })
+
+      Application.put_env(:cyclium, :stack_slug, "stack_c")
+      on_exit(fn -> Application.delete_env(:cyclium, :stack_slug) end)
+
+      registry = %{"restart_actor" => RestartActor}
+
+      assert {:ok, counts} = Recovery.sweep(actor_registry: registry, stale_after_ms: 1)
+      assert counts.restarted == 1
+
+      enqueued = Cyclium.FakeRunner.enqueued_episodes()
+      assert mine.id in enqueued
+      refute theirs.id in enqueued
+    end
+
+    test "explicit source_stack: nil disables scoping (pre-migration behavior)" do
+      old = DateTime.add(DateTime.utc_now(), -300, :second)
+
+      for stack <- ["stack_a", "stack_b", nil] do
+        insert_episode(%{
+          actor_id: "restart_actor",
+          expectation_id: "restartable_work",
+          status: :running,
+          started_at: old,
+          source_stack: stack
+        })
+      end
+
+      # Even with a stack_slug env, explicit nil should fully unscope.
+      Application.put_env(:cyclium, :stack_slug, "stack_a")
+      on_exit(fn -> Application.delete_env(:cyclium, :stack_slug) end)
+
+      registry = %{"restart_actor" => RestartActor}
+
+      assert {:ok, counts} =
+               Recovery.sweep(
+                 actor_registry: registry,
+                 stale_after_ms: 1,
+                 source_stack: nil
+               )
+
+      assert counts.restarted == 3
+    end
+  end
+
+  describe "reconcile_workflows with source_stack scoping" do
+    test "only reconciles instances from the configured stack, incl. legacy NULL" do
+      now = DateTime.utc_now() |> DateTime.truncate(:second)
+
+      mine_ep =
+        insert_episode(%{
+          actor_id: "wf_actor",
+          expectation_id: "wf_step",
+          status: :done,
+          workflow_instance_id: mine_wf = Ecto.UUID.generate(),
+          workflow_step_id: "analyze",
+          started_at: DateTime.add(now, -60, :second)
+        })
+
+      theirs_ep =
+        insert_episode(%{
+          actor_id: "wf_actor",
+          expectation_id: "wf_step",
+          status: :done,
+          workflow_instance_id: theirs_wf = Ecto.UUID.generate(),
+          workflow_step_id: "analyze",
+          started_at: DateTime.add(now, -60, :second)
+        })
+
+      legacy_ep =
+        insert_episode(%{
+          actor_id: "wf_actor",
+          expectation_id: "wf_step",
+          status: :done,
+          workflow_instance_id: legacy_wf = Ecto.UUID.generate(),
+          workflow_step_id: "analyze",
+          started_at: DateTime.add(now, -60, :second)
+        })
+
+      Repo.insert!(%Cyclium.Schemas.WorkflowInstance{
+        id: mine_wf,
+        workflow_id: "test_workflow",
+        status: :running,
+        source_stack: "stack_a",
+        step_states: %{
+          "analyze" => %{"status" => "running", "episode_id" => mine_ep.id, "attempts" => 1}
+        },
+        started_at: now,
+        created_at: now
+      })
+
+      Repo.insert!(%Cyclium.Schemas.WorkflowInstance{
+        id: theirs_wf,
+        workflow_id: "test_workflow",
+        status: :running,
+        source_stack: "stack_b",
+        step_states: %{
+          "analyze" => %{"status" => "running", "episode_id" => theirs_ep.id, "attempts" => 1}
+        },
+        started_at: now,
+        created_at: now
+      })
+
+      Repo.insert!(%Cyclium.Schemas.WorkflowInstance{
+        id: legacy_wf,
+        workflow_id: "test_workflow",
+        status: :running,
+        source_stack: nil,
+        step_states: %{
+          "analyze" => %{"status" => "running", "episode_id" => legacy_ep.id, "attempts" => 1}
+        },
+        started_at: now,
+        created_at: now
+      })
+
+      Cyclium.Bus.subscribe()
+
+      assert {:ok, counts} = Recovery.reconcile_workflows(source_stack: "stack_a")
+      assert counts.replayed == 2
+
+      # Own stack + legacy NULL instance replay
+      assert_receive {:bus, "episode.completed", %{workflow_instance_id: ^mine_wf}}
+      assert_receive {:bus, "episode.completed", %{workflow_instance_id: ^legacy_wf}}
+
+      # Foreign-stack instance should NOT replay
+      refute_receive {:bus, "episode.completed", %{workflow_instance_id: ^theirs_wf}}, 50
+    end
+  end
+
+  describe "Episodes.create stamps source_stack from app env" do
+    test "defaults source_stack from :cyclium :stack_slug" do
+      Application.put_env(:cyclium, :stack_slug, "stack_c")
+      on_exit(fn -> Application.delete_env(:cyclium, :stack_slug) end)
+
+      {:ok, episode} =
+        Cyclium.Episodes.create(%{
+          actor_id: "x",
+          expectation_id: "y",
+          trigger_type: :schedule,
+          status: :running,
+          started_at: DateTime.utc_now()
+        })
+
+      assert episode.source_stack == "stack_c"
+    end
+
+    test "caller-supplied source_stack wins over app env" do
+      Application.put_env(:cyclium, :stack_slug, "stack_c")
+      on_exit(fn -> Application.delete_env(:cyclium, :stack_slug) end)
+
+      {:ok, episode} =
+        Cyclium.Episodes.create(%{
+          actor_id: "x",
+          expectation_id: "y",
+          trigger_type: :schedule,
+          status: :running,
+          started_at: DateTime.utc_now(),
+          source_stack: "override"
+        })
+
+      assert episode.source_stack == "override"
+    end
+
+    test "no app env leaves source_stack nil" do
+      Application.delete_env(:cyclium, :stack_slug)
+
+      {:ok, episode} =
+        Cyclium.Episodes.create(%{
+          actor_id: "x",
+          expectation_id: "y",
+          trigger_type: :schedule,
+          status: :running,
+          started_at: DateTime.utc_now()
+        })
+
+      assert episode.source_stack == nil
+    end
+  end
 end

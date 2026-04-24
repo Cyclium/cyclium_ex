@@ -30,11 +30,11 @@ defmodule Cyclium.TriggerRequestsTest do
                  actor_id: "test_actor",
                  expectation_id: "test_exp",
                  source_node: "node-1",
-                 source_stack: "unity",
+                 source_stack: "stack_a",
                  opts: %{"resume" => true}
                })
 
-      assert request.source_stack == "unity"
+      assert request.source_stack == "stack_a"
       assert request.opts == %{"resume" => true}
     end
   end
@@ -52,10 +52,10 @@ defmodule Cyclium.TriggerRequestsTest do
     end
 
     test "scopes by source_stack when provided", %{episode: episode} do
-      {:ok, _} = create_trigger_request(episode, source_stack: "unity")
+      {:ok, _} = create_trigger_request(episode, source_stack: "stack_a")
 
-      assert {:ok, []} = TriggerRequests.fetch_pending(source_stack: "hatch")
-      assert {:ok, [_]} = TriggerRequests.fetch_pending(source_stack: "unity")
+      assert {:ok, []} = TriggerRequests.fetch_pending(source_stack: "stack_b")
+      assert {:ok, [_]} = TriggerRequests.fetch_pending(source_stack: "stack_a")
     end
 
     test "respects limit", %{episode: episode} do

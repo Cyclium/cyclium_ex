@@ -9,8 +9,19 @@ defmodule Cyclium.WorkflowInstances do
 
   def create(attrs) do
     %WorkflowInstance{}
-    |> WorkflowInstance.changeset(attrs)
+    |> WorkflowInstance.changeset(put_stack_slug(attrs))
     |> repo().insert()
+  end
+
+  defp put_stack_slug(attrs) when is_map(attrs) do
+    if Map.has_key?(attrs, :source_stack) or Map.has_key?(attrs, "source_stack") do
+      attrs
+    else
+      case Cyclium.StackSlug.current() do
+        nil -> attrs
+        slug -> Map.put(attrs, :source_stack, slug)
+      end
+    end
   end
 
   def get!(id) do

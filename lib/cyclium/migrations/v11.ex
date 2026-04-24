@@ -14,20 +14,37 @@ defmodule Cyclium.Migrations.V11 do
   use Ecto.Migration
 
   def up do
-    alter table(:cyclium_episodes) do
-      modify(:started_at, :utc_datetime_usec)
-      modify(:finished_at, :utc_datetime_usec)
-      modify(:queued_at, :utc_datetime_usec)
-      add(:workflow_step_no, :integer)
+    # SQLite stores datetimes as text and does not support ALTER COLUMN.
+    # The precision upgrade is meaningless there, so skip the modify block
+    # and just add the new column.
+    if sqlite?() do
+      alter table(:cyclium_episodes) do
+        add(:workflow_step_no, :integer)
+      end
+    else
+      alter table(:cyclium_episodes) do
+        modify(:started_at, :utc_datetime_usec)
+        modify(:finished_at, :utc_datetime_usec)
+        modify(:queued_at, :utc_datetime_usec)
+        add(:workflow_step_no, :integer)
+      end
     end
   end
 
   def down do
-    alter table(:cyclium_episodes) do
-      modify(:started_at, :utc_datetime)
-      modify(:finished_at, :utc_datetime)
-      modify(:queued_at, :utc_datetime)
-      remove(:workflow_step_no)
+    if sqlite?() do
+      alter table(:cyclium_episodes) do
+        remove(:workflow_step_no)
+      end
+    else
+      alter table(:cyclium_episodes) do
+        modify(:started_at, :utc_datetime)
+        modify(:finished_at, :utc_datetime)
+        modify(:queued_at, :utc_datetime)
+        remove(:workflow_step_no)
+      end
     end
   end
+
+  defp sqlite?, do: repo().__adapter__() == Ecto.Adapters.SQLite3
 end

@@ -10,8 +10,19 @@ defmodule Cyclium.Episodes do
 
   def create(attrs) do
     %Episode{}
-    |> Episode.changeset(attrs)
+    |> Episode.changeset(put_stack_slug(attrs))
     |> repo().insert()
+  end
+
+  defp put_stack_slug(attrs) when is_map(attrs) do
+    if Map.has_key?(attrs, :source_stack) or Map.has_key?(attrs, "source_stack") do
+      attrs
+    else
+      case Cyclium.StackSlug.current() do
+        nil -> attrs
+        slug -> Map.put(attrs, :source_stack, slug)
+      end
+    end
   end
 
   @doc """
@@ -261,12 +272,20 @@ defmodule Cyclium.Episodes do
   - Its most recent `EpisodeStep.created_at` is older than `stale_after_ms`, OR
   - It has no steps and its `started_at` is older than the threshold
 
+  ## Options
+
+    * `:source_stack` — restrict the scan to episodes created by this stack.
+      Pre-migration rows with `NULL` source_stack are included (treated as
+      "match any stack") to avoid orphaning legacy episodes. When omitted,
+      the scan is unscoped.
+
   Used by `Cyclium.Recovery.sweep/1` to find orphaned episodes after deploys.
   """
-  def list_stale_running(stale_after_ms) do
+  def list_stale_running(stale_after_ms, opts \\ []) do
     cutoff = DateTime.add(DateTime.utc_now(), -stale_after_ms, :millisecond)
+    source_stack = Keyword.get(opts, :source_stack)
 
-    stale_ids =
+    base =
       from(e in Episode,
         where: e.status == :running and is_nil(e.archived_at),
         left_join: s in EpisodeStep,
@@ -276,8 +295,17 @@ defmodule Cyclium.Episodes do
         select: e.id
       )
 
+    stale_ids = maybe_filter_source_stack(base, source_stack)
+
     from(e in Episode, where: e.id in subquery(stale_ids))
     |> repo().all()
+  end
+
+  defp maybe_filter_source_stack(query, nil), do: query
+
+  defp maybe_filter_source_stack(query, source_stack) do
+    slug = to_string(source_stack)
+    from(e in query, where: e.source_stack == ^slug or is_nil(e.source_stack))
   end
 
   @doc """

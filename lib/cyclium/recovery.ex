@@ -51,6 +51,9 @@ defmodule Cyclium.Recovery do
       Dynamic actors not in this map are resolved from the DB automatically.
     * `:resolve_policy` — `(episode -> :fail | :restart)` callback for custom
       policy resolution. Overrides `:actor_registry` if both are provided.
+    * `:source_stack` — restrict the sweep to episodes originated by this
+      stack. Defaults to `Application.get_env(:cyclium, :stack_slug)`. Pass
+      `nil` explicitly to sweep globally (single-stack mode).
 
   ## Examples
 
@@ -87,6 +90,7 @@ defmodule Cyclium.Recovery do
   """
   def sweep(opts \\ []) do
     stale_after_ms = Keyword.get(opts, :stale_after_ms, @default_stale_ms)
+    source_stack = Keyword.get(opts, :source_stack, Cyclium.StackSlug.current())
 
     resolve_policy =
       cond do
@@ -101,9 +105,11 @@ defmodule Cyclium.Recovery do
           &resolve_policy_from_registry(&1, %{})
       end
 
-    stale = Episodes.list_stale_running(stale_after_ms)
+    stale = Episodes.list_stale_running(stale_after_ms, source_stack: source_stack)
 
-    Logger.info("Recovery sweep found #{length(stale)} stale episode(s)")
+    Logger.info(
+      "Recovery sweep found #{length(stale)} stale episode(s) (stack=#{inspect(source_stack)})"
+    )
 
     results =
       Enum.map(stale, fn episode ->
@@ -253,13 +259,22 @@ defmodule Cyclium.Recovery do
   Should be called after `sweep/1` and after workflow configs are registered
   (compiled modules booted, dynamic workflows loaded).
 
+  ## Options
+
+    * `:source_stack` — restrict reconciliation to instances originated by
+      this stack. Defaults to `Application.get_env(:cyclium, :stack_slug)`.
+      Pass `nil` explicitly to reconcile globally.
+
   Returns `{:ok, %{replayed: n, skipped: n}}`.
   """
-  def reconcile_workflows do
+  def reconcile_workflows(opts \\ []) do
     repo = Cyclium.repo()
+    source_stack = Keyword.get(opts, :source_stack, Cyclium.StackSlug.current())
 
     instances =
-      repo.all(from(wi in WorkflowInstance, where: wi.status in [:running, :blocked]))
+      from(wi in WorkflowInstance, where: wi.status in [:running, :blocked])
+      |> filter_workflow_source_stack(source_stack)
+      |> repo.all()
 
     results =
       Enum.flat_map(instances, fn instance ->
@@ -313,6 +328,13 @@ defmodule Cyclium.Recovery do
     end
   rescue
     _ -> :skipped
+  end
+
+  defp filter_workflow_source_stack(query, nil), do: query
+
+  defp filter_workflow_source_stack(query, source_stack) do
+    slug = to_string(source_stack)
+    from(wi in query, where: wi.source_stack == ^slug or is_nil(wi.source_stack))
   end
 
   defp replay_terminal_event(event_type, instance, step_id, episode) do

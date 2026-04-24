@@ -1771,6 +1771,47 @@ When unconfigured and running in non-distributed mode (`:nonode@nohost`), a rand
 
 All work claim operations (`EpisodeTask`, `Heartbeat`, `Runner.Deferred`, `TriggerRequests.Poller`) use `Cyclium.NodeIdentity.name()` instead of raw `node()`.
 
+## Multi-Stack Deployments
+
+A **stack** is one logical cyclium cluster that shares a database with other clusters but runs its own Elixir nodes (its own `Phoenix.PubSub`, its own in-memory `persistent_term` / ETS registries). Typical reasons to run multiple stacks against one schema: independent release cadences, blast-radius isolation, or partitioning actors across regions.
+
+### Stacks are cluster-level, not per-actor
+
+There is no `stack:` option on an actor's DSL block. Instead, the host app's supervisor decides which actors to run on each cluster, and every actor started on that node inherits the node's `:stack_slug`:
+
+```elixir
+# On the stack_a cluster's host app:
+config :cyclium, :stack_slug, System.get_env("CYCLIUM_STACK_SLUG")   # "stack_a"
+config :my_app, :cyclium_actors, [StackAOnlyActor, SharedActor]
+
+# On the stack_b cluster's host app:
+config :cyclium, :stack_slug, System.get_env("CYCLIUM_STACK_SLUG")   # "stack_b"
+config :my_app, :cyclium_actors, [StackBOnlyActor, SharedActor]
+```
+
+Episodes, workflow instances, and deferred trigger requests are stamped with the current `source_stack` at insert time. `Cyclium.Recovery.sweep/1` and `Cyclium.Recovery.reconcile_workflows/1` read `:stack_slug` by default and only scan rows from their own stack — this prevents a crashed cluster's work from being re-driven on a cluster whose `persistent_term` / PubSub state doesn't know about it.
+
+### Partitioning work
+
+To keep an actor confined to one stack, simply omit it from the other cluster's `:cyclium_actors` supervisor list. Shared actors appear in both lists; stack-local actors appear in one. Since each cluster has its own node processes, PubSub, and `persistent_term` cache, a stack-local actor's strategy / budget / log-strategy lookups only exist on the cluster that supervises it — which is exactly why Recovery must be stack-scoped.
+
+### Runtime configuration
+
+For a single release that can be deployed into multiple stacks, drive the slug from an env var in `runtime.exs`:
+
+```elixir
+# runtime.exs
+config :cyclium, :stack_slug, System.get_env("CYCLIUM_STACK_SLUG")
+```
+
+Leaving `:stack_slug` unset (or `nil`) is the single-stack default: rows are stamped `NULL` and Recovery scans without a stack filter. Pre-migration rows with `NULL` `source_stack` are swept by any stack for one release so legacy episodes aren't orphaned — once all rows have been stamped, you can tighten Recovery by stamping a real slug on every cluster.
+
+### Related config
+
+- `:stack_slug` — identity of *this* cluster (stamps rows and scopes Recovery)
+- `:trigger_poll_source_stack` — separate filter on `TriggerRequests.Poller`: which stacks' deferred requests this full-mode node will pick up (often the same value as `:stack_slug`, but can be broader)
+- `Cyclium.StackSlug.current/0` — read the slug; returns `nil` when unset
+
 ## Trigger-Only Mode (Deferred Execution)
 
 In shared environments — dev machines on a common test DB, QC/sandbox instances, CI — running cyclium actors on every node leads to competing work claims and unpredictable execution. Conversely, disabling cyclium entirely on non-processing nodes leaves the UI hobbled: episodes never fire, statuses never update.
@@ -1800,11 +1841,11 @@ config :my_app, :cyclium_mode, :full          # :full | :trigger_only | :disable
 # On full-mode nodes: enable the poller
 config :cyclium, :trigger_poller, true
 config :cyclium, :trigger_poll_interval_ms, 5_000      # default
-config :cyclium, :trigger_poll_source_stack, "unity"   # nil = pick up all
+config :cyclium, :trigger_poll_source_stack, "stack_a"   # nil = pick up all
 
 # On trigger-only nodes: runner is set automatically
 # config :cyclium, :runner, Cyclium.Runner.Deferred
-# config :cyclium, :stack_slug, :unity
+# config :cyclium, :stack_slug, :stack_a
 ```
 
 ### Deployment scenarios
