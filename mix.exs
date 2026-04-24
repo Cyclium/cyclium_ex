@@ -48,7 +48,8 @@ defmodule Cyclium.MixProject do
 
   defp package do
     [
-      licenses: ["MIT"]
+      licenses: ["MIT"],
+      links: %{}
     ]
   end
 end
