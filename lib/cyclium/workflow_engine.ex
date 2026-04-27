@@ -393,6 +393,38 @@ defmodule Cyclium.WorkflowEngine do
   end
 
   defp start_workflow_instance(%Config{} = config, trigger_data, opts, state) do
+    subject_value = workflow_subject_value(config, trigger_data)
+    dedupe_key = workflow_instance_dedupe_key(config.workflow_id, subject_value)
+    owner_node = Cyclium.NodeIdentity.name()
+
+    case Cyclium.WorkClaims.gate_acquire(dedupe_key, owner_node,
+           lease_seconds: 60,
+           work_type: "workflow_instance"
+         ) do
+      {:ok, :passthrough} ->
+        do_create_workflow_instance(config, trigger_data, subject_value, opts, state)
+
+      {:ok, _claim} ->
+        result = do_create_workflow_instance(config, trigger_data, subject_value, opts, state)
+        Cyclium.WorkClaims.gate_complete(dedupe_key, owner_node)
+        result
+
+      {:error, :busy} ->
+        :telemetry.execute(
+          [:cyclium, :workflow, :duplicate_blocked],
+          %{count: 1},
+          %{
+            workflow_id: config.workflow_id,
+            subject_value: subject_value,
+            owner_node: owner_node
+          }
+        )
+
+        {:error, :duplicate_in_flight}
+    end
+  end
+
+  defp do_create_workflow_instance(%Config{} = config, trigger_data, subject_value, opts, state) do
     now = DateTime.utc_now()
     mode = Keyword.get(opts, :mode, :live)
 
@@ -418,6 +450,7 @@ defmodule Cyclium.WorkflowEngine do
       mode: to_string(mode),
       dry_run_opts: dry_run_opts,
       step_states: initial_step_states,
+      subject_value: subject_value,
       started_at: now,
       created_at: now,
       updated_at: now
@@ -443,6 +476,20 @@ defmodule Cyclium.WorkflowEngine do
       {:error, _} = err ->
         err
     end
+  end
+
+  defp workflow_subject_value(%Config{subject_key: nil}, _payload), do: "_"
+
+  defp workflow_subject_value(%Config{subject_key: key}, payload) when is_atom(key) do
+    case Map.get(payload, key) || Map.get(payload, to_string(key)) do
+      nil -> "_"
+      val -> to_string(val)
+    end
+  end
+
+  defp workflow_instance_dedupe_key(workflow_id, subject_value) do
+    stack = Cyclium.StackSlug.current() || "_"
+    "workflow:#{stack}:#{workflow_id}:#{subject_value}"
   end
 
   defp maybe_handle_episode_terminal(event_type, payload, state)

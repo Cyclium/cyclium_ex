@@ -222,12 +222,14 @@ defmodule Cyclium.Test.Migration do
       add(:created_at, :utc_datetime)
       add(:updated_at, :utc_datetime)
       add(:source_stack, :string)
+      add(:subject_value, :string, null: false, default: "_")
     end
 
     create(index(:cyclium_workflow_instances, [:workflow_id, :status]))
     create(index(:cyclium_workflow_instances, [:status]))
     create(index(:cyclium_workflow_instances, [:conversation_id]))
     create(index(:cyclium_workflow_instances, [:source_stack, :status]))
+    create(index(:cyclium_workflow_instances, [:workflow_id, :subject_value]))
 
     create table(:cyclium_agent_definitions, primary_key: false) do
       add(:id, :binary_id, primary_key: true)
