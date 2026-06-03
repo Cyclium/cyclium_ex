@@ -92,20 +92,26 @@ defmodule Cyclium.Recovery do
     stale_after_ms = Keyword.get(opts, :stale_after_ms, @default_stale_ms)
     source_stack = Keyword.get(opts, :source_stack, Cyclium.StackSlug.current())
 
+    actor_registry = Keyword.get(opts, :actor_registry, %{})
+
     resolve_policy =
       cond do
         Keyword.has_key?(opts, :resolve_policy) ->
           Keyword.fetch!(opts, :resolve_policy)
 
-        Keyword.has_key?(opts, :actor_registry) ->
-          registry = Keyword.fetch!(opts, :actor_registry)
-          &resolve_policy_from_registry(&1, registry)
-
         true ->
-          &resolve_policy_from_registry(&1, %{})
+          &resolve_policy_from_registry(&1, actor_registry)
       end
 
-    stale = Episodes.list_stale_running(stale_after_ms, source_stack: source_stack)
+    # Shuffle so every node claims a different episode first. Without this, all
+    # nodes wake on the same timer, see the same (unordered) stale list, and the
+    # node with the lowest DB latency wins the optimistic claim for episode #1,
+    # then #2, then the whole list — concentrating recovery on one node. A
+    # per-node shuffle decorrelates the claim order so wins spread across the
+    # cluster (the optimistic claim still guarantees exactly-once recovery).
+    stale =
+      Episodes.list_stale_running(stale_after_ms, source_stack: source_stack)
+      |> Enum.shuffle()
 
     Logger.info(
       "Recovery sweep found #{length(stale)} stale episode(s) (stack=#{inspect(source_stack)})"
@@ -115,7 +121,7 @@ defmodule Cyclium.Recovery do
       Enum.map(stale, fn episode ->
         case claim_episode(episode) do
           {:ok, claimed} ->
-            recover_episode(claimed, resolve_policy)
+            recover_episode(claimed, resolve_policy, actor_registry)
 
           {:error, _} ->
             :skipped
@@ -139,7 +145,7 @@ defmodule Cyclium.Recovery do
     {:ok, counts}
   end
 
-  defp recover_episode(episode, resolve_policy) do
+  defp recover_episode(episode, resolve_policy, actor_registry) do
     policy = resolve_policy.(episode)
 
     case policy do
@@ -152,7 +158,7 @@ defmodule Cyclium.Recovery do
 
         # Reset status to :running (clear the "recovering" phase)
         Episodes.update_status(episode.id, :running, phase: nil)
-        Cyclium.Mode.runner_for(episode.actor_id).enqueue(episode.id)
+        restart_enqueue(episode, actor_registry)
         :restarted
 
       :fail ->
@@ -176,6 +182,47 @@ defmodule Cyclium.Recovery do
         })
 
         :failed
+    end
+  end
+
+  # Hand a recovered :restart episode to its live actor process so it runs under
+  # `max_concurrent_episodes` + the actor's queue, rather than spawning directly
+  # under the local EpisodeSupervisor (which would bypass backpressure and let a
+  # single node run every recovered episode at once). Falls back to a direct
+  # runner enqueue when the actor process can't be located on this node —
+  # preserving the original behavior for actors not reachable from here.
+  defp restart_enqueue(episode, actor_registry) do
+    case actor_pid(episode.actor_id, actor_registry) do
+      nil ->
+        Cyclium.Mode.runner_for(episode.actor_id).enqueue(episode.id)
+
+      pid ->
+        send(pid, {:recover_episode, episode.id})
+    end
+  end
+
+  # Resolve the running actor process for an actor_id.
+  #
+  #   * Compiled actors are registered under their module name (the default
+  #     `name:` in `use Cyclium.Actor`), which the recovery `actor_registry`
+  #     maps from actor_id. Looked up locally via `Process.whereis/1`.
+  #   * Dynamic actors register globally as `:"cyclium_dynamic_<actor_id>"`.
+  #
+  # Returns `nil` when neither resolves — the caller then enqueues directly.
+  defp actor_pid(actor_id, actor_registry) do
+    compiled_actor_pid(Map.get(actor_registry, actor_id)) ||
+      dynamic_actor_pid(actor_id)
+  end
+
+  defp compiled_actor_pid(module) when is_atom(module) and not is_nil(module),
+    do: Process.whereis(module)
+
+  defp compiled_actor_pid(_), do: nil
+
+  defp dynamic_actor_pid(actor_id) do
+    case :global.whereis_name(:"cyclium_dynamic_#{actor_id}") do
+      :undefined -> nil
+      pid -> pid
     end
   end
 

@@ -87,7 +87,9 @@ needed.
 | Same trigger on N nodes | `dedupe_key` unique index | Exactly one episode created |
 | Same orphan on N nodes | Optimistic `UPDATE ... WHERE` | Exactly one node recovers it |
 | Archived episodes | Filtered unique index excludes `archived_at IS NOT NULL` | Re-triggering is not blocked by old runs |
-| Node with lower latency | Random jitter (0-200ms) | Winners distributed evenly over time |
+| New episode, node with lower latency | Random jitter (0-200ms) before insert | Winners distributed evenly over time |
+| Recovery, node with lower latency | Per-node shuffle of the stale list | Recovered episodes spread across the cluster, not piled on one node |
+| Recovered `:restart` execution | Routed through the actor's `max_concurrent_episodes` + queue | No thundering herd — recovered work runs at normal per-node capacity |
 
 ### Recovery sweep
 
@@ -104,6 +106,33 @@ needed.
 Policy resolution checks the compiled `:actor_registry` map first, then falls
 back to the `cyclium_agent_definitions` table for dynamic actors. Unknown actors
 default to `:fail`.
+
+### Avoiding recovery concentration on one node
+
+A naive sweep can pile all recovered work onto a single node, because every node
+wakes on the same timer and races to claim the same stale list. Cyclium guards
+against this on two axes:
+
+- **Claim distribution.** Each node **shuffles** its stale list before claiming.
+  Without this, all nodes iterate the same (unordered) list and the node with the
+  lowest DB latency wins the optimistic claim for episode #1, then #2, then the
+  whole list. Shuffling decorrelates the claim order so wins spread roughly evenly
+  across the cluster — the optimistic `UPDATE … WHERE` still guarantees
+  exactly-once recovery.
+- **Execution backpressure.** A `:restart` is handed to the actor's *live process*
+  via `{:recover_episode, id}`, so it runs under the actor's
+  `max_concurrent_episodes` and in-memory queue — exactly like a normal trigger.
+  This prevents a node that still wins a lopsided share of claims from spawning
+  every recovered episode at once (a thundering herd that bypasses backpressure).
+  Recovered episodes are **always queued, never dropped or shed**, since they
+  represent real in-flight work; they drain as active slots free up. If the actor
+  process can't be located on the sweeping node (no compiled module in the
+  `actor_registry`, or a dynamic actor that isn't running), recovery falls back to
+  a direct runner enqueue.
+
+For compiled actors, pass the `actor_registry` so recovery can address the live
+process by module name; dynamic actors are addressed by their global name
+automatically.
 
 ### Workflow reconciliation
 

@@ -432,6 +432,14 @@ defmodule Cyclium.Actor.Server do
     {:noreply, handle_episode_done(state, episode_id)}
   end
 
+  # Recovery hand-off: an already-created `:running` episode is being recovered
+  # (see `Cyclium.Recovery`). Route it through the actor's concurrency control so
+  # a node that wins many recovery claims doesn't bypass `max_concurrent_episodes`
+  # and bury itself with a thundering herd of orphaned episodes.
+  def handle_info({:recover_episode, episode_id}, state) do
+    {:noreply, enqueue_recovered(state, episode_id)}
+  end
+
   # Task process exit — the linked Task finished (normal or crash)
   def handle_info({:DOWN, _ref, :process, _pid, _reason}, state) do
     {:noreply, state}
@@ -963,6 +971,27 @@ defmodule Cyclium.Actor.Server do
 
       {:error, _} ->
         state
+    end
+  end
+
+  # Enqueue an already-created (recovered) episode under the actor's concurrency
+  # control. Unlike `enqueue_episode`, the episode row already exists — we only
+  # decide whether to run it now or hold it in the in-memory queue. Recovered
+  # episodes are always queued (never dropped/shed) when at capacity: they
+  # represent real in-flight work, and they drain via `handle_episode_done` as
+  # active slots free up.
+  defp enqueue_recovered(state, episode_id) do
+    cond do
+      MapSet.member?(state.active_episodes, episode_id) ->
+        # Already tracked (e.g. duplicate hand-off) — leave it be.
+        state
+
+      MapSet.size(state.active_episodes) < state.config.max_concurrent_episodes ->
+        runner(state.actor_id).enqueue(episode_id)
+        Map.update!(state, :active_episodes, &MapSet.put(&1, episode_id))
+
+      true ->
+        Map.update!(state, :queued_episodes, &:queue.in(episode_id, &1))
     end
   end
 

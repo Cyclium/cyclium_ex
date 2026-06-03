@@ -137,6 +137,77 @@ defmodule Cyclium.ActorTest do
     end
   end
 
+  describe "recovery hand-off ({:recover_episode, id})" do
+    setup do
+      start_supervised!(Cyclium.FakeRunner)
+      Cyclium.FakeRunner.reset()
+      Application.put_env(:cyclium, :runner, Cyclium.FakeRunner)
+      on_exit(fn -> Application.delete_env(:cyclium, :runner) end)
+      :ok
+    end
+
+    test "runs up to max_concurrent_episodes and queues the rest" do
+      # TestActor has max_concurrent_episodes(2)
+      {:ok, pid} = TestActor.start_link(name: :recover_actor_capacity)
+
+      for id <- ["ep-1", "ep-2", "ep-3"], do: send(pid, {:recover_episode, id})
+
+      state = :sys.get_state(pid)
+
+      # Two enqueued under concurrency cap, one held in the in-memory queue
+      assert MapSet.size(state.active_episodes) == 2
+      assert :queue.len(state.queued_episodes) == 1
+      assert length(Cyclium.FakeRunner.enqueued_episodes()) == 2
+
+      GenServer.stop(pid)
+    end
+
+    test "queues recovered episodes even when overflow policy is :drop" do
+      # TestActor uses episode_overflow(:drop); recovered work must never be
+      # dropped — it represents real in-flight work.
+      {:ok, pid} = TestActor.start_link(name: :recover_actor_no_drop)
+
+      for id <- ["ep-1", "ep-2", "ep-3", "ep-4"], do: send(pid, {:recover_episode, id})
+
+      state = :sys.get_state(pid)
+      assert MapSet.size(state.active_episodes) == 2
+      assert :queue.len(state.queued_episodes) == 2
+
+      GenServer.stop(pid)
+    end
+
+    test "draining a queued episode enqueues the next one" do
+      {:ok, pid} = TestActor.start_link(name: :recover_actor_drain)
+
+      for id <- ["ep-1", "ep-2", "ep-3"], do: send(pid, {:recover_episode, id})
+
+      # Complete one active episode — the queued one should be promoted
+      [active_id | _] = :sys.get_state(pid).active_episodes |> MapSet.to_list()
+      send(pid, {:episode_completed, active_id})
+
+      state = :sys.get_state(pid)
+      assert MapSet.size(state.active_episodes) == 2
+      assert :queue.is_empty(state.queued_episodes)
+      assert length(Cyclium.FakeRunner.enqueued_episodes()) == 3
+
+      GenServer.stop(pid)
+    end
+
+    test "ignores a duplicate hand-off for an already-active episode" do
+      {:ok, pid} = TestActor.start_link(name: :recover_actor_dedup)
+
+      send(pid, {:recover_episode, "ep-1"})
+      send(pid, {:recover_episode, "ep-1"})
+
+      state = :sys.get_state(pid)
+      assert MapSet.size(state.active_episodes) == 1
+      assert :queue.is_empty(state.queued_episodes)
+      assert length(Cyclium.FakeRunner.enqueued_episodes()) == 1
+
+      GenServer.stop(pid)
+    end
+  end
+
   describe "filter matching" do
     test "empty filter matches everything" do
       exp = %Cyclium.Expectation{
