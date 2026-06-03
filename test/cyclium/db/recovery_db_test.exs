@@ -80,6 +80,30 @@ defmodule Cyclium.RecoveryDbTest do
       assert failed.error_class == "orphaned"
     end
 
+    test "episode.failed Bus payload includes error_class and error_detail" do
+      episode =
+        insert_episode(%{
+          actor_id: "restart_actor",
+          expectation_id: "not_restartable",
+          status: :running,
+          started_at: DateTime.add(DateTime.utc_now(), -300, :second)
+        })
+
+      Cyclium.Bus.subscribe("episode.failed")
+
+      assert {:ok, _} =
+               Recovery.sweep(
+                 actor_registry: %{"restart_actor" => RestartActor},
+                 stale_after_ms: 1
+               )
+
+      assert_receive {:bus, "episode.failed", payload}
+      assert payload.episode_id == episode.id
+      assert payload.error_class == "orphaned"
+      assert is_map(payload.error_detail)
+      assert payload.error_detail["reason"] =~ "recovery"
+    end
+
     test "fails episode when actor_id not in registry and not in DB" do
       insert_episode(%{
         actor_id: "unknown_actor",

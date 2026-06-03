@@ -64,18 +64,22 @@ defmodule Cyclium.EpisodeTask do
           "[Cyclium.EpisodeTask] Episode #{episode_id} crashed: #{message}\n#{stacktrace}"
         )
 
+        error_detail = %{
+          "exception" => message,
+          "stacktrace" => stacktrace |> String.slice(0, 4000)
+        }
+
         Cyclium.Episodes.update_status(episode_id, :failed,
           error_class: "crash",
-          error_detail: %{
-            "exception" => message,
-            "stacktrace" => stacktrace |> String.slice(0, 4000)
-          }
+          error_detail: error_detail
         )
 
         Cyclium.Bus.broadcast("episode.failed", %{
           episode_id: episode_id,
           actor_id: episode.actor_id,
-          status: :failed
+          status: :failed,
+          error_class: "crash",
+          error_detail: error_detail
         })
 
         Cyclium.WorkClaims.gate_fail(episode.dedupe_key, Cyclium.NodeIdentity.name(), %{
@@ -102,15 +106,19 @@ defmodule Cyclium.EpisodeTask do
         "[Cyclium.EpisodeTask] Episode #{episode_id} still running at task exit — marking failed"
       )
 
+      error_detail = %{"reason" => "Task exited while episode still running"}
+
       Cyclium.Episodes.update_status(episode_id, :failed,
         error_class: "process_terminated",
-        error_detail: %{"reason" => "Task exited while episode still running"}
+        error_detail: error_detail
       )
 
       Cyclium.Bus.broadcast("episode.failed", %{
         episode_id: episode_id,
         actor_id: current.actor_id,
-        status: :failed
+        status: :failed,
+        error_class: "process_terminated",
+        error_detail: error_detail
       })
 
       Cyclium.WorkClaims.gate_fail(current.dedupe_key, Cyclium.NodeIdentity.name(), %{

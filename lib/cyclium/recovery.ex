@@ -168,15 +168,19 @@ defmodule Cyclium.Recovery do
           cyclium_expectation_id: episode.expectation_id
         )
 
+        error_detail = %{"reason" => "Server restart recovery — policy: fail"}
+
         Episodes.update_status(episode.id, :failed,
           error_class: "orphaned",
-          error_detail: %{"reason" => "Server restart recovery — policy: fail"}
+          error_detail: error_detail
         )
 
         Cyclium.Bus.broadcast("episode.failed", %{
           episode_id: episode.id,
           actor_id: episode.actor_id,
           status: :failed,
+          error_class: "orphaned",
+          error_detail: error_detail,
           workflow_instance_id: episode.workflow_instance_id,
           workflow_step_id: episode.workflow_step_id
         })

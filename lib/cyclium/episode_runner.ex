@@ -71,13 +71,15 @@ defmodule Cyclium.EpisodeRunner do
       :budget_wall_exceeded ->
         elapsed = DateTime.diff(DateTime.utc_now(), started_at, :millisecond)
 
+        error_detail = %{
+          kind: "wall_time",
+          used_ms: elapsed,
+          max_ms: episode.budget["max_wall_ms"]
+        }
+
         journal_step!(episode, :episode_failed, %{
           error_class: "budget_exceeded",
-          error_detail: %{
-            kind: "wall_time",
-            used_ms: elapsed,
-            max_ms: episode.budget["max_wall_ms"]
-          }
+          error_detail: error_detail
         })
 
         Cyclium.Episodes.update_status(episode.id, :failed, error_class: "budget_exceeded")
@@ -86,6 +88,8 @@ defmodule Cyclium.EpisodeRunner do
           episode_id: episode.id,
           actor_id: episode.actor_id,
           status: :failed,
+          error_class: "budget_exceeded",
+          error_detail: error_detail,
           workflow_instance_id: episode.workflow_instance_id,
           workflow_step_id: episode.workflow_step_id
         })
@@ -119,6 +123,8 @@ defmodule Cyclium.EpisodeRunner do
           episode_id: episode.id,
           actor_id: episode.actor_id,
           status: :failed,
+          error_class: "process_terminated",
+          error_detail: detail,
           workflow_instance_id: episode.workflow_instance_id,
           workflow_step_id: episode.workflow_step_id
         })
@@ -336,14 +342,16 @@ defmodule Cyclium.EpisodeRunner do
       {:error, :budget_exceeded} = err ->
         current = Cyclium.Episodes.get!(episode.id)
 
+        error_detail = %{
+          turns_used: current.turns_used,
+          max_turns: (current.budget || %{})["max_turns"],
+          tokens_used: current.tokens_used,
+          max_tokens: (current.budget || %{})["max_tokens"]
+        }
+
         journal_step!(episode, :episode_failed, %{
           error_class: "budget_exceeded",
-          error_detail: %{
-            turns_used: current.turns_used,
-            max_turns: (current.budget || %{})["max_turns"],
-            tokens_used: current.tokens_used,
-            max_tokens: (current.budget || %{})["max_tokens"]
-          }
+          error_detail: error_detail
         })
 
         Cyclium.Episodes.update_status(episode.id, :failed, error_class: "budget_exceeded")
@@ -352,6 +360,8 @@ defmodule Cyclium.EpisodeRunner do
           episode_id: episode.id,
           actor_id: episode.actor_id,
           status: :failed,
+          error_class: "budget_exceeded",
+          error_detail: error_detail,
           workflow_instance_id: episode.workflow_instance_id,
           workflow_step_id: episode.workflow_step_id
         })
@@ -361,12 +371,14 @@ defmodule Cyclium.EpisodeRunner do
       {:error, :loop_detected} = err ->
         history = Process.get(:cyclium_step_history, [])
 
+        error_detail = %{
+          step_fingerprints: history,
+          message: "Repeating step cycle detected — strategy may be stuck"
+        }
+
         journal_step!(episode, :episode_failed, %{
           error_class: "loop_detected",
-          error_detail: %{
-            step_fingerprints: history,
-            message: "Repeating step cycle detected — strategy may be stuck"
-          }
+          error_detail: error_detail
         })
 
         Cyclium.Episodes.update_status(episode.id, :failed, error_class: "loop_detected")
@@ -375,6 +387,8 @@ defmodule Cyclium.EpisodeRunner do
           episode_id: episode.id,
           actor_id: episode.actor_id,
           status: :failed,
+          error_class: "loop_detected",
+          error_detail: error_detail,
           workflow_instance_id: episode.workflow_instance_id,
           workflow_step_id: episode.workflow_step_id
         })
@@ -458,13 +472,31 @@ defmodule Cyclium.EpisodeRunner do
     # Step 8: Bus event + telemetry
     bus_event = if final_status == :failed, do: "episode.failed", else: "episode.completed"
 
-    Cyclium.Bus.broadcast(bus_event, %{
+    base_payload = %{
       episode_id: episode.id,
       actor_id: episode.actor_id,
       status: final_status,
+      summary: converge_result.summary,
+      classification: converge_result.classification,
+      confidence: converge_result.confidence,
       workflow_instance_id: episode.workflow_instance_id,
       workflow_step_id: episode.workflow_step_id
-    })
+    }
+
+    payload =
+      if final_status == :failed do
+        Map.merge(base_payload, %{
+          error_class: "all_outputs_failed",
+          error_detail: %{
+            outputs_failed: count_outcomes(output_results, :error),
+            outputs_delivered: count_outcomes(output_results, :ok)
+          }
+        })
+      else
+        base_payload
+      end
+
+    Cyclium.Bus.broadcast(bus_event, payload)
 
     :telemetry.execute(
       [:cyclium, :episode, if(final_status == :failed, do: :failed, else: :completed)],
@@ -592,6 +624,8 @@ defmodule Cyclium.EpisodeRunner do
       episode_id: episode.id,
       actor_id: episode.actor_id,
       status: :failed,
+      error_class: error_class,
+      error_detail: error_detail,
       workflow_instance_id: episode.workflow_instance_id,
       workflow_step_id: episode.workflow_step_id
     })
@@ -857,7 +891,10 @@ defmodule Cyclium.EpisodeRunner do
       episode_id: episode.id,
       actor_id: episode.actor_id,
       step_no: step_no,
-      kind: kind
+      kind: kind,
+      tool_name: attrs[:tool_name],
+      error_class: attrs[:error_class],
+      cost_tokens: attrs[:cost_tokens]
     })
 
     inserted

@@ -4,7 +4,9 @@ defmodule Cyclium.ToolExec do
 
   Tool modules are resolved in order:
   1. Actor-registered tools (set via `tools` DSL in the actor module)
-  2. App-level capability registry (`config :cyclium, :capability_registry`)
+  2. App-level capability registry (`config :cyclium, :capability_registry`),
+     which may be a map (`%{capability => ToolModule}`) or a module implementing
+     `tool_for/1`.
   """
 
   require Logger
@@ -96,11 +98,13 @@ defmodule Cyclium.ToolExec do
   end
 
   defp resolve_from_registry(capability) do
-    # 2. App-level capability registry (backwards compatible)
-    registry = Application.get_env(:cyclium, :capability_registry)
-
-    if registry do
-      registry.tool_for(capability)
+    # 2. App-level capability registry. Accepts either a map
+    # (`%{capability => ToolModule}`, like `:output_adapters`/`:gatherer_registry`)
+    # or a module implementing `tool_for/1`.
+    case Application.get_env(:cyclium, :capability_registry) do
+      nil -> nil
+      registry when is_map(registry) -> Map.get(registry, capability)
+      registry when is_atom(registry) -> registry.tool_for(capability)
     end
   end
 
