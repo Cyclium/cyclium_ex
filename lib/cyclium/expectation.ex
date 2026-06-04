@@ -34,7 +34,8 @@ defmodule Cyclium.Expectation do
           service_levels: map() | nil,
           finding_enrichment: (map(), map() -> {:ok, map()} | :skip) | {module(), atom()} | nil,
           escalation_rules: map() | nil,
-          finding_ttl_seconds: pos_integer() | nil
+          finding_ttl_seconds: pos_integer() | nil,
+          loop_detection: boolean()
         }
 
   defstruct [
@@ -66,6 +67,7 @@ defmodule Cyclium.Expectation do
     service_levels: nil,
     finding_enrichment: nil,
     escalation_rules: nil,
-    finding_ttl_seconds: nil
+    finding_ttl_seconds: nil,
+    loop_detection: true
   ]
 end

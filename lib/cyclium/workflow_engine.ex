@@ -563,18 +563,41 @@ defmodule Cyclium.WorkflowEngine do
         state
 
       instance ->
-        config = resolve_config(instance.workflow_id, state)
+        step_state = Map.get(instance.step_states, step_id, %{})
+        event_episode_id = payload[:episode_id] || payload["episode_id"]
 
-        if config do
-          case event_type do
-            "episode.completed" ->
-              handle_step_completed(instance, config, step_id, payload, state)
+        cond do
+          # Idempotent: the step already completed. A duplicate terminal event
+          # (e.g. two nodes both running reconcile_workflows, or a replay racing
+          # the original) must not advance the workflow or re-start downstream
+          # steps a second time.
+          step_state["status"] == "done" ->
+            state
 
-            terminal when terminal in ["episode.failed", "episode.canceled", "episode.dropped"] ->
-              handle_step_failed(instance, config, step_id, payload, state)
-          end
-        else
-          state
+          # Terminal event for a superseded episode — the step has since been
+          # retried with a new episode_id, so this is a stale outcome. Ignore it.
+          is_binary(step_state["episode_id"]) and is_binary(event_episode_id) and
+              step_state["episode_id"] != event_episode_id ->
+            state
+
+          true ->
+            dispatch_terminal(instance, step_id, event_type, payload, state)
+        end
+    end
+  end
+
+  defp dispatch_terminal(instance, step_id, event_type, payload, state) do
+    case resolve_config(instance.workflow_id, state) do
+      nil ->
+        state
+
+      config ->
+        case event_type do
+          "episode.completed" ->
+            handle_step_completed(instance, config, step_id, payload, state)
+
+          terminal when terminal in ["episode.failed", "episode.canceled", "episode.dropped"] ->
+            handle_step_failed(instance, config, step_id, payload, state)
         end
     end
   end

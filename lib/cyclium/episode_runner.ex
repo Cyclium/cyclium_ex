@@ -174,16 +174,24 @@ defmodule Cyclium.EpisodeRunner do
   defp run_bounded(fun, remaining_ms) do
     metadata = Logger.metadata()
 
-    task = Task.async(fn ->
-      Logger.metadata(metadata)
-      fun.()
-    end)
+    task =
+      Task.async(fn ->
+        Logger.metadata(metadata)
+        fun.()
+      end)
 
     case Task.yield(task, remaining_ms) || Task.shutdown(task, :brutal_kill) do
-      {:ok, value} -> {:completed, value}
-      nil -> :timed_out
-      {:exit, {exception, stacktrace}} when is_exception(exception) -> reraise(exception, stacktrace)
-      {:exit, reason} -> exit(reason)
+      {:ok, value} ->
+        {:completed, value}
+
+      nil ->
+        :timed_out
+
+      {:exit, {exception, stacktrace}} when is_exception(exception) ->
+        reraise(exception, stacktrace)
+
+      {:exit, reason} ->
+        exit(reason)
     end
   end
 
@@ -446,11 +454,12 @@ defmodule Cyclium.EpisodeRunner do
         err
 
       {:error, :loop_detected} = err ->
-        history = Process.get(:cyclium_step_history, [])
+        fingerprints =
+          Process.get(:cyclium_step_history, []) |> Enum.map(&elem(&1, 0))
 
         error_detail = %{
-          step_fingerprints: history,
-          message: "Repeating step cycle detected — strategy may be stuck"
+          step_fingerprints: fingerprints,
+          message: "Repeating step cycle with no budget progress — strategy may be stuck"
         }
 
         journal_step!(episode, :episode_failed, %{
@@ -884,9 +893,9 @@ defmodule Cyclium.EpisodeRunner do
   defp check_loop(episode) do
     history = Process.get(:cyclium_step_history, [])
 
-    if repeating_cycle?(history) do
+    if loop_detection_enabled?(episode) and repeating_cycle?(history) do
       Logger.error(
-        "Loop detected: repeating step cycle in episode",
+        "Loop detected: repeating step cycle with no budget progress in episode",
         cyclium_episode_id: episode.id
       )
 
@@ -896,29 +905,56 @@ defmodule Cyclium.EpisodeRunner do
     end
   end
 
+  # Per-expectation off switch (`loop_detection: false`). Registered in
+  # persistent_term at actor boot; defaults to on when not registered.
+  defp loop_detection_enabled?(episode) do
+    with {:ok, actor} <- Cyclium.AtomGuard.existing_atom(episode.actor_id),
+         {:ok, exp} <- Cyclium.AtomGuard.existing_atom(episode.expectation_id) do
+      :persistent_term.get({:cyclium_expectation_loop_detection, actor, exp}, true)
+    else
+      _ -> true
+    end
+  end
+
   defp repeating_cycle?(history) when length(history) < 3, do: false
 
   defp repeating_cycle?(history) do
-    # Check for cycles of length 1, 2, 3, ... up to half the history
-    max_cycle = div(length(history), 2)
+    # A repeating action cycle is only treated as a stuck loop if the episode
+    # made NO budget progress (no tokens consumed) across the window. A strategy
+    # that legitimately repeats an action while consuming tokens (e.g. an LLM
+    # retry/refine loop) is making progress and is bounded by the token budget;
+    # killing it here would be a false positive. Token-free repetition (e.g. a
+    # pure polling loop) can still be turned off per-expectation with
+    # `loop_detection: false`.
+    cyclic?(Enum.map(history, &elem(&1, 0))) and no_token_progress?(history)
+  end
+
+  defp cyclic?(fingerprints) do
+    max_cycle = div(length(fingerprints), 2)
 
     Enum.any?(1..max_cycle, fn cycle_len ->
-      cycle = Enum.take(history, cycle_len)
-      repetitions = div(length(history), cycle_len)
+      cycle = Enum.take(fingerprints, cycle_len)
+      repetitions = div(length(fingerprints), cycle_len)
 
       repetitions >= 2 and
-        Enum.chunk_every(Enum.take(history, cycle_len * repetitions), cycle_len)
+        Enum.chunk_every(Enum.take(fingerprints, cycle_len * repetitions), cycle_len)
         |> Enum.all?(&(&1 == cycle))
     end)
   end
 
-  # Track by content hash — same step kind with different data is fine,
-  # only identical actions (same kind + same args) indicate a loop.
+  defp no_token_progress?(history) do
+    tokens = Enum.map(history, &elem(&1, 1))
+    Enum.max(tokens) == Enum.min(tokens)
+  end
+
+  # Track by content hash (same kind with different data is fine — only
+  # identical actions indicate a cycle) alongside a token-spend snapshot, so the
+  # loop check can tell "stuck" from "repeating-but-making-progress".
   defp record_step_kind(step_action) do
-    fingerprint = :erlang.phash2(step_action)
+    entry = {:erlang.phash2(step_action), Process.get(:cyclium_loop_tokens, 0)}
 
     history = Process.get(:cyclium_step_history, [])
-    Process.put(:cyclium_step_history, [fingerprint | Enum.take(history, @max_history - 1)])
+    Process.put(:cyclium_step_history, [entry | Enum.take(history, @max_history - 1)])
   end
 
   defp increment_turn(%Episode{} = episode) do
@@ -953,6 +989,10 @@ defmodule Cyclium.EpisodeRunner do
 
   defp increment_budget(%Episode{} = episode, token_cost) when is_integer(token_cost) do
     import Ecto.Query
+
+    # Running per-process token total, snapshotted by record_step_kind so loop
+    # detection can distinguish a stuck cycle from one that's consuming budget.
+    Process.put(:cyclium_loop_tokens, Process.get(:cyclium_loop_tokens, 0) + token_cost)
 
     from(e in Episode, where: e.id == ^episode.id)
     |> repo().update_all(inc: [tokens_used: token_cost])

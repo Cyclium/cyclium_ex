@@ -81,6 +81,36 @@ defmodule Cyclium.WorkflowEngineTest do
   end
 
   describe "step completion" do
+    test "a duplicate episode.completed is ignored (reconcile idempotence)", %{engine: engine} do
+      {:ok, instance_id} =
+        WorkflowEngine.start_workflow(engine, TestWorkflows.TwoStep, %{"order_id" => "ORD-DUP"})
+
+      validate_episode_id =
+        WorkflowInstances.get!(instance_id).step_states["validate"]["episode_id"]
+
+      completed = fn ->
+        Cyclium.Bus.broadcast("episode.completed", %{
+          episode_id: validate_episode_id,
+          actor_id: "fake_actor",
+          status: :done,
+          workflow_instance_id: instance_id,
+          workflow_step_id: "validate"
+        })
+
+        Process.sleep(50)
+      end
+
+      completed.()
+      enqueued_after_first = length(Cyclium.FakeRunner.enqueued_episodes())
+
+      # A second node's reconcile replay (or any duplicate) must not advance the
+      # workflow again or re-start the downstream step.
+      completed.()
+
+      assert length(Cyclium.FakeRunner.enqueued_episodes()) == enqueued_after_first
+      assert WorkflowInstances.get!(instance_id).step_states["validate"]["status"] == "done"
+    end
+
     test "completing a step advances the workflow", %{engine: engine} do
       {:ok, instance_id} =
         WorkflowEngine.start_workflow(engine, TestWorkflows.TwoStep, %{"order_id" => "ORD-200"})

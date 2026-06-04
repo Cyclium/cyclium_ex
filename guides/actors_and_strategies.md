@@ -133,6 +133,7 @@ only applies to event triggers.
 | `finding_enrichment` | `nil` | Post-raise enrichment callback. See the Findings guide |
 | `escalation_rules` | `nil` | Time-based severity escalation. See the Findings guide |
 | `finding_ttl_seconds` | `nil` | Default TTL for findings raised by this expectation |
+| `loop_detection` | `true` | Set `false` to disable stuck-loop detection (for strategies that legitimately poll a token-free action). See [Loop detection](#loop-detection) |
 
 **Actor ID convention:** Actor IDs are **atoms in-process** and **strings in the
 database**. Use `identifier/1` in the DSL to set a stable actor ID that survives
@@ -419,19 +420,34 @@ end
 
 ### Loop detection
 
-The episode runner automatically detects repeating step cycles. It fingerprints
-each `next_step` return value and watches for repeated patterns — a 1-step cycle
-(A, A, A), a 2-step cycle (A, B, A, B), or longer. When a cycle is detected, the
-episode fails immediately with `error_class: "loop_detected"`.
+The episode runner detects repeating step cycles. It fingerprints each
+`next_step` return value and watches for repeated patterns — a 1-step cycle
+(A, A, A), a 2-step cycle (A, B, A, B), or longer.
 
-This is a safety net, not a substitute for correct phase guards. If loop
-detection fires, it means your strategy has a bug — fix the root cause (usually a
-missing phase guard on `handle_result`).
+A repeating cycle is only treated as a stuck loop when the episode made **no
+budget progress** (no tokens consumed) across the window. A strategy that
+legitimately repeats an action while consuming tokens — an LLM retry/refine loop,
+for example — is making progress and is bounded by the token budget, so it is
+*not* flagged. When a true (token-free) loop is detected, the episode fails with
+`error_class: "loop_detected"`.
 
-Note that consecutive steps of the **same kind but different data** are fine —
-the fingerprint includes the full action payload via `:erlang.phash2/1`. A
-dispatch strategy that emits multiple `:observe` steps with different entity data
-won't trigger loop detection. Only identical actions repeated in a cycle will.
+Consecutive steps of the **same kind but different data** are also fine — the
+fingerprint includes the full action payload via `:erlang.phash2/1`, so a
+dispatch strategy emitting `:observe` steps with different entity data won't
+trip it. Only identical actions repeated in a cycle will.
+
+This is a safety net, not a substitute for correct phase guards — if it fires,
+usually a `handle_result` phase guard is missing. For a strategy that
+legitimately polls a token-free action (e.g. waiting on an external condition),
+disable it per expectation:
+
+```elixir
+expectation(:poll_until_ready,
+  strategy: MyApp.Strategies.Poller,
+  trigger: {:event, "resource.updated"},
+  loop_detection: false
+)
+```
 
 ## Episodes
 

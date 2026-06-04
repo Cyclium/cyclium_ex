@@ -290,6 +290,13 @@ defmodule Cyclium.Actor.Server do
         )
       end
 
+      # Registered unconditionally so an explicit `loop_detection: false` is
+      # recorded (the runner defaults to on when no entry exists).
+      :persistent_term.put(
+        {:cyclium_expectation_loop_detection, config.actor_id, exp.id},
+        exp.loop_detection != false
+      )
+
       if exp.strategy_config do
         :persistent_term.put(
           {:cyclium_strategy_config, config.actor_id, exp.id},
@@ -598,7 +605,8 @@ defmodule Cyclium.Actor.Server do
       service_levels: Keyword.get(opts, :service_levels),
       finding_enrichment: Keyword.get(opts, :finding_enrichment),
       escalation_rules: Keyword.get(opts, :escalation_rules),
-      finding_ttl_seconds: Keyword.get(opts, :finding_ttl_seconds)
+      finding_ttl_seconds: Keyword.get(opts, :finding_ttl_seconds),
+      loop_detection: Keyword.get(opts, :loop_detection, true)
     }
   end
 
