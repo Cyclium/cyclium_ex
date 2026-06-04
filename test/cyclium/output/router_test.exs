@@ -77,6 +77,39 @@ defmodule Cyclium.Output.RouterTest do
     end
   end
 
+  describe "deduplication via :key (framework-derived, re-run safe)" do
+    test "the same logical :key for the same episode dedupes (a re-run delivers once)", %{
+      episode: episode
+    } do
+      Application.put_env(:cyclium, :output_adapters, %{email: SuccessAdapter})
+      proposal = %OutputProposal{type: :email, key: "limit_alert", payload: %{to: "a@b.co"}}
+
+      assert {:ok, _} = Router.route(proposal, episode, %{})
+      # Re-running the same episode (same id/dedupe_key) derives the same key.
+      assert {:duplicate, _} = Router.route(proposal, episode, %{})
+    end
+
+    test "different logical :key values do not collide", %{episode: episode} do
+      Application.put_env(:cyclium, :output_adapters, %{email: SuccessAdapter})
+
+      assert {:ok, _} =
+               Router.route(%OutputProposal{type: :email, key: "a", payload: %{}}, episode, %{})
+
+      assert {:ok, _} =
+               Router.route(%OutputProposal{type: :email, key: "b", payload: %{}}, episode, %{})
+    end
+
+    test "an explicit dedupe_key takes precedence over :key", %{episode: episode} do
+      Application.put_env(:cyclium, :output_adapters, %{email: SuccessAdapter})
+      dk = "explicit:#{Ecto.UUID.generate()}"
+
+      proposal = %OutputProposal{type: :email, key: "ignored", dedupe_key: dk, payload: %{}}
+
+      assert {:ok, output} = Router.route(proposal, episode, %{})
+      assert output.dedupe_key == dk
+    end
+  end
+
   describe "deduplication" do
     test "duplicate dedupe_key returns {:duplicate, existing}", %{episode: episode} do
       Application.put_env(:cyclium, :output_adapters, %{email: SuccessAdapter})

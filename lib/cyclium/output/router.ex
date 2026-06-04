@@ -26,11 +26,12 @@ defmodule Cyclium.Output.Router do
           {:ok, %Output{}} | {:duplicate, %Output{}} | {:error, term()}
   def route(%OutputProposal{} = proposal, episode, _episode_ctx) do
     now = DateTime.utc_now() |> DateTime.truncate(:second)
+    dedupe_key = effective_dedupe_key(proposal, episode)
 
     attrs = %{
       episode_id: episode.id,
       type: to_string(proposal.type),
-      dedupe_key: proposal.dedupe_key,
+      dedupe_key: dedupe_key,
       status: :proposed,
       payload_redacted: proposal.payload,
       created_at: now
@@ -44,14 +45,32 @@ defmodule Cyclium.Output.Router do
 
       {:error, %Ecto.Changeset{} = cs} ->
         if has_unique_error?(cs, :dedupe_key) do
-          existing = repo().get_by!(Output, dedupe_key: proposal.dedupe_key)
-          emit_telemetry(:deduplicated, proposal)
+          existing = repo().get_by!(Output, dedupe_key: dedupe_key)
+          emit_telemetry(:deduplicated, proposal, %{dedupe_key: dedupe_key})
           {:duplicate, existing}
         else
           {:error, :changeset_invalid}
         end
     end
   end
+
+  # An explicit dedupe_key wins (full strategy control, e.g. Window-bucketed
+  # cross-episode dedup). Otherwise derive a re-run-stable key from the episode's
+  # own dedupe_key (or id, which is stable across recovery/steal re-runs of the
+  # same episode), the output type, and the strategy's logical `:key`.
+  defp effective_dedupe_key(%OutputProposal{dedupe_key: dk}, _episode)
+       when is_binary(dk) and dk != "",
+       do: dk
+
+  defp effective_dedupe_key(%OutputProposal{key: key, type: type}, episode)
+       when is_binary(key) and key != "" do
+    base = episode.dedupe_key || episode.id
+    digest = :crypto.hash(:sha256, "#{base}|#{type}|#{key}") |> Base.encode16(case: :lower)
+    "out:#{digest}"
+  end
+
+  # Neither given — no deduplication (matches prior behavior for a missing key).
+  defp effective_dedupe_key(%OutputProposal{dedupe_key: dk}, _episode), do: dk
 
   defp deliver_via_adapter(output, proposal, episode) do
     adapter = Cyclium.Output.Adapter.resolve(proposal.type)
@@ -133,7 +152,7 @@ defmodule Cyclium.Output.Router do
 
   defp classify_error(_), do: "adapter_error"
 
-  defp emit_telemetry(event, proposal, meta \\ %{}) do
+  defp emit_telemetry(event, proposal, meta) do
     :telemetry.execute(
       [:cyclium, :output, event],
       %{count: 1},

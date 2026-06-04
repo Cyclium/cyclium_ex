@@ -180,19 +180,37 @@ config (`config :cyclium, :finding_enrichment`) is supported as a fallback.
 ## Outputs
 
 Outputs are typed proposals produced during converge. They flow through the
-**Output Router**, which handles deduplication (via `dedupe_key`) and delivery
-through app-provided adapters.
+**Output Router**, which deduplicates and delivers through app-provided adapters.
+
+Deduplication keys off `cyclium_outputs.dedupe_key`, which only prevents
+double-delivery if the key is **stable across re-runs** of the same work
+(recovery restart, a stolen-lease re-run). There are two ways to supply it:
+
+- **`:key`** — a stable, domain-meaningful logical key. The framework derives
+  the actual dedupe_key from the episode's own dedupe_key/id + output type + this
+  key, so it's re-run-safe by construction. **Prefer this.**
+- **`:dedupe_key`** — an explicit, fully-controlled key. Use for
+  cross-episode/temporal dedup (e.g. one alert per 4-hour window via
+  `Cyclium.Window`), where you deliberately want a key *not* tied to a single
+  episode. You own its stability. Takes precedence over `:key` if both are set.
 
 ```elixir
-# In converge result:
+# In converge result — recommended: a logical key, made re-run-safe by the framework
 outputs: [
   %Cyclium.OutputProposal{
     type: :email,
-    dedupe_key: "alert:resource:123:#{Cyclium.Window.bucket(:h4, DateTime.utc_now())}",
+    key: "limit_alert",
     payload: %{to: "team@co.com", subject: "Resource 123 over limit"},
     requires_approval: false
   }
 ]
+
+# Explicit key for time-windowed cross-episode dedup
+%Cyclium.OutputProposal{
+  type: :email,
+  dedupe_key: "alert:resource:123:#{Cyclium.Window.bucket(:h4, DateTime.utc_now())}",
+  payload: %{to: "team@co.com"}
+}
 ```
 
 Register adapters in config:
