@@ -49,6 +49,37 @@ defmodule Cyclium.WorkflowEngineTest do
     end
   end
 
+  describe "resilience" do
+    test "a bus event that raises in a stage does not crash the engine", %{engine: engine} do
+      {:ok, instance_id} =
+        WorkflowEngine.start_workflow(engine, TestWorkflows.TwoStep, %{"order_id" => "ORD-RESIL"})
+
+      # workflow_step_id that is NOT an existing atom — handle_step_completed's
+      # String.to_existing_atom/1 raises ArgumentError. The engine must catch it,
+      # not crash (which would drop all in-memory timers).
+      ghost_step = "ghost_step_#{System.unique_integer([:positive])}"
+
+      Cyclium.Bus.broadcast("episode.completed", %{
+        episode_id: Ecto.UUID.generate(),
+        actor_id: "fake_actor",
+        status: :done,
+        workflow_instance_id: instance_id,
+        workflow_step_id: ghost_step
+      })
+
+      Process.sleep(50)
+
+      # Same pid — the GenServer survived rather than crashing and restarting.
+      assert Process.alive?(engine)
+
+      # And it still processes new work.
+      assert {:ok, _} =
+               WorkflowEngine.start_workflow(engine, TestWorkflows.TwoStep, %{
+                 "order_id" => "ORD-AFTER"
+               })
+    end
+  end
+
   describe "step completion" do
     test "completing a step advances the workflow", %{engine: engine} do
       {:ok, instance_id} =

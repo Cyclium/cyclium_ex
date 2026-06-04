@@ -97,6 +97,54 @@ defmodule Cyclium.WorkClaimsDbTest do
     end
   end
 
+  # ─── concurrent acquire (race safety) ──────────────────────────────────────
+
+  describe "EctoClaims.acquire/3 under concurrency" do
+    setup do
+      # Allow spawned tasks to share the test's sandboxed connection.
+      Ecto.Adapters.SQL.Sandbox.mode(Repo, {:shared, self()})
+      :ok
+    end
+
+    test "only one of many concurrent first-acquires wins; the rest get :busy (no crash)" do
+      key = unique_key()
+
+      results =
+        1..8
+        |> Task.async_stream(fn i -> EctoClaims.acquire(key, "node-#{i}") end,
+          max_concurrency: 8,
+          timeout: 5_000
+        )
+        |> Enum.map(fn {:ok, r} -> r end)
+
+      assert Enum.count(results, &match?({:ok, _}, &1)) == 1
+      assert Enum.count(results, &(&1 == {:error, :busy})) == 7
+      # Exactly one row exists — no duplicate, no raised ConstraintError.
+      assert Repo.aggregate(WorkClaim, :count) == 1
+    end
+
+    test "only one of many concurrent steals of an expired lease wins" do
+      key = unique_key()
+      insert_claim(%{dedupe_key: key, owner_node: "node@old", lease_until: past()})
+
+      results =
+        1..8
+        |> Task.async_stream(fn i -> EctoClaims.acquire(key, "node-#{i}") end,
+          max_concurrency: 8,
+          timeout: 5_000
+        )
+        |> Enum.map(fn {:ok, r} -> r end)
+
+      assert Enum.count(results, &match?({:ok, _}, &1)) == 1
+      assert Enum.count(results, &(&1 == {:error, :busy})) == 7
+
+      # The single surviving row has exactly one owner among the contenders.
+      claim = Repo.get_by!(WorkClaim, dedupe_key: key)
+      assert claim.state == :claimed
+      assert claim.owner_node =~ "node-"
+    end
+  end
+
   # ─── renew ────────────────────────────────────────────────────────────────
 
   describe "EctoClaims.renew/3" do

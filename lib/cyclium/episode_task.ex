@@ -238,9 +238,19 @@ defmodule Cyclium.EpisodeTask do
   defp atomize(nil), do: %{}
 
   defp atomize(map) when is_map(map) do
+    # Convert known keys (trigger struct fields) to atoms so struct/1 picks them
+    # up. A stored key with no existing atom is left as a string rather than
+    # crashing on String.to_existing_atom/1 — struct/1 ignores unknown keys
+    # either way. No atoms are minted (pure existing-atom lookup).
     Map.new(map, fn
-      {k, v} when is_binary(k) -> {String.to_existing_atom(k), v}
-      {k, v} -> {k, v}
+      {k, v} when is_binary(k) ->
+        case Cyclium.AtomGuard.existing_atom(k) do
+          {:ok, atom} -> {atom, v}
+          :error -> {k, v}
+        end
+
+      {k, v} ->
+        {k, v}
     end)
   end
 

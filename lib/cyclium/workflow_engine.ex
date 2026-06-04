@@ -146,9 +146,29 @@ defmodule Cyclium.WorkflowEngine do
 
   @impl true
   def handle_info({:bus, event_type, payload}, state) do
-    state = maybe_trigger_workflow(event_type, payload, state)
-    state = maybe_handle_episode_terminal(event_type, payload, state)
-    state = maybe_handle_conversation_resolved(event_type, payload, state)
+    # Each stage is guarded independently: a malformed payload, a strategy
+    # input_fn that raises, or an unexpected value must not crash the engine —
+    # doing so would drop all in-memory debounce/retry timers and silently stall
+    # every in-flight workflow. A failing stage logs and leaves state untouched.
+    state =
+      run_guarded(state, event_type, "trigger", &maybe_trigger_workflow(event_type, payload, &1))
+
+    state =
+      run_guarded(
+        state,
+        event_type,
+        "episode_terminal",
+        &maybe_handle_episode_terminal(event_type, payload, &1)
+      )
+
+    state =
+      run_guarded(
+        state,
+        event_type,
+        "conversation_resolved",
+        &maybe_handle_conversation_resolved(event_type, payload, &1)
+      )
+
     {:noreply, state}
   end
 
@@ -156,46 +176,69 @@ defmodule Cyclium.WorkflowEngine do
   def handle_info({:retry_step, instance_id, step_id}, state) do
     state = %{state | retry_timers: Map.delete(state.retry_timers, "#{instance_id}:#{step_id}")}
 
-    case WorkflowInstances.get(instance_id) do
-      nil ->
-        state
+    new_state =
+      run_guarded(state, :retry_step, "retry_step", fn s ->
+        case WorkflowInstances.get(instance_id) do
+          nil ->
+            s
 
-      %WorkflowInstance{status: status} when status in [:failed, :canceled, :done] ->
-        state
+          %WorkflowInstance{status: status} when status in [:failed, :canceled, :done] ->
+            s
 
-      instance ->
-        config = resolve_config(instance.workflow_id, state)
-
-        if config do
-          do_start_step(instance, config, step_id, state)
-        else
-          state
+          instance ->
+            config = resolve_config(instance.workflow_id, s)
+            if config, do: do_start_step(instance, config, step_id, s), else: s
         end
-    end
-    |> then(&{:noreply, &1})
+      end)
+
+    {:noreply, new_state}
   end
 
   @impl true
   def handle_info({:debounce_fire, key, workflow_id, payload}, state) do
     state = %{state | debounce_timers: Map.delete(state.debounce_timers, key)}
 
-    config = resolve_config(workflow_id, state)
+    new_state =
+      run_guarded(state, :debounce_fire, "debounce_fire", fn s ->
+        case resolve_config(workflow_id, s) do
+          nil ->
+            s
 
-    state =
-      if config do
-        case start_workflow_instance(config, payload, [], state) do
-          {:ok, _instance_id, new_state} -> new_state
-          {:error, _} -> state
+          config ->
+            case start_workflow_instance(config, payload, [], s) do
+              {:ok, _instance_id, new_state} -> new_state
+              {:error, _} -> s
+            end
         end
-      else
-        state
-      end
+      end)
 
-    {:noreply, state}
+    {:noreply, new_state}
   end
 
   @impl true
   def handle_info(_msg, state), do: {:noreply, state}
+
+  # Run a bus-event/timer stage, returning the original state if it raises or
+  # throws so one bad event can't take down the engine (which would drop all
+  # in-memory debounce/retry timers and stall in-flight workflows).
+  defp run_guarded(state, event_type, stage, fun) do
+    fun.(state)
+  rescue
+    e ->
+      Logger.error(
+        "[Cyclium.WorkflowEngine] #{stage} stage crashed on #{inspect(event_type)}: " <>
+          "#{Exception.message(e)}\n#{Exception.format_stacktrace(__STACKTRACE__)}"
+      )
+
+      state
+  catch
+    kind, reason ->
+      Logger.error(
+        "[Cyclium.WorkflowEngine] #{stage} stage #{kind} on #{inspect(event_type)}: #{inspect(reason)}"
+      )
+
+      state
+  end
 
   # --- Internal ---
 
