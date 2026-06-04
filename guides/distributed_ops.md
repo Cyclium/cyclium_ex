@@ -520,6 +520,38 @@ stamping a real slug on every cluster.
   value as `:stack_slug`, but can be broader)
 - `Cyclium.StackSlug.current/0` — read the slug; returns `nil` when unset
 
+## Per-node dedup identity (`:env`)
+
+Stack slug controls *which actors run* and is shared by all nodes of a stack —
+so two `:full` nodes of the same stack against the same DB still dedup each other
+out (only one wins each episode/claim). That's correct for a real cluster, but
+not when you want a developer's laptop and a hosted test node to **each run their
+own** episodes of the same actor against a shared dev database.
+
+`config :cyclium, :env` is an optional per-node dedup identity, orthogonal to the
+stack slug. When set, it's folded into framework-generated dedup keys — the
+episode `dedupe_key` (which the work-claim lease and derived output keys inherit)
+and explicit output keys — so each env creates and runs its own episodes and
+holds its own leases. When unset, keys are **byte-identical** to single-env
+behavior.
+
+```elixir
+# runtime.exs — set only on the isolated (dev) node; leave unset on the shared one
+config :cyclium, :env, System.get_env("CYCLIUM_ENV")
+```
+
+What `:env` deliberately does **not** do:
+
+- It does not affect actor placement (that's `:stack_slug`).
+- It does not scope **findings** — finding rows are shared and cross-visible
+  across envs (the dev node's findings are visible to the hosted node and vice
+  versa). Per-subject dedup via `Findings.recent?/2` therefore spans envs.
+- It does not scope the Recovery sweep, which still filters by `:stack_slug`. A
+  node may recover another env's orphaned episode (rare; recovery is typically
+  disabled on these shared-DB nodes anyway).
+
+`Cyclium.Env.current/0` reads the value; returns `nil` when unset.
+
 ## Trigger-Only Mode (deferred execution)
 
 In shared environments — dev machines on a common test DB, QC/sandbox instances,

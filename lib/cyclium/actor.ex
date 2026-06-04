@@ -1154,12 +1154,16 @@ defmodule Cyclium.Actor.Server do
         window -> Cyclium.Window.bucket(window, dt)
       end
 
-    "schedule:#{actor_id}:#{expectation.id}:#{bucket}"
+    # Env-scoped when CYCLIUM env is set, so two otherwise-identical :full nodes
+    # sharing a DB (e.g. a dev laptop and a hosted test node) each run their own
+    # episode instead of one deduping the other out. The episode unique index and
+    # the work-claim lease both key off this. Byte-identical when env is unset.
+    Cyclium.Env.scope_key("schedule:#{actor_id}:#{expectation.id}:#{bucket}")
   end
 
   defp generate_dedupe_key(actor_id, expectation, trigger_ref) do
     hash = :erlang.phash2(trigger_ref_to_map(trigger_ref))
-    "event:#{actor_id}:#{expectation.id}:#{hash}"
+    Cyclium.Env.scope_key("event:#{actor_id}:#{expectation.id}:#{hash}")
   end
 
   defp has_dedupe_violation?(changeset) do

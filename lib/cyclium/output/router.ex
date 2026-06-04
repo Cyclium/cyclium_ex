@@ -60,7 +60,10 @@ defmodule Cyclium.Output.Router do
   # same episode), the output type, and the strategy's logical `:key`.
   defp effective_dedupe_key(%OutputProposal{dedupe_key: dk}, _episode)
        when is_binary(dk) and dk != "",
-       do: dk
+       # Env-scope a strategy-supplied key too, so a dev node's output isn't
+       # deduped against the hosted node's. (The derived branch below already
+       # inherits env through episode.dedupe_key.)
+       do: Cyclium.Env.scope_key(dk)
 
   defp effective_dedupe_key(%OutputProposal{key: key, type: type}, episode)
        when is_binary(key) and key != "" do

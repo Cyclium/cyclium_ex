@@ -110,6 +110,44 @@ defmodule Cyclium.Output.RouterTest do
     end
   end
 
+  describe "env-scoped dedup keys" do
+    setup do
+      on_exit(fn -> Application.delete_env(:cyclium, :env) end)
+      :ok
+    end
+
+    test "an explicit dedupe_key is env-suffixed when CYCLIUM env is set", %{episode: episode} do
+      Application.put_env(:cyclium, :output_adapters, %{email: SuccessAdapter})
+      Application.put_env(:cyclium, :env, "dev-jane")
+
+      proposal = %OutputProposal{type: :email, dedupe_key: "alert:1", payload: %{}}
+      assert {:ok, output} = Router.route(proposal, episode, %{})
+      assert output.dedupe_key == "alert:1:dev-jane"
+    end
+
+    test "the same key under two envs does not collide (each node delivers its own)", %{
+      episode: episode
+    } do
+      Application.put_env(:cyclium, :output_adapters, %{email: SuccessAdapter})
+      proposal = %OutputProposal{type: :email, dedupe_key: "alert:1", payload: %{}}
+
+      Application.put_env(:cyclium, :env, "dev-jane")
+      assert {:ok, _} = Router.route(proposal, episode, %{})
+
+      Application.put_env(:cyclium, :env, "prod")
+      assert {:ok, _} = Router.route(proposal, episode, %{})
+    end
+
+    test "key is unchanged when env is unset", %{episode: episode} do
+      Application.delete_env(:cyclium, :env)
+      Application.put_env(:cyclium, :output_adapters, %{email: SuccessAdapter})
+
+      proposal = %OutputProposal{type: :email, dedupe_key: "alert:1", payload: %{}}
+      assert {:ok, output} = Router.route(proposal, episode, %{})
+      assert output.dedupe_key == "alert:1"
+    end
+  end
+
   describe "deduplication" do
     test "duplicate dedupe_key returns {:duplicate, existing}", %{episode: episode} do
       Application.put_env(:cyclium, :output_adapters, %{email: SuccessAdapter})
