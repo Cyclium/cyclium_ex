@@ -449,7 +449,7 @@ defmodule Cyclium.Strategy.Template.Interactive do
 
   defp parse_output(o) when is_map(o) do
     %OutputProposal{
-      type: String.to_atom(o["type"] || to_string(o[:type] || "unknown")),
+      type: Cyclium.AtomGuard.intern!(o["type"] || to_string(o[:type] || "unknown")),
       dedupe_key: o["dedupe_key"] || o[:dedupe_key] || "",
       payload: o["payload"] || o[:payload] || %{},
       requires_approval: o["requires_approval"] || o[:requires_approval] || false
@@ -532,11 +532,11 @@ defmodule Cyclium.Strategy.Template.Interactive do
     case plan.kind do
       :tool_call ->
         tc = plan.tool
-        {:tool_call, String.to_atom(tc.tool), String.to_atom(tc.action), tc.args}
+        {:tool_call, Cyclium.AtomGuard.intern!(tc.tool), Cyclium.AtomGuard.intern!(tc.action), tc.args}
 
       :multi_tool_plan ->
         step = Enum.at(plan.steps, state.current_step_index)
-        {:tool_call, String.to_atom(step.tool), String.to_atom(step.action), step.args}
+        {:tool_call, Cyclium.AtomGuard.intern!(step.tool), Cyclium.AtomGuard.intern!(step.action), step.args}
 
       :output_proposal ->
         {:output, plan.output.type, plan.output.payload}

@@ -1055,25 +1055,11 @@ defmodule Cyclium.WorkflowEngine do
     step_states
     |> Enum.filter(fn {_k, v} -> v["status"] == "done" and v["result"] end)
     |> Enum.map(fn {k, v} ->
-      atom_key =
-        try do
-          String.to_existing_atom(k)
-        rescue
-          ArgumentError -> String.to_atom(k)
-        end
+      atom_key = Cyclium.AtomGuard.intern!(k)
 
       result =
         v["result"]
-        |> Enum.map(fn {rk, rv} ->
-          atom_rk =
-            try do
-              String.to_existing_atom(rk)
-            rescue
-              ArgumentError -> String.to_atom(rk)
-            end
-
-          {atom_rk, rv}
-        end)
+        |> Enum.map(fn {rk, rv} -> {Cyclium.AtomGuard.intern!(rk), rv} end)
         |> Enum.into(%{})
 
       {atom_key, result}

@@ -153,14 +153,14 @@ defmodule Cyclium.DynamicActor.Loader do
     base =
       case defn.config do
         nil -> %{}
-        json when is_binary(json) -> Jason.decode!(json, keys: :atoms)
+        json when is_binary(json) -> Jason.decode!(json, keys: &Cyclium.AtomGuard.intern!/1)
         map when is_map(map) -> map
       end
 
     Map.merge(
       %{
-        actor_id: String.to_atom(defn.actor_id),
-        domain: if(defn.domain, do: String.to_atom(defn.domain)),
+        actor_id: Cyclium.AtomGuard.intern!(defn.actor_id),
+        domain: if(defn.domain, do: Cyclium.AtomGuard.intern!(defn.domain)),
         synthesizer: nil,
         max_concurrent_episodes: 5,
         episode_overflow: :queue
@@ -173,12 +173,12 @@ defmodule Cyclium.DynamicActor.Loader do
     raw =
       case defn.expectations do
         nil -> []
-        json when is_binary(json) -> Jason.decode!(json, keys: :atoms)
+        json when is_binary(json) -> Jason.decode!(json, keys: &Cyclium.AtomGuard.intern!/1)
         list when is_list(list) -> list
       end
 
     Enum.map(raw, fn exp ->
-      id = String.to_atom(to_string(exp[:id] || exp["id"]))
+      id = Cyclium.AtomGuard.intern!(to_string(exp[:id] || exp["id"]))
       opts = expectation_to_opts(exp, default_strategy)
       {id, opts}
     end)
@@ -234,7 +234,7 @@ defmodule Cyclium.DynamicActor.Loader do
   end
 
   defp to_atom(val) when is_atom(val), do: val
-  defp to_atom(val) when is_binary(val), do: String.to_atom(val)
+  defp to_atom(val) when is_binary(val), do: Cyclium.AtomGuard.intern!(val)
 
   defp validate_strategy_outputs(%AgentDefinition{} = defn) do
     strategy_config =

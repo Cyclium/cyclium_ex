@@ -46,13 +46,7 @@ defmodule Cyclium.DynamicWorkflow.InputResolver do
         rest = String.slice(path, 6..-1//1)
         [step_id | path_parts] = String.split(rest, ".")
 
-        step_key =
-          try do
-            String.to_existing_atom(step_id)
-          rescue
-            ArgumentError -> String.to_atom(step_id)
-          end
-
+        step_key = Cyclium.AtomGuard.intern!(step_id)
         step_result = Map.get(prior || %{}, step_key, %{})
         get_nested(step_result, path_parts)
 

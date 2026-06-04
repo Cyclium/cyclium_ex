@@ -192,7 +192,7 @@ defmodule Cyclium.Strategy.Template.ObserveClassifyConverge do
 
           subject_id_key && is_map(state.gathered_data) ->
             state.gathered_data[subject_id_key] ||
-              state.gathered_data[String.to_atom(subject_id_key)]
+              atom_key_lookup(state.gathered_data, subject_id_key)
 
           true ->
             episode_ctx.episode_id
@@ -203,7 +203,7 @@ defmodule Cyclium.Strategy.Template.ObserveClassifyConverge do
       severity =
         case classification["severity"] do
           s when is_atom(s) -> s
-          s when is_binary(s) -> String.to_atom(s)
+          s when is_binary(s) -> Cyclium.AtomGuard.intern!(s)
           _ -> :low
         end
 
@@ -225,6 +225,17 @@ defmodule Cyclium.Strategy.Template.ObserveClassifyConverge do
       []
     end
   end
+
+  # Look up `key` (a string) in `map` under its atom form, without minting a
+  # new atom — a freshly minted atom could never be an existing key anyway.
+  defp atom_key_lookup(map, key) when is_binary(key) do
+    case Cyclium.AtomGuard.existing_atom(key) do
+      {:ok, atom} -> Map.get(map, atom)
+      :error -> nil
+    end
+  end
+
+  defp atom_key_lookup(_map, _key), do: nil
 
   defp build_finding_key(finding_config, subject_id, episode_ctx) do
     case finding_config["finding_key_template"] do

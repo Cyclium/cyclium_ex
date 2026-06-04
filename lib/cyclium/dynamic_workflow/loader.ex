@@ -104,15 +104,15 @@ defmodule Cyclium.DynamicWorkflow.Loader do
     # Build step configs and input maps
     {step_configs, input_maps} =
       Enum.reduce(steps_raw, {%{}, %{}}, fn step, {configs, maps} ->
-        id = String.to_atom(step["id"])
+        id = Cyclium.AtomGuard.intern!(step["id"])
 
         step_config = %StepConfig{
           id: id,
           actor: step["actor_id"],
-          expectation: String.to_atom(step["expectation"]),
+          expectation: Cyclium.AtomGuard.intern!(step["expectation"]),
           input_fn: nil,
           input_map: step["input_map"],
-          depends_on: Enum.map(step["depends_on"] || [], &String.to_atom/1),
+          depends_on: Enum.map(step["depends_on"] || [], &Cyclium.AtomGuard.intern!/1),
           requires_approval: step["requires_approval"] || false
         }
 
@@ -127,8 +127,8 @@ defmodule Cyclium.DynamicWorkflow.Loader do
       steps_raw
       |> Enum.filter(& &1["failure_policy"])
       |> Enum.map(fn step ->
-        id = String.to_atom(step["id"])
-        policy = %{policy: String.to_atom(step["failure_policy"])}
+        id = Cyclium.AtomGuard.intern!(step["id"])
+        policy = %{policy: Cyclium.AtomGuard.intern!(step["failure_policy"])}
 
         policy =
           if step["max_step_attempts"],
@@ -150,7 +150,7 @@ defmodule Cyclium.DynamicWorkflow.Loader do
     top_policies_atomized =
       top_policies
       |> Enum.map(fn {k, v} ->
-        {String.to_atom(k), atomize_policy(v)}
+        {Cyclium.AtomGuard.intern!(k), atomize_policy(v)}
       end)
       |> Enum.into(%{})
 
@@ -176,7 +176,7 @@ defmodule Cyclium.DynamicWorkflow.Loader do
   end
 
   defp atomize_policy(policy) when is_map(policy) do
-    base = %{policy: String.to_atom(policy["policy"] || "abort")}
+    base = %{policy: Cyclium.AtomGuard.intern!(policy["policy"] || "abort")}
 
     base =
       if policy["max_step_attempts"],
