@@ -40,6 +40,7 @@ defmodule Cyclium.Schemas.Episode do
     field(:mode, :string, default: "live")
     field(:dry_run_opts, :map)
     field(:source_stack, :string)
+    field(:source_env, :string)
 
     has_many(:steps, Cyclium.Schemas.EpisodeStep)
     has_many(:checkpoints, Cyclium.Schemas.EpisodeCheckpoint)
@@ -79,7 +80,8 @@ defmodule Cyclium.Schemas.Episode do
       :parent_episode_id,
       :mode,
       :dry_run_opts,
-      :source_stack
+      :source_stack,
+      :source_env
     ])
     |> validate_required([:actor_id, :expectation_id, :trigger_type, :status, :started_at])
     |> unique_constraint(:dedupe_key, name: :cyclium_episodes_dedupe_key_index)

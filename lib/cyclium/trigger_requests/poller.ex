@@ -25,17 +25,22 @@ defmodule Cyclium.TriggerRequests.Poller do
     interval = Keyword.get(opts, :interval_ms, default_interval())
     batch_size = Keyword.get(opts, :batch_size, @default_batch_size)
     source_stack = Keyword.get(opts, :source_stack)
+    # Defaults to this node's env so a full node only claims its own env's
+    # deferred requests (strict equality). Override via :trigger_poll_source_env.
+    source_env = Keyword.get(opts, :source_env, Cyclium.Env.current())
 
     state = %{
       interval: interval,
       batch_size: batch_size,
-      source_stack: source_stack
+      source_stack: source_stack,
+      source_env: source_env
     }
 
     schedule_poll(interval)
 
     Logger.info(
-      "TriggerRequests.Poller started (interval=#{interval}ms, stack=#{inspect(source_stack)})"
+      "TriggerRequests.Poller started (interval=#{interval}ms, " <>
+        "stack=#{inspect(source_stack)}, env=#{inspect(source_env)})"
     )
 
     {:ok, state}
@@ -54,8 +59,10 @@ defmodule Cyclium.TriggerRequests.Poller do
   defp poll(state) do
     node_name = Cyclium.NodeIdentity.name()
 
+    # source_env is always passed (including nil → default env) so env scoping
+    # is never silently dropped; source_stack stays opt-in (nil = any stack).
     fetch_opts =
-      [limit: state.batch_size] ++
+      [limit: state.batch_size, source_env: state.source_env] ++
         if(state.source_stack, do: [source_stack: state.source_stack], else: [])
 
     {:ok, requests} = Cyclium.TriggerRequests.fetch_pending(fetch_opts)

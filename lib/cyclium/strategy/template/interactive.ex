@@ -73,8 +73,8 @@ defmodule Cyclium.Strategy.Template.Interactive do
   end
 
   def next_step(%{phase: :validate} = state, _episode_ctx) do
-    # Validation is synchronous — run in next_step and transition via :observe
-    # (not :checkpoint, which doesn't call handle_result in the runner)
+    # Validation is synchronous — run it here and transition via :observe (which
+    # journals the decision as an observation step).
     case PlanGate.evaluate(state.action_plan, build_policy_ctx(state), state.strategy_config) do
       :ok ->
         if should_preview?(state) do

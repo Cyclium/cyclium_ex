@@ -86,11 +86,18 @@ defmodule Cyclium.Recovery do
   @doc """
   Sweep for orphaned `:running` episodes and recover them.
 
+  Scoped to the node's stack (`source_stack`) and env (`source_env`,
+  defaulting to `Cyclium.Env.current()`) so a node only recovers orphans it
+  could have created. Override either via opts; `source_env` is matched by
+  strict equality, so an env-tagged node never resurrects the default node's
+  work.
+
   Returns `{:ok, %{restarted: n, failed: n, skipped: n}}`.
   """
   def sweep(opts \\ []) do
     stale_after_ms = Keyword.get(opts, :stale_after_ms, @default_stale_ms)
     source_stack = Keyword.get(opts, :source_stack, Cyclium.StackSlug.current())
+    source_env = Keyword.get(opts, :source_env, Cyclium.Env.current())
 
     actor_registry = Keyword.get(opts, :actor_registry, %{})
 
@@ -110,11 +117,15 @@ defmodule Cyclium.Recovery do
     # per-node shuffle decorrelates the claim order so wins spread across the
     # cluster (the optimistic claim still guarantees exactly-once recovery).
     stale =
-      Episodes.list_stale_running(stale_after_ms, source_stack: source_stack)
+      Episodes.list_stale_running(stale_after_ms,
+        source_stack: source_stack,
+        source_env: source_env
+      )
       |> Enum.shuffle()
 
     Logger.info(
-      "Recovery sweep found #{length(stale)} stale episode(s) (stack=#{inspect(source_stack)})"
+      "Recovery sweep found #{length(stale)} stale episode(s) " <>
+        "(stack=#{inspect(source_stack)} env=#{inspect(source_env)})"
     )
 
     results =
@@ -347,16 +358,22 @@ defmodule Cyclium.Recovery do
     * `:source_stack` — restrict reconciliation to instances originated by
       this stack. Defaults to `Application.get_env(:cyclium, :stack_slug)`.
       Pass `nil` explicitly to reconcile globally.
+    * `:source_env` — restrict reconciliation to instances originated by this
+      env, matched by strict equality. Defaults to `Cyclium.Env.current()`
+      (so each env reconciles only its own instances; legacy `NULL` rows belong
+      to the unset/default env).
 
   Returns `{:ok, %{replayed: n, skipped: n}}`.
   """
   def reconcile_workflows(opts \\ []) do
     repo = Cyclium.repo()
     source_stack = Keyword.get(opts, :source_stack, Cyclium.StackSlug.current())
+    source_env = Keyword.get(opts, :source_env, Cyclium.Env.current())
 
     instances =
       from(wi in WorkflowInstance, where: wi.status in [:running, :blocked])
       |> filter_workflow_source_stack(source_stack)
+      |> filter_workflow_source_env(source_env)
       |> repo.all()
 
     results =
@@ -419,6 +436,15 @@ defmodule Cyclium.Recovery do
     slug = to_string(source_stack)
     from(wi in query, where: wi.source_stack == ^slug or is_nil(wi.source_stack))
   end
+
+  # Strict equality, mirroring Episodes.list_stale_running/2: a NULL source_env
+  # belongs to the unset/default env, so an env-tagged node reconciles only its
+  # own instances. Defaults to Cyclium.Env.current() in reconcile_workflows/1.
+  defp filter_workflow_source_env(query, nil),
+    do: from(wi in query, where: is_nil(wi.source_env))
+
+  defp filter_workflow_source_env(query, env),
+    do: from(wi in query, where: wi.source_env == ^to_string(env))
 
   defp replay_terminal_event(event_type, instance, step_id, episode) do
     Logger.info("Replaying #{event_type} for stale workflow step",

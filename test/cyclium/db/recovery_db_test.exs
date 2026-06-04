@@ -530,6 +530,144 @@ defmodule Cyclium.RecoveryDbTest do
     end
   end
 
+  describe "sweep with source_env scoping" do
+    test "env is matched by strict equality — NULL/default rows are NOT recovered under a named env" do
+      old = DateTime.add(DateTime.utc_now(), -300, :second)
+
+      mine =
+        insert_episode(%{
+          actor_id: "restart_actor",
+          expectation_id: "restartable_work",
+          status: :running,
+          started_at: old,
+          source_env: "rc"
+        })
+
+      prod =
+        insert_episode(%{
+          actor_id: "restart_actor",
+          expectation_id: "restartable_work",
+          status: :running,
+          started_at: old,
+          source_env: nil
+        })
+
+      registry = %{"restart_actor" => RestartActor}
+
+      assert {:ok, counts} =
+               Recovery.sweep(
+                 actor_registry: registry,
+                 stale_after_ms: 1,
+                 source_env: "rc"
+               )
+
+      # Only the "rc" episode is in scope. The default-env (NULL) row belongs to
+      # the prod node and must be left alone — unlike source_stack, NULL != "rc".
+      assert counts.restarted == 1
+
+      enqueued = Cyclium.FakeRunner.enqueued_episodes()
+      assert mine.id in enqueued
+      refute prod.id in enqueued
+    end
+
+    test "the default env (no :cyclium :env) recovers only NULL-env rows" do
+      old = DateTime.add(DateTime.utc_now(), -300, :second)
+
+      prod =
+        insert_episode(%{
+          actor_id: "restart_actor",
+          expectation_id: "restartable_work",
+          status: :running,
+          started_at: old,
+          source_env: nil
+        })
+
+      rc =
+        insert_episode(%{
+          actor_id: "restart_actor",
+          expectation_id: "restartable_work",
+          status: :running,
+          started_at: old,
+          source_env: "rc"
+        })
+
+      # No :cyclium :env set → Cyclium.Env.current() is nil → scopes to is_nil.
+      registry = %{"restart_actor" => RestartActor}
+
+      assert {:ok, counts} = Recovery.sweep(actor_registry: registry, stale_after_ms: 1)
+      assert counts.restarted == 1
+
+      enqueued = Cyclium.FakeRunner.enqueued_episodes()
+      assert prod.id in enqueued
+      refute rc.id in enqueued
+    end
+
+    test "sweep reads :cyclium :env by default" do
+      old = DateTime.add(DateTime.utc_now(), -300, :second)
+
+      mine =
+        insert_episode(%{
+          actor_id: "restart_actor",
+          expectation_id: "restartable_work",
+          status: :running,
+          started_at: old,
+          source_env: "rc"
+        })
+
+      prod =
+        insert_episode(%{
+          actor_id: "restart_actor",
+          expectation_id: "restartable_work",
+          status: :running,
+          started_at: old,
+          source_env: nil
+        })
+
+      Application.put_env(:cyclium, :env, "rc")
+      on_exit(fn -> Application.delete_env(:cyclium, :env) end)
+
+      registry = %{"restart_actor" => RestartActor}
+
+      assert {:ok, counts} = Recovery.sweep(actor_registry: registry, stale_after_ms: 1)
+      assert counts.restarted == 1
+
+      enqueued = Cyclium.FakeRunner.enqueued_episodes()
+      assert mine.id in enqueued
+      refute prod.id in enqueued
+    end
+  end
+
+  describe "Episodes.create stamps source_env from app env" do
+    test "defaults source_env from :cyclium :env" do
+      Application.put_env(:cyclium, :env, "rc")
+      on_exit(fn -> Application.delete_env(:cyclium, :env) end)
+
+      {:ok, episode} =
+        Cyclium.Episodes.create(%{
+          actor_id: "a",
+          expectation_id: "e",
+          trigger_type: :schedule,
+          status: :running,
+          started_at: DateTime.utc_now() |> DateTime.truncate(:second)
+        })
+
+      assert episode.source_env == "rc"
+    end
+
+    test "leaves source_env nil when :cyclium :env is unset" do
+      {:ok, episode} =
+        Cyclium.Episodes.create(%{
+          actor_id: "a",
+          expectation_id: "e",
+          trigger_type: :schedule,
+          status: :running,
+          started_at: DateTime.utc_now() |> DateTime.truncate(:second)
+        })
+
+      assert is_nil(episode.source_env)
+    end
+  end
+
   describe "reconcile_workflows with source_stack scoping" do
     test "only reconciles instances from the configured stack, incl. legacy NULL" do
       now = DateTime.utc_now() |> DateTime.truncate(:second)

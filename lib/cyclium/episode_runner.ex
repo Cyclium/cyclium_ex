@@ -398,7 +398,15 @@ defmodule Cyclium.EpisodeRunner do
 
         {:checkpoint, phase_name} ->
           save_checkpoint(episode, phase_name, state)
-          do_loop(episode, strategy, state, started_at)
+
+          # Symmetric with :observe — hand the checkpoint to handle_result so the
+          # strategy can advance its phase. (Continuing with the *same* state
+          # would re-invoke next_step unchanged and loop.) Strategies that don't
+          # need to react can ignore it in their catch-all handle_result clause.
+          case strategy.handle_result(state, %EpisodeStep{kind: :checkpoint}, {:ok, phase_name}) do
+            {:ok, new_state} -> do_loop(episode, strategy, new_state, started_at)
+            {:abort, reason} -> abort_episode(episode, reason)
+          end
 
         {:output, type, payload} ->
           journal_step!(episode, :output_proposed, %{

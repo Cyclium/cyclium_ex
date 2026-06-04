@@ -64,10 +64,14 @@ defmodule Cyclium.Supervisor do
         []
       end
 
+    # source_env left unset here falls through to the poller's default of
+    # Cyclium.Env.current() (this node's env); set :trigger_poll_source_env only
+    # to poll a *different* env than the node runs as.
     poller_opts =
       [
         interval_ms: Application.get_env(:cyclium, :trigger_poll_interval_ms, 5_000),
-        source_stack: Application.get_env(:cyclium, :trigger_poll_source_stack)
+        source_stack: Application.get_env(:cyclium, :trigger_poll_source_stack),
+        source_env: Application.get_env(:cyclium, :trigger_poll_source_env)
       ]
       |> Enum.reject(fn {_k, v} -> is_nil(v) end)
 

@@ -8,16 +8,32 @@ defmodule Cyclium.Env do
     * **stack slug** selects *which actors run* (host-app placement) and scopes
       recovery — different stacks already run differently-named actors, so their
       dedup keys differ via `actor_id`.
-    * **env** distinguishes *otherwise-identical nodes* for dedup/claim purposes,
-      so two `:full` nodes running the same actor against the same DB (e.g. a
-      developer's laptop and a hosted test deployment) each create and run their
-      **own** episodes instead of one deduping the other out.
+    * **env** distinguishes *otherwise-identical nodes* so two `:full` nodes
+      running the same actors against the same DB (e.g. a developer's laptop and
+      a hosted test deployment, or an RC node sharing prod's DB) operate as
+      **independent worlds**: each creates and runs its own episodes, recovers
+      only its own orphans, and keeps its own findings.
 
-  When `env` is set, it's folded into framework-generated dedup keys (episode
-  dedupe_key — which the work-claim lease and derived output keys inherit — and
-  explicit output keys). When unset, keys are **byte-identical** to single-env
-  behavior. Findings are intentionally *not* env-scoped: their rows are shared
-  and cross-visible across envs, which is the desired behavior here.
+  When `env` is set it scopes work along three dimensions; when unset, behavior
+  is **byte-identical** to single-env operation (legacy `NULL` rows belong to the
+  unset/default env):
+
+    1. **Dedup/claim keys** — folded into the episode `dedupe_key` (which the
+       work-claim lease and derived output keys inherit) and explicit output
+       keys via `scope_key/1`.
+    2. **Recovery** — episodes and workflow instances carry `source_env`
+       (mirroring `source_stack`); `Cyclium.Recovery` only sweeps/reconciles its
+       own env, matched by **strict equality** so an env-tagged node never
+       resurrects the default node's work.
+    3. **Findings** — each env keeps its own active finding per key (the
+       `cyclium_findings.env` column + a `[finding_key, status, env]` unique
+       index); `Cyclium.Findings` reads and upserts are cordoned to the current
+       env.
+
+  An RC node configured as `:full` with recovery on, tagged `env: "rc"` and
+  sharing prod's DB, can therefore drive UI interactions and run actors fully
+  independently of the prod node (`env` unset) without either deduping,
+  recovering, or clearing the other's work.
 
   ## Configuration
 

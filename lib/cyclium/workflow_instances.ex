@@ -9,7 +9,7 @@ defmodule Cyclium.WorkflowInstances do
 
   def create(attrs) do
     %WorkflowInstance{}
-    |> WorkflowInstance.changeset(put_stack_slug(attrs))
+    |> WorkflowInstance.changeset(attrs |> put_stack_slug() |> put_source_env())
     |> repo().insert()
   end
 
@@ -20,6 +20,17 @@ defmodule Cyclium.WorkflowInstances do
       case Cyclium.StackSlug.current() do
         nil -> attrs
         slug -> Map.put(attrs, :source_stack, slug)
+      end
+    end
+  end
+
+  defp put_source_env(attrs) when is_map(attrs) do
+    if Map.has_key?(attrs, :source_env) or Map.has_key?(attrs, "source_env") do
+      attrs
+    else
+      case Cyclium.Env.current() do
+        nil -> attrs
+        env -> Map.put(attrs, :source_env, env)
       end
     end
   end

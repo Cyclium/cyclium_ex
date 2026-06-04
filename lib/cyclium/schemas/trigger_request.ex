@@ -13,6 +13,7 @@ defmodule Cyclium.Schemas.TriggerRequest do
     field(:expectation_id, :string)
     field(:source_node, :string)
     field(:source_stack, :string)
+    field(:source_env, :string)
     field(:status, Ecto.Enum, values: @statuses, default: :pending)
     field(:opts, :map, default: %{})
     field(:claimed_by, :string)
@@ -29,6 +30,7 @@ defmodule Cyclium.Schemas.TriggerRequest do
       :expectation_id,
       :source_node,
       :source_stack,
+      :source_env,
       :status,
       :opts,
       :claimed_by,

@@ -10,7 +10,7 @@ defmodule Cyclium.Episodes do
 
   def create(attrs) do
     %Episode{}
-    |> Episode.changeset(put_stack_slug(attrs))
+    |> Episode.changeset(attrs |> put_stack_slug() |> put_source_env())
     |> repo().insert()
   end
 
@@ -21,6 +21,17 @@ defmodule Cyclium.Episodes do
       case Cyclium.StackSlug.current() do
         nil -> attrs
         slug -> Map.put(attrs, :source_stack, slug)
+      end
+    end
+  end
+
+  defp put_source_env(attrs) when is_map(attrs) do
+    if Map.has_key?(attrs, :source_env) or Map.has_key?(attrs, "source_env") do
+      attrs
+    else
+      case Cyclium.Env.current() do
+        nil -> attrs
+        env -> Map.put(attrs, :source_env, env)
       end
     end
   end
@@ -278,6 +289,10 @@ defmodule Cyclium.Episodes do
       Pre-migration rows with `NULL` source_stack are included (treated as
       "match any stack") to avoid orphaning legacy episodes. When omitted,
       the scan is unscoped.
+    * `:source_env` — restrict the scan to episodes created by this env, matched
+      by **strict equality** (so an env-tagged node won't recover the default
+      node's work and vice-versa). Pass `nil` to scope to the unset/default env
+      (includes legacy `NULL` rows). When omitted, env is not filtered.
 
   Used by `Cyclium.Recovery.sweep/1` to find orphaned episodes after deploys.
   """
@@ -295,7 +310,10 @@ defmodule Cyclium.Episodes do
         select: e.id
       )
 
-    stale_ids = maybe_filter_source_stack(base, source_stack)
+    stale_ids =
+      base
+      |> maybe_filter_source_stack(source_stack)
+      |> filter_source_env(Keyword.get(opts, :source_env, :__unset__))
 
     from(e in Episode, where: e.id in subquery(stale_ids))
     |> repo().all()
@@ -307,6 +325,17 @@ defmodule Cyclium.Episodes do
     slug = to_string(source_stack)
     from(e in query, where: e.source_stack == ^slug or is_nil(e.source_stack))
   end
+
+  # Env is matched by strict equality (NULL != "rc"): unlike source_stack — where
+  # NULL means "match any stack" — a NULL source_env belongs to the unset/default
+  # env, so an env-tagged node must not recover the default node's orphans. Pass
+  # `:source_env` explicitly (including `nil` for the default env) to scope; omit
+  # it (the `:__unset__` sentinel) to skip env filtering entirely.
+  defp filter_source_env(query, :__unset__), do: query
+  defp filter_source_env(query, nil), do: from(e in query, where: is_nil(e.source_env))
+
+  defp filter_source_env(query, env),
+    do: from(e in query, where: e.source_env == ^to_string(env))
 
   @doc """
   Attempt to claim a stale episode for recovery via optimistic update.

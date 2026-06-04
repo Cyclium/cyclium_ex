@@ -341,4 +341,87 @@ defmodule Cyclium.FindingsDbTest do
       assert Repo.get!(Finding, f.id).severity == :low
     end
   end
+
+  describe "env cordoning (Cyclium.Env)" do
+    setup do
+      on_exit(fn -> Application.delete_env(:cyclium, :env) end)
+      :ok
+    end
+
+    # A finding follows the env of the episode that raised it (episode.source_env),
+    # so backfilling another env is just "create an episode in that env, then raise".
+    test "same finding_key raised by episodes in two envs yields two distinct active rows" do
+      default_ep = insert_episode(%{source_env: nil})
+      rc_ep = insert_episode(%{source_env: "rc"})
+      key = "shared:key:#{System.unique_integer([:positive])}"
+      params = finding_params(%{finding_key: key})
+
+      {:ok, default} = Findings.persist_finding({:raise, params}, default_ep)
+      {:ok, rc} = Findings.persist_finding({:raise, params}, rc_ep)
+
+      refute default.id == rc.id
+      assert is_nil(default.env)
+      assert rc.env == "rc"
+
+      # Both active at once — the widened [finding_key, status, env] index allows it.
+      assert Repo.aggregate(from(f in Finding, where: f.finding_key == ^key), :count) == 2
+    end
+
+    test "backfill: node env unset, but an episode tagged source_env stamps the finding's env" do
+      # No :cyclium :env on this node — the env flows from the episode.
+      demo_ep = insert_episode(%{source_env: "demo"})
+
+      params =
+        finding_params(%{finding_key: "demo:backfill:#{System.unique_integer([:positive])}"})
+
+      {:ok, finding} = Findings.persist_finding({:raise, params}, demo_ep)
+      assert finding.env == "demo"
+    end
+
+    test "reads honor an explicit :env override; default reads use the node env" do
+      key = "scoped:key:#{System.unique_integer([:positive])}"
+      params = finding_params(%{finding_key: key})
+
+      {:ok, _} = Findings.persist_finding({:raise, params}, insert_episode(%{source_env: nil}))
+      {:ok, _} = Findings.persist_finding({:raise, params}, insert_episode(%{source_env: "rc"}))
+
+      # Explicit override — no node env needed to inspect another env's findings.
+      assert [%{env: nil}] = Findings.active_for([finding_key: key], env: nil)
+      assert [%{env: "rc"}] = Findings.active_for([finding_key: key], env: "rc")
+
+      # Default read follows the node's configured env.
+      Application.put_env(:cyclium, :env, "rc")
+      assert [%{env: "rc"}] = Findings.active_for(finding_key: key)
+    end
+
+    test "clear via an episode in one env leaves the other env's active finding untouched" do
+      key = "clear:key:#{System.unique_integer([:positive])}"
+      params = finding_params(%{finding_key: key})
+      default_ep = insert_episode(%{source_env: nil})
+      rc_ep = insert_episode(%{source_env: "rc"})
+
+      {:ok, _} = Findings.persist_finding({:raise, params}, default_ep)
+      {:ok, _} = Findings.persist_finding({:raise, params}, rc_ep)
+
+      {:ok, _} = Findings.persist_finding({:clear, key}, rc_ep)
+
+      assert [%{env: nil, status: :active}] = Findings.active_for([finding_key: key], env: nil)
+      assert [] == Findings.active_for([finding_key: key], env: "rc")
+    end
+
+    test "update via an episode in one env does not touch the other env's finding" do
+      key = "update:key:#{System.unique_integer([:positive])}"
+      params = finding_params(%{finding_key: key, confidence: 0.9})
+      default_ep = insert_episode(%{source_env: nil})
+      rc_ep = insert_episode(%{source_env: "rc"})
+
+      {:ok, default} = Findings.persist_finding({:raise, params}, default_ep)
+      {:ok, _rc} = Findings.persist_finding({:raise, params}, rc_ep)
+
+      Findings.persist_finding({:update, key, %{confidence: 0.1}}, rc_ep)
+
+      # The default-env finding is unchanged.
+      assert Repo.get!(Finding, default.id).confidence == 0.9
+    end
+  end
 end

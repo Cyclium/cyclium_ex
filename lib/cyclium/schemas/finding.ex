@@ -31,6 +31,8 @@ defmodule Cyclium.Schemas.Finding do
     # V10: Causality and TTL
     field(:caused_by_key, :string)
     field(:expires_at, :utc_datetime)
+    # V22: per-env cordoning (see Cyclium.Env). NULL == the unset/default env.
+    field(:env, :string)
   end
 
   def changeset(finding, attrs) do
@@ -55,7 +57,8 @@ defmodule Cyclium.Schemas.Finding do
       :subject_id,
       :archived_at,
       :caused_by_key,
-      :expires_at
+      :expires_at,
+      :env
     ])
     |> validate_required([
       :actor_id,
@@ -66,7 +69,9 @@ defmodule Cyclium.Schemas.Finding do
       :raised_at
     ])
     |> maybe_denormalize_subject()
-    |> unique_constraint([:finding_key, :status])
+    |> unique_constraint([:finding_key, :status, :env],
+      name: :cyclium_findings_finding_key_status_env_index
+    )
   end
 
   defp maybe_denormalize_subject(changeset) do

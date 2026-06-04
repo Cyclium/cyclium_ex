@@ -22,6 +22,9 @@ defmodule Cyclium.Runner.Deferred do
             expectation_id: episode.expectation_id,
             source_node: Cyclium.NodeIdentity.name(),
             source_stack: Cyclium.StackSlug.current(:all),
+            # Inherit the episode's env so a full node in that env claims it (and
+            # backfilled cross-env episodes route to the right poller).
+            source_env: episode.source_env,
             opts: Map.new(opts)
           })
 

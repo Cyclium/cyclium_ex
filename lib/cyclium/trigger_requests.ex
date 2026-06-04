@@ -18,7 +18,15 @@ defmodule Cyclium.TriggerRequests do
 
   @doc """
   Fetches up to `limit` pending trigger requests, oldest first.
-  Optionally scopes to requests from a specific source stack.
+
+  ## Options
+
+    * `:limit` — max rows (default: 10)
+    * `:source_stack` — when set, only requests from this stack (nil = any stack)
+    * `:source_env` — when present, only requests from this env, matched by
+      **strict equality** (so an env-tagged poller never claims the default
+      env's requests). Pass `nil` to scope to the unset/default env; omit the
+      key entirely to skip env filtering.
 
   Does not modify the rows — claiming is handled via `WorkClaims`.
   """
@@ -26,22 +34,28 @@ defmodule Cyclium.TriggerRequests do
     limit = Keyword.get(opts, :limit, 10)
     source_stack = Keyword.get(opts, :source_stack)
 
-    base_query =
+    query =
       from(r in TriggerRequest,
         where: r.status == :pending,
         order_by: [asc: r.inserted_at],
         limit: ^limit
       )
-
-    query =
-      if source_stack do
-        from(r in base_query, where: r.source_stack == ^to_string(source_stack))
-      else
-        base_query
-      end
+      |> maybe_filter_source_stack(source_stack)
+      |> filter_source_env(Keyword.get(opts, :source_env, :__unset__))
 
     {:ok, repo().all(query)}
   end
+
+  defp maybe_filter_source_stack(query, nil), do: query
+
+  defp maybe_filter_source_stack(query, source_stack),
+    do: from(r in query, where: r.source_stack == ^to_string(source_stack))
+
+  defp filter_source_env(query, :__unset__), do: query
+  defp filter_source_env(query, nil), do: from(r in query, where: is_nil(r.source_env))
+
+  defp filter_source_env(query, env),
+    do: from(r in query, where: r.source_env == ^to_string(env))
 
   def mark_claimed(id, claimer_node) do
     now = DateTime.utc_now() |> DateTime.truncate(:second)

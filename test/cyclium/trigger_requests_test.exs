@@ -58,6 +58,20 @@ defmodule Cyclium.TriggerRequestsTest do
       assert {:ok, [_]} = TriggerRequests.fetch_pending(source_stack: "stack_a")
     end
 
+    test "scopes by source_env with strict equality", %{episode: episode} do
+      {:ok, _} = create_trigger_request(episode, source_env: "rc")
+      ep2 = insert_episode(%{actor_id: "test_actor", expectation_id: "test_exp"})
+      {:ok, _} = create_trigger_request(ep2, source_env: nil)
+
+      # An env-tagged poller sees only its own env...
+      assert {:ok, [%{source_env: "rc"}]} = TriggerRequests.fetch_pending(source_env: "rc")
+      # ...and the default-env poller (nil) sees only NULL rows — NOT "rc".
+      assert {:ok, [%{source_env: nil}]} = TriggerRequests.fetch_pending(source_env: nil)
+      # Omitting the key entirely skips env filtering (both rows).
+      assert {:ok, both} = TriggerRequests.fetch_pending()
+      assert length(both) == 2
+    end
+
     test "respects limit", %{episode: episode} do
       ep2 = insert_episode(%{actor_id: "test_actor", expectation_id: "test_exp"})
       {:ok, _} = create_trigger_request(episode)

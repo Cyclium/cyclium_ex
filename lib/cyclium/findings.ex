@@ -35,6 +35,9 @@ defmodule Cyclium.Findings do
     * `:limit` — max rows to return
     * `:offset` — rows to skip (default: 0)
     * `:exclude_archived` — when `true`, excludes findings with a non-nil `archived_at` (default: `false`)
+    * `:env` — override the env scope (defaults to `Cyclium.Env.current()`). Pass
+      a string to read another env's findings (demo/staging inspection or
+      backfill), or `nil` to target the unset/default env explicitly.
   """
   def active_for(filters, opts \\ []) when is_list(filters) do
     limit = Keyword.get(opts, :limit)
@@ -44,6 +47,7 @@ defmodule Cyclium.Findings do
       from(f in Finding, where: f.status == :active, order_by: [desc: f.updated_at])
       |> apply_filters(filters)
       |> maybe_exclude_archived(opts)
+      |> scope_env(read_env(opts))
 
     query = if limit, do: query |> limit(^limit) |> offset(^offset), else: query
 
@@ -55,7 +59,33 @@ defmodule Cyclium.Findings do
     from(f in Finding, where: f.status == :active, select: count(f.id))
     |> apply_filters(filters)
     |> maybe_exclude_archived(opts)
+    |> scope_env(read_env(opts))
     |> repo().one()
+  end
+
+  # Cordon reads/writes to an env (see Cyclium.Env). Strict equality: a NULL env
+  # row belongs to the unset/default env, so an env-tagged node sees only its own
+  # findings and never the default node's, and vice-versa. In a single-env
+  # deployment every row is NULL and the node's env is nil, so this matches
+  # everything — byte-identical to pre-env behavior.
+  defp scope_env(query, nil), do: from(f in query, where: is_nil(f.env))
+  defp scope_env(query, env), do: from(f in query, where: f.env == ^env)
+
+  # Reads default to the node's env, but accept an explicit `:env` override so a
+  # dev/Mix task can inspect or backfill another env's findings (e.g. demo,
+  # staging). Pass `env: nil` to target the default env explicitly.
+  defp read_env(opts), do: Keyword.get(opts, :env, Cyclium.Env.current())
+
+  # Writes derive their env from the *episode* that raised them, so backfilling
+  # is as simple as creating an episode in the target env (`source_env: "demo"`)
+  # and persisting findings against it — the finding follows the episode. An
+  # explicit `:env` in the raise params still wins for the rare direct case.
+  defp write_env(episode), do: Map.get(episode, :source_env)
+
+  defp get_active_by_key(repo, finding_key, env) do
+    from(f in Finding, where: f.finding_key == ^finding_key and f.status == :active)
+    |> scope_env(env)
+    |> repo.one()
   end
 
   defp apply_filters(query, []), do: query
@@ -178,7 +208,11 @@ defmodule Cyclium.Findings do
   defp do_causal_chain(_key, 0, acc), do: Enum.reverse(acc)
 
   defp do_causal_chain(finding_key, depth, acc) do
-    case repo().one(from(f in Finding, where: f.finding_key == ^finding_key, limit: 1)) do
+    chain_query =
+      from(f in Finding, where: f.finding_key == ^finding_key, limit: 1)
+      |> scope_env(Cyclium.Env.current())
+
+    case repo().one(chain_query) do
       nil ->
         Enum.reverse(acc)
 
@@ -226,9 +260,11 @@ defmodule Cyclium.Findings do
     params = maybe_apply_ttl(params, now)
 
     # Transaction-based upsert for SQL Server 2017 compatibility
+    env = Map.get(params, :env, write_env(episode))
+
     result =
       repo().transaction(fn repo ->
-        case repo.get_by(Finding, finding_key: finding_key, status: :active) do
+        case get_active_by_key(repo, finding_key, env) do
           nil ->
             attrs =
               params
@@ -237,6 +273,7 @@ defmodule Cyclium.Findings do
               |> Map.put_new(:raised_at, now)
               |> Map.put_new(:status, :active)
               |> Map.put(:updated_at, now)
+              |> Map.put_new(:env, env)
 
             repo.insert!(Finding.changeset(%Finding{}, attrs))
 
@@ -271,10 +308,10 @@ defmodule Cyclium.Findings do
     end
   end
 
-  def persist_finding({:update, finding_key, changes}, _episode) do
+  def persist_finding({:update, finding_key, changes}, episode) do
     now = DateTime.utc_now() |> DateTime.truncate(:second)
 
-    case repo().get_by(Finding, finding_key: finding_key, status: :active) do
+    case get_active_by_key(repo(), finding_key, write_env(episode)) do
       nil ->
         {:error, :not_found}
 
@@ -300,7 +337,7 @@ defmodule Cyclium.Findings do
   def persist_finding({:clear, finding_key, reason}, episode) do
     now = DateTime.utc_now() |> DateTime.truncate(:second)
 
-    case repo().get_by(Finding, finding_key: finding_key, status: :active) do
+    case get_active_by_key(repo(), finding_key, write_env(episode)) do
       nil ->
         # Idempotent — already cleared or never existed
         :ok

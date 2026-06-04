@@ -41,6 +41,7 @@ defmodule Cyclium.Test.Migration do
       add(:mode, :string, default: "live")
       add(:dry_run_opts, :map)
       add(:source_stack, :string)
+      add(:source_env, :string)
     end
 
     create(index(:cyclium_episodes, [:actor_id, :expectation_id]))
@@ -51,6 +52,7 @@ defmodule Cyclium.Test.Migration do
     create(index(:cyclium_episodes, [:conversation_id]))
     create(index(:cyclium_episodes, [:parent_episode_id]))
     create(index(:cyclium_episodes, [:source_stack, :status]))
+    create(index(:cyclium_episodes, [:source_env, :status]))
 
     create table(:cyclium_episode_steps, primary_key: false) do
       add(:id, :binary_id, primary_key: true)
@@ -129,6 +131,7 @@ defmodule Cyclium.Test.Migration do
       add(:archived_at, :utc_datetime)
       add(:caused_by_key, :string, size: 512)
       add(:expires_at, :utc_datetime)
+      add(:env, :string)
     end
 
     create(index(:cyclium_findings, [:actor_id, :status, :class]))
@@ -136,9 +139,9 @@ defmodule Cyclium.Test.Migration do
     create(index(:cyclium_findings, [:subject_kind, :subject_id, :status]))
 
     create(
-      unique_index(:cyclium_findings, [:finding_key, :status],
+      unique_index(:cyclium_findings, [:finding_key, :status, :env],
         where: "status != 'superseded'",
-        name: :cyclium_findings_finding_key_status_index
+        name: :cyclium_findings_finding_key_status_env_index
       )
     )
 
@@ -223,6 +226,7 @@ defmodule Cyclium.Test.Migration do
       add(:created_at, :utc_datetime)
       add(:updated_at, :utc_datetime)
       add(:source_stack, :string)
+      add(:source_env, :string)
       add(:subject_value, :string, null: false, default: "_")
     end
 
@@ -230,6 +234,7 @@ defmodule Cyclium.Test.Migration do
     create(index(:cyclium_workflow_instances, [:status]))
     create(index(:cyclium_workflow_instances, [:conversation_id]))
     create(index(:cyclium_workflow_instances, [:source_stack, :status]))
+    create(index(:cyclium_workflow_instances, [:source_env, :status]))
     create(index(:cyclium_workflow_instances, [:workflow_id, :subject_value]))
 
     create table(:cyclium_agent_definitions, primary_key: false) do
@@ -277,6 +282,7 @@ defmodule Cyclium.Test.Migration do
       add(:expectation_id, :string, null: false)
       add(:source_node, :string, null: false)
       add(:source_stack, :string)
+      add(:source_env, :string)
       add(:status, :string, null: false, default: "pending")
       add(:opts, :map, default: %{})
       add(:claimed_by, :string)
@@ -286,6 +292,7 @@ defmodule Cyclium.Test.Migration do
     end
 
     create(index(:cyclium_trigger_requests, [:status, :inserted_at]))
+    create(index(:cyclium_trigger_requests, [:status, :source_env, :inserted_at]))
     create(index(:cyclium_trigger_requests, [:episode_id]))
   end
 

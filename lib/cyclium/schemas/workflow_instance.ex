@@ -17,6 +17,7 @@ defmodule Cyclium.Schemas.WorkflowInstance do
     field(:mode, :string, default: "live")
     field(:dry_run_opts, :map)
     field(:source_stack, :string)
+    field(:source_env, :string)
     field(:subject_value, :string, default: "_")
     field(:created_at, :utc_datetime)
     field(:updated_at, :utc_datetime)
@@ -33,6 +34,7 @@ defmodule Cyclium.Schemas.WorkflowInstance do
       :mode,
       :dry_run_opts,
       :source_stack,
+      :source_env,
       :subject_value,
       :started_at,
       :finished_at,

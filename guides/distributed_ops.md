@@ -518,6 +518,9 @@ stamping a real slug on every cluster.
 - `:trigger_poll_source_stack` — separate filter on `TriggerRequests.Poller`:
   which stacks' deferred requests this full-mode node will pick up (often the same
   value as `:stack_slug`, but can be broader)
+- `:trigger_poll_source_env` — env filter on the poller; **defaults to
+  `Cyclium.Env.current()`** (this node's env, strict equality), so set it only to
+  poll a *different* env than the node runs as (see the `:env` section below)
 - `Cyclium.StackSlug.current/0` — read the slug; returns `nil` when unset
 
 ## Per-node dedup identity (`:env`)
@@ -528,29 +531,77 @@ out (only one wins each episode/claim). That's correct for a real cluster, but
 not when you want a developer's laptop and a hosted test node to **each run their
 own** episodes of the same actor against a shared dev database.
 
-`config :cyclium, :env` is an optional per-node dedup identity, orthogonal to the
-stack slug. When set, it's folded into framework-generated dedup keys — the
-episode `dedupe_key` (which the work-claim lease and derived output keys inherit)
-and explicit output keys — so each env creates and runs its own episodes and
-holds its own leases. When unset, keys are **byte-identical** to single-env
-behavior.
+`config :cyclium, :env` is an optional per-node identity, orthogonal to the stack
+slug. When set, each env operates as an **independent world** against the shared
+DB; when unset, behavior is **byte-identical** to single-env operation (legacy
+`NULL` rows belong to the unset/default env).
 
 ```elixir
-# runtime.exs — set only on the isolated (dev) node; leave unset on the shared one
+# runtime.exs — set on the isolated node (dev laptop, RC); leave unset on prod
 config :cyclium, :env, System.get_env("CYCLIUM_ENV")
 ```
 
-What `:env` deliberately does **not** do:
+`:env` scopes work along three dimensions (it does **not** affect actor
+placement — that's `:stack_slug`):
 
-- It does not affect actor placement (that's `:stack_slug`).
-- It does not scope **findings** — finding rows are shared and cross-visible
-  across envs (the dev node's findings are visible to the hosted node and vice
-  versa). Per-subject dedup via `Findings.recent?/2` therefore spans envs.
-- It does not scope the Recovery sweep, which still filters by `:stack_slug`. A
-  node may recover another env's orphaned episode (rare; recovery is typically
-  disabled on these shared-DB nodes anyway).
+1. **Dedup / claim keys** — folded into the episode `dedupe_key` (which the
+   work-claim lease and derived output keys inherit) and explicit output keys, so
+   each env creates and runs its own episodes and holds its own leases.
+2. **Recovery** — episodes and workflow instances carry `source_env` (mirroring
+   `source_stack`). `Cyclium.Recovery.sweep/1` and `reconcile_workflows/1` default
+   `source_env` to `Cyclium.Env.current()` and match it by **strict equality** —
+   so an env-tagged node never resurrects the default node's orphans, and
+   vice-versa. (Contrast `source_stack`, where `NULL` means "match any stack".)
+3. **Findings** — each env keeps its own active finding per key (`cyclium_findings.env`
+   + a `[finding_key, status, env]` unique index). `Cyclium.Findings` reads and
+   upserts are cordoned to the current env, and a finding inherits the env of the
+   episode that raised it (`episode.source_env`).
+4. **Deferred triggers** — `cyclium_trigger_requests` carry `source_env` (inherited
+   from the deferring episode). The `TriggerRequests.Poller` defaults its filter to
+   `Cyclium.Env.current()` (strict equality), so each env's trigger-only nodes feed
+   only that env's full nodes. Override with `:trigger_poll_source_env`.
+
+This makes an **RC node sharing prod's DB** viable: configure it `:full` with
+recovery on and `env: "rc"` (same stack slug as prod). It drives UI interactions
+and runs actors fully independently — prod (`env` unset) and RC neither dedup,
+recover, nor clear each other's work. (Keep heavy ETL off RC; gate it by env or
+leave those actors out of RC's placement.)
 
 `Cyclium.Env.current/0` reads the value; returns `nil` when unset.
+
+### Operating across envs (demo / staging backfill)
+
+The scope is **per-call overridable**, so a dev or Mix task can seed or inspect
+another env from any node without changing that node's config. The env (and
+stack) flow through plain attrs/opts:
+
+```elixir
+# Seed a demo-env episode from any node. A finding raised against it inherits
+# the episode's env, so the finding lands in "demo" automatically:
+{:ok, episode} =
+  Cyclium.Episodes.create(%{
+    actor_id: "resource_monitor",
+    expectation_id: "check_resource_limits",
+    trigger_type: :manual,
+    status: :running,
+    started_at: DateTime.utc_now() |> DateTime.truncate(:second),
+    source_stack: "hatch",
+    source_env: "demo"
+  })
+
+Cyclium.Findings.persist_finding({:raise, params}, episode)   # → finding.env == "demo"
+
+# Inspect another env's findings without being that env:
+Cyclium.Findings.active_for([class: "limit_breach"], env: "demo")
+
+# Drive recovery/reconciliation for another env/stack from a one-off task:
+Cyclium.Recovery.sweep(source_stack: "hatch", source_env: "demo")
+```
+
+Reads default to `Cyclium.Env.current()`; pass `env:` to target another env
+explicitly (`env: nil` targets the unset/default env). Writes follow the
+episode's `source_env`, so backfilling is just "create the episode in the target
+env, then persist against it."
 
 ## Trigger-Only Mode (deferred execution)
 

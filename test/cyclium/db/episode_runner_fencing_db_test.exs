@@ -80,6 +80,29 @@ defmodule Cyclium.EpisodeRunnerFencingDbTest do
     end
   end
 
+  # Uses {:checkpoint, phase} to transition: the runner now hands the checkpoint
+  # to handle_result (symmetric with :observe), so the strategy can advance.
+  defmodule CheckpointStrategy do
+    @behaviour Cyclium.EpisodeRunner.Strategy
+    def init(_episode, _trigger), do: {:ok, %{phase: :go}}
+    def next_step(%{phase: :go}, _ctx), do: {:checkpoint, "go"}
+    def next_step(%{phase: :done}, _ctx), do: :converge
+
+    def handle_result(%{phase: :go} = state, %{kind: :checkpoint}, {:ok, "go"}),
+      do: {:ok, %{state | phase: :done}}
+
+    def converge(_state, _ctx) do
+      {:ok,
+       %ConvergeResult{
+         classification: %{"primary" => "ok"},
+         confidence: 1.0,
+         summary: "ok",
+         findings: [],
+         outputs: []
+       }}
+    end
+  end
+
   defmodule SlowToolStrategy do
     @behaviour Cyclium.EpisodeRunner.Strategy
     def init(_episode, _trigger), do: {:ok, %{}}
@@ -189,6 +212,21 @@ defmodule Cyclium.EpisodeRunnerFencingDbTest do
       ep = Repo.get!(Episode, episode.id)
       assert ep.status == :failed
       assert ep.error_class == "budget_exceeded"
+    end
+  end
+
+  describe "checkpoint transitions via handle_result" do
+    test "a {:checkpoint, phase} is handed to handle_result so the strategy can advance" do
+      episode = insert_episode(%{dedupe_key: "k_cp"})
+
+      # phase :go emits {:checkpoint, "go"}; without the symmetric runner change
+      # this would re-invoke next_step with the same state forever. handle_result
+      # advances to :done, which converges.
+      assert {:ok, _} = EpisodeRunner.execute_loop(episode, CheckpointStrategy, %{phase: :go})
+
+      assert Repo.get!(Episode, episode.id).status == :done
+      # The checkpoint was still persisted on the way through.
+      assert Repo.get_by(EpisodeCheckpoint, episode_id: episode.id, phase: "go")
     end
   end
 
