@@ -36,7 +36,8 @@ defmodule Cyclium.MixProject do
       {:phoenix_pubsub, "~> 2.1"},
       {:ecto_sqlite3, ">= 0.0.0", only: :test},
       {:stream_data, "~> 1.0"},
-      {:dialyxir, "~> 1.4", only: [:dev, :test], runtime: false}
+      {:dialyxir, "~> 1.4", only: [:dev, :test], runtime: false},
+      {:ex_doc, ">= 0.40.3", only: :dev, runtime: false}
     ]
   end
 
