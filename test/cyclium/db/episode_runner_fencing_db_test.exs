@@ -40,6 +40,28 @@ defmodule Cyclium.EpisodeRunnerFencingDbTest do
     def converge(_state, _ctx), do: {:ok, %ConvergeResult{}}
   end
 
+  defmodule FindingFailStrategy do
+    @behaviour Cyclium.EpisodeRunner.Strategy
+    def init(_episode, _trigger), do: {:ok, %{}}
+    def next_step(_state, _ctx), do: :converge
+    def handle_result(state, _step, _result), do: {:ok, state}
+
+    def converge(_state, _ctx) do
+      # An :update on a non-existent finding returns {:error, :not_found} — a
+      # deterministic finding-persist failure, with no outputs.
+      {:ok,
+       %ConvergeResult{
+         classification: %{"primary" => "x"},
+         confidence: 1.0,
+         summary: "s",
+         findings: [
+           {:update, "missing-#{System.unique_integer([:positive])}", %{confidence: 0.5}}
+         ],
+         outputs: []
+       }}
+    end
+  end
+
   defmodule RecordingAdapter do
     @behaviour Cyclium.Output.Adapter
     # deliver/3 runs inline in the test process, so this reaches the test mailbox.
@@ -102,6 +124,16 @@ defmodule Cyclium.EpisodeRunnerFencingDbTest do
 
       assert_received {:delivered, :email}
       assert Repo.get!(Episode, episode.id).status == :done
+    end
+  end
+
+  describe "finding-persist failures affect status" do
+    test "a failed finding persist degrades an otherwise-clean episode to :partially_failed" do
+      episode = insert_episode(%{dedupe_key: "k5"})
+
+      assert {:ok, _} = EpisodeRunner.execute_loop(episode, FindingFailStrategy, %{})
+
+      assert Repo.get!(Episode, episode.id).status == :partially_failed
     end
   end
 

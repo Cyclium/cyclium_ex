@@ -475,12 +475,14 @@ defmodule Cyclium.EpisodeRunner do
     findings = converge_result.findings || []
 
     # Step 1+2+3: Persist findings (journaled in dry run; optionally persisted with prefix)
-    if dry_run? do
-      journal_dry_run_findings(episode, findings)
-      maybe_persist_dry_run_findings(episode, findings)
-    else
-      persist_findings(episode, findings)
-    end
+    findings_failed =
+      if dry_run? do
+        journal_dry_run_findings(episode, findings)
+        maybe_persist_dry_run_findings(episode, findings)
+        0
+      else
+        persist_findings(episode, findings)
+      end
 
     # Step 4: Deliver outputs via OutputRouter (skipped in dry run)
     output_results =
@@ -493,8 +495,8 @@ defmodule Cyclium.EpisodeRunner do
         end)
       end
 
-    # Step 5: Compute final episode status from delivery outcomes
-    final_status = compute_episode_status(output_results)
+    # Step 5: Compute final episode status from delivery + finding-persist outcomes
+    final_status = compute_episode_status(output_results, findings_failed)
 
     # Step 6: Journal and set episode status
     step_kind =
@@ -507,7 +509,8 @@ defmodule Cyclium.EpisodeRunner do
         confidence: converge_result.confidence,
         outputs_delivered: count_outcomes(output_results, :ok),
         outputs_failed: count_outcomes(output_results, :error),
-        outputs_duped: count_outcomes(output_results, :duplicate)
+        outputs_duped: count_outcomes(output_results, :duplicate),
+        findings_failed: findings_failed
       },
       error_class: if(final_status == :failed, do: "all_outputs_failed")
     })
@@ -588,8 +591,12 @@ defmodule Cyclium.EpisodeRunner do
 
   defp maybe_run_conversation_hook(_episode, _converge_result), do: :ok
 
+  # Returns the count of findings that failed to persist, so the caller can
+  # reflect it in the episode status and journal (a finding is often the actual
+  # product of a monitoring episode — a silent persist failure must not report
+  # the episode as cleanly :done).
   defp persist_findings(episode, findings) do
-    Enum.each(findings, fn action ->
+    Enum.reduce(findings, 0, fn action, failed ->
       case Cyclium.Findings.persist_finding(action, episode) do
         {:ok, finding} ->
           bus_event = finding_bus_event(action)
@@ -602,20 +609,23 @@ defmodule Cyclium.EpisodeRunner do
           })
 
           journal_finding_step!(episode, action, finding)
+          failed
 
         :ok ->
           # Idempotent clear — nothing to broadcast
-          :ok
+          failed
 
         {:error, reason} ->
           Logger.warning("Failed to persist finding: #{inspect(reason)}",
             finding_action: inspect(action)
           )
+
+          failed + 1
       end
     end)
   end
 
-  defp compute_episode_status(output_results) do
+  defp compute_episode_status(output_results, findings_failed) do
     successes =
       Enum.count(output_results, &match?({:ok, _}, &1)) +
         Enum.count(output_results, &match?({:duplicate, _}, &1))
@@ -623,11 +633,20 @@ defmodule Cyclium.EpisodeRunner do
     failures = Enum.count(output_results, &match?({:error, _}, &1))
     total = length(output_results)
 
-    cond do
-      total == 0 -> :done
-      failures == 0 -> :done
-      successes == 0 -> :failed
-      true -> :partially_failed
+    output_status =
+      cond do
+        total == 0 -> :done
+        failures == 0 -> :done
+        successes == 0 -> :failed
+        true -> :partially_failed
+      end
+
+    # A finding that failed to persist degrades an otherwise-clean episode to
+    # :partially_failed — the work didn't fully land, so don't report :done.
+    if findings_failed > 0 and output_status == :done do
+      :partially_failed
+    else
+      output_status
     end
   end
 

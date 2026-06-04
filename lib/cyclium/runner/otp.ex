@@ -16,22 +16,26 @@ defmodule Cyclium.Runner.OTP do
 
   @impl true
   def recover_incomplete do
-    Cyclium.Episodes.list_by_status([:running, :blocked])
+    # Only resume STALE :running episodes — never :blocked ones (those are
+    # intentionally parked on an approval/external wait; resuming would replay
+    # or re-block them), and never episodes another node may have started
+    # moments ago. Staleness is gauged by step-journal recency, the same signal
+    # Recovery.sweep/1 uses. The EpisodeTask claim gate still prevents two nodes
+    # from running the same episode; for full cross-node coordination
+    # (recovery_policy, shuffle), prefer `Cyclium.Recovery.sweep/1`.
+    Cyclium.Episodes.list_stale_running(stale_after_ms())
     |> Enum.each(fn ep ->
-      if should_resume?(ep), do: enqueue(ep.id, resume: true)
+      if ep.attempts < ep.max_attempts, do: enqueue(ep.id, resume: true)
     end)
 
     :ok
   end
 
+  defp stale_after_ms, do: Application.get_env(:cyclium, :recover_incomplete_stale_ms, 120_000)
+
   @impl true
   def cancel(episode_id) do
     Cyclium.Episodes.update_status(episode_id, :canceled)
     :ok
-  end
-
-  defp should_resume?(episode) do
-    episode.status in [:running, :blocked] and
-      episode.attempts < episode.max_attempts
   end
 end

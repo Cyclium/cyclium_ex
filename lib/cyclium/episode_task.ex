@@ -260,7 +260,17 @@ defmodule Cyclium.EpisodeTask do
   end
 
   defp safe_to_atom(value) when is_atom(value), do: value
-  defp safe_to_atom(value) when is_binary(value), do: String.to_existing_atom(value)
+
+  defp safe_to_atom(value) when is_binary(value) do
+    # Used to build persistent_term lookup keys for an actor/expectation. If the
+    # atom doesn't exist, neither does any registration under it — return the
+    # string so the lookup simply misses (and the caller falls back / raises a
+    # clear "no strategy" error) rather than crashing with ArgumentError.
+    case Cyclium.AtomGuard.existing_atom(value) do
+      {:ok, atom} -> atom
+      :error -> value
+    end
+  end
 
   defp atomize(nil), do: %{}
 
