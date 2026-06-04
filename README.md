@@ -6,10 +6,11 @@
 
 Cyclium is an Elixir library for building agentic systems that monitor domains,
 run multi-turn episodes, classify situations, and produce typed outputs. Actors
-declare expectations about how things should be; when triggers fire, episodes
-execute strategies that can gather data, call tools, synthesize with LLMs, and
-converge into findings and outputs. Think of it as an OTP-native agent framework
-where the episode — not the request — is the unit of work.
+declare expectations — named, triggerable processes; when a trigger fires, an
+episode executes the expectation's strategy, which can gather data, call tools,
+synthesize with LLMs, and converge into findings and outputs. Think of it as an
+OTP-native agent framework where the episode — not the request — is the unit of
+work.
 
 The **developer is the router**: your `next_step/2` is a deterministic state
 machine that decides what happens next. The LLM is a tool you call at specific
@@ -43,7 +44,7 @@ testability, and full visibility while still using AI where it adds value. See
 
 Cyclium is designed for Elixir teams building **autonomous agent systems** where:
 
-- Business rules define what *should* be true (SLAs, health thresholds, compliance checks)
+- Recurring evaluations run on events or schedules (SLAs, health checks, compliance checks)
 - Episodes involve multiple steps: data gathering, LLM synthesis, tool calls, human approval
 - Findings need to persist and evolve over time (raised → updated → cleared)
 - Actions need deduplication, audit trails, and typed delivery through adapters
@@ -153,7 +154,7 @@ EpisodeTask starts
 | Concept | What it is |
 |---|---|
 | **Actor** | A GenServer that owns expectations and fires episodes when triggers match. → [Actors & Strategies](guides/actors_and_strategies.md) |
-| **Expectation** | A declaration of what *should* be true, with a strategy, trigger, and budget |
+| **Expectation** | A named, triggerable process — binds a trigger to a strategy and budget |
 | **Strategy** | The brain of an episode — a stateless `init → next_step → handle_result → converge` module |
 | **Episode** | One execution of a strategy, with budget tracking, a step journal, and a status lifecycle |
 | **Finding** | A persistent observation with raise/update/clear semantics. → [Findings & Outputs](guides/findings_and_outputs.md) |

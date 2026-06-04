@@ -43,6 +43,9 @@ An **actor** is a GenServer that owns one or more **expectations**. Each actor
 watches a domain (e.g., `:resource`, `:billing`) and fires **episodes** when
 triggers match.
 
+An **expectation** is a named, triggerable process: it binds a trigger to a
+strategy and a budget. When the trigger fires, an episode runs that strategy.
+
 ```elixir
 defmodule MyApp.Actors.ResourceMonitor do
   use Cyclium.Actor
