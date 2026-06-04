@@ -81,32 +81,7 @@ defmodule Cyclium.EpisodeRunner do
         {:error, :claim_lost}
 
       :budget_wall_exceeded ->
-        elapsed = DateTime.diff(DateTime.utc_now(), started_at, :millisecond)
-
-        error_detail = %{
-          kind: "wall_time",
-          used_ms: elapsed,
-          max_ms: episode.budget["max_wall_ms"]
-        }
-
-        journal_step!(episode, :episode_failed, %{
-          error_class: "budget_exceeded",
-          error_detail: error_detail
-        })
-
-        Cyclium.Episodes.update_status(episode.id, :failed, error_class: "budget_exceeded")
-
-        Cyclium.Bus.broadcast("episode.failed", %{
-          episode_id: episode.id,
-          actor_id: episode.actor_id,
-          status: :failed,
-          error_class: "budget_exceeded",
-          error_detail: error_detail,
-          workflow_instance_id: episode.workflow_instance_id,
-          workflow_step_id: episode.workflow_step_id
-        })
-
-        {:error, :budget_exceeded}
+        fail_wall_budget(episode, started_at)
 
       {:EXIT, _from, :normal} ->
         # Normal exits (e.g. ports closing after System.cmd or HTTP requests)
@@ -144,6 +119,71 @@ defmodule Cyclium.EpisodeRunner do
         {:error, :process_terminated}
     after
       0 -> :ok
+    end
+  end
+
+  # Mark the episode failed for wall-time budget exhaustion. Shared by the
+  # between-steps timer (:budget_wall_exceeded) and the per-step hard timeout.
+  defp fail_wall_budget(episode, started_at) do
+    elapsed = DateTime.diff(DateTime.utc_now(), started_at, :millisecond)
+
+    error_detail = %{
+      kind: "wall_time",
+      used_ms: elapsed,
+      max_ms: (episode.budget || %{})["max_wall_ms"]
+    }
+
+    journal_step!(episode, :episode_failed, %{
+      error_class: "budget_exceeded",
+      error_detail: error_detail
+    })
+
+    Cyclium.Episodes.update_status(episode.id, :failed, error_class: "budget_exceeded")
+
+    Cyclium.Bus.broadcast("episode.failed", %{
+      episode_id: episode.id,
+      actor_id: episode.actor_id,
+      status: :failed,
+      error_class: "budget_exceeded",
+      error_detail: error_detail,
+      workflow_instance_id: episode.workflow_instance_id,
+      workflow_step_id: episode.workflow_step_id
+    })
+
+    {:error, :budget_exceeded}
+  end
+
+  # Milliseconds left before the episode's wall-clock budget is exhausted.
+  defp wall_remaining(episode, started_at) do
+    max_wall = (episode.budget || %{})["max_wall_ms"] || 120_000
+    elapsed = DateTime.diff(DateTime.utc_now(), started_at, :millisecond)
+    max(max_wall - elapsed, 0)
+  end
+
+  # Run a (potentially blocking) external call under a hard wall-time deadline.
+  # The between-steps timer can't interrupt an in-flight step — a tool/synth call
+  # that blocks forever would blow past max_wall_ms — so the call runs in a Task
+  # bounded by the remaining budget. `Task.async` propagates `$callers`, so Ecto
+  # sandbox ownership and the like still work inside the task.
+  #
+  #   * `{:completed, value}` — finished in time (value is the call's return)
+  #   * `:timed_out`          — exceeded the deadline; the task was killed
+  #
+  # A crash inside the call is re-raised here so it reaches EpisodeTask's rescue
+  # exactly as before (preserving "crash" error_class).
+  defp run_bounded(fun, remaining_ms) do
+    metadata = Logger.metadata()
+
+    task = Task.async(fn ->
+      Logger.metadata(metadata)
+      fun.()
+    end)
+
+    case Task.yield(task, remaining_ms) || Task.shutdown(task, :brutal_kill) do
+      {:ok, value} -> {:completed, value}
+      nil -> :timed_out
+      {:exit, {exception, stacktrace}} when is_exception(exception) -> reraise(exception, stacktrace)
+      {:exit, reason} -> exit(reason)
     end
   end
 
@@ -193,8 +233,17 @@ defmodule Cyclium.EpisodeRunner do
               )
 
             :real ->
-              case Cyclium.ToolExec.call(capability, action, args, %{episode: episode}) do
-                {:ok, result, cost, redacted} ->
+              bounded =
+                run_bounded(
+                  fn -> Cyclium.ToolExec.call(capability, action, args, %{episode: episode}) end,
+                  wall_remaining(episode, started_at)
+                )
+
+              case bounded do
+                :timed_out ->
+                  fail_wall_budget(episode, started_at)
+
+                {:completed, {:ok, result, cost, redacted}} ->
                   step =
                     journal_step!(episode, :tool_call, %{
                       tool_name: tool_name,
@@ -214,7 +263,7 @@ defmodule Cyclium.EpisodeRunner do
                     started_at
                   )
 
-                {:error, reason} = err ->
+                {:completed, {:error, reason} = err} ->
                   step =
                     journal_step!(episode, :tool_call, %{
                       tool_name: tool_name,
@@ -271,8 +320,17 @@ defmodule Cyclium.EpisodeRunner do
                 synthesizer ->
                   episode_ctx = build_episode_ctx(episode)
 
-                  case synthesizer.synthesize(prompt_for_synth, episode_ctx) do
-                    {:ok, result} ->
+                  bounded =
+                    run_bounded(
+                      fn -> synthesizer.synthesize(prompt_for_synth, episode_ctx) end,
+                      wall_remaining(episode, started_at)
+                    )
+
+                  case bounded do
+                    :timed_out ->
+                      fail_wall_budget(episode, started_at)
+
+                    {:completed, {:ok, result}} ->
                       token_cost =
                         extract_api_token_cost(result) ||
                           fallback_estimate_tokens(synthesizer, prompt_for_synth)
@@ -295,7 +353,7 @@ defmodule Cyclium.EpisodeRunner do
                         started_at
                       )
 
-                    {:error, error_class, detail} ->
+                    {:completed, {:error, error_class, detail}} ->
                       step =
                         journal_step!(episode, :synthesis, %{
                           args_redacted: prompt_for_storage,

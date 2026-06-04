@@ -71,6 +71,23 @@ defmodule Cyclium.EpisodeRunnerFencingDbTest do
     end
   end
 
+  defmodule SlowTool do
+    use Cyclium.Tool
+
+    def call(:sleep, _args, _ctx) do
+      Process.sleep(5_000)
+      {:ok, :done}
+    end
+  end
+
+  defmodule SlowToolStrategy do
+    @behaviour Cyclium.EpisodeRunner.Strategy
+    def init(_episode, _trigger), do: {:ok, %{}}
+    def next_step(_state, _ctx), do: {:tool_call, :slow, :sleep, %{}}
+    def handle_result(state, _step, _result), do: {:ok, state}
+    def converge(_state, _ctx), do: {:ok, %ConvergeResult{}}
+  end
+
   setup do
     start_supervised!({Phoenix.PubSub, name: Cyclium.FencingPubSub})
     Application.put_env(:cyclium, :pubsub, Cyclium.FencingPubSub)
@@ -81,6 +98,7 @@ defmodule Cyclium.EpisodeRunnerFencingDbTest do
       Application.delete_env(:cyclium, :output_adapters)
       Application.delete_env(:cyclium, :work_claims)
       Application.delete_env(:cyclium, :node_identity)
+      Application.delete_env(:cyclium, :capability_registry)
     end)
 
     :ok
@@ -134,6 +152,25 @@ defmodule Cyclium.EpisodeRunnerFencingDbTest do
       assert {:ok, _} = EpisodeRunner.execute_loop(episode, FindingFailStrategy, %{})
 
       assert Repo.get!(Episode, episode.id).status == :partially_failed
+    end
+  end
+
+  describe "hard wall-clock timeout" do
+    test "a tool call that blocks past max_wall_ms is killed and the episode fails" do
+      Application.put_env(:cyclium, :capability_registry, %{slow: SlowTool})
+
+      episode =
+        insert_episode(%{
+          dedupe_key: "k6",
+          budget: %{"max_wall_ms" => 50, "max_turns" => 5, "max_tokens" => 1_000}
+        })
+
+      assert {:error, :budget_exceeded} =
+               EpisodeRunner.execute_loop(episode, SlowToolStrategy, %{})
+
+      ep = Repo.get!(Episode, episode.id)
+      assert ep.status == :failed
+      assert ep.error_class == "budget_exceeded"
     end
   end
 
