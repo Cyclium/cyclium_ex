@@ -314,6 +314,12 @@ defmodule Cyclium.Actor.Server do
       end
     end)
 
+    # Register this process under its actor_id so recovery (and others) can find
+    # the live actor regardless of the `name:` it was started under. Guarded: the
+    # registry only exists when Cyclium.Supervisor is running (not in standalone
+    # actor unit tests), and a duplicate registration is ignored.
+    register_actor_process(config.actor_id)
+
     # Subscribe to bus for event-triggered expectations
     Bus.subscribe()
 
@@ -321,6 +327,22 @@ defmodule Cyclium.Actor.Server do
     state = start_schedule_timers(state)
 
     {:ok, state}
+  end
+
+  @actor_process_registry Cyclium.ActorProcessRegistry
+
+  @doc false
+  def actor_process_registry, do: @actor_process_registry
+
+  defp register_actor_process(actor_id) do
+    if Process.whereis(@actor_process_registry) do
+      case Registry.register(@actor_process_registry, to_string(actor_id), nil) do
+        {:ok, _} -> :ok
+        {:error, {:already_registered, _}} -> :ok
+      end
+    end
+  rescue
+    ArgumentError -> :ok
   end
 
   def handle_info({:force_fire, expectation_id}, state) do

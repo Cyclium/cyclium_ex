@@ -57,7 +57,9 @@ defmodule Cyclium.AtomGuardTest do
   describe "existing_atom/1" do
     test "returns {:ok, atom} for an existing atom" do
       _ = :atom_guard_existing_check
-      assert {:ok, :atom_guard_existing_check} = AtomGuard.existing_atom("atom_guard_existing_check")
+
+      assert {:ok, :atom_guard_existing_check} =
+               AtomGuard.existing_atom("atom_guard_existing_check")
     end
 
     test "returns :error for an unknown string and never mints" do

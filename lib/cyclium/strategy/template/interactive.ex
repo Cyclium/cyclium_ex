@@ -532,11 +532,15 @@ defmodule Cyclium.Strategy.Template.Interactive do
     case plan.kind do
       :tool_call ->
         tc = plan.tool
-        {:tool_call, Cyclium.AtomGuard.intern!(tc.tool), Cyclium.AtomGuard.intern!(tc.action), tc.args}
+
+        {:tool_call, Cyclium.AtomGuard.intern!(tc.tool), Cyclium.AtomGuard.intern!(tc.action),
+         tc.args}
 
       :multi_tool_plan ->
         step = Enum.at(plan.steps, state.current_step_index)
-        {:tool_call, Cyclium.AtomGuard.intern!(step.tool), Cyclium.AtomGuard.intern!(step.action), step.args}
+
+        {:tool_call, Cyclium.AtomGuard.intern!(step.tool), Cyclium.AtomGuard.intern!(step.action),
+         step.args}
 
       :output_proposal ->
         {:output, plan.output.type, plan.output.payload}

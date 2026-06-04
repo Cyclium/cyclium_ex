@@ -198,21 +198,9 @@ defmodule Cyclium.DynamicActor.Loader do
     opts = if strategy, do: [{:strategy, strategy} | opts], else: opts
 
     opts =
-      case exp[:trigger] || exp["trigger"] do
-        %{"type" => "schedule", "interval_ms" => ms} ->
-          [{:trigger, {:schedule, ms}} | opts]
-
-        %{"type" => "event", "event_type" => et} ->
-          [{:trigger, {:event, et}} | opts]
-
-        %{type: :schedule, interval_ms: ms} ->
-          [{:trigger, {:schedule, ms}} | opts]
-
-        %{type: :event, event_type: et} ->
-          [{:trigger, {:event, et}} | opts]
-
-        _ ->
-          opts
+      case normalize_trigger(exp[:trigger] || exp["trigger"]) do
+        nil -> opts
+        trigger -> [{:trigger, trigger} | opts]
       end
 
     opts = if exp[:budget], do: [{:budget, exp[:budget]} | opts], else: opts
@@ -235,6 +223,21 @@ defmodule Cyclium.DynamicActor.Loader do
 
   defp to_atom(val) when is_atom(val), do: val
   defp to_atom(val) when is_binary(val), do: Cyclium.AtomGuard.intern!(val)
+
+  # Normalize a trigger spec into the `{:schedule, ms}` / `{:event, type}` form
+  # the actor expects. Tolerant of key shape (atom or string) AND value shape
+  # (atom or string), since DB JSON decodes to atom keys with string values
+  # (`%{type: "event", event_type: "..."}`) while in-process callers may pass
+  # either. Returns `nil` for an unrecognized/absent trigger.
+  defp normalize_trigger(trigger) when is_map(trigger) do
+    case to_string(trigger[:type] || trigger["type"] || "") do
+      "schedule" -> {:schedule, trigger[:interval_ms] || trigger["interval_ms"]}
+      "event" -> {:event, trigger[:event_type] || trigger["event_type"]}
+      _ -> nil
+    end
+  end
+
+  defp normalize_trigger(_), do: nil
 
   defp validate_strategy_outputs(%AgentDefinition{} = defn) do
     strategy_config =

@@ -117,6 +117,36 @@ defmodule Cyclium.RecoveryDbTest do
     end
   end
 
+  describe "restart routing through the live actor" do
+    test "routes via the actor process registry even when the actor has a custom name" do
+      # The actor is started under a name that is NOT its module, so the old
+      # Process.whereis(module) lookup could not find it — only the actor
+      # process registry can. The episode should be handed to the live actor
+      # (tracked in its active_episodes), not enqueued directly.
+      start_supervised!({Registry, keys: :unique, name: Cyclium.ActorProcessRegistry})
+      {:ok, actor} = RestartActor.start_link(name: :recovery_custom_named_actor)
+
+      episode =
+        insert_episode(%{
+          actor_id: "restart_actor",
+          expectation_id: "restartable_work",
+          status: :running,
+          started_at: DateTime.add(DateTime.utc_now(), -300, :second)
+        })
+
+      assert {:ok, counts} =
+               Recovery.sweep(
+                 actor_registry: %{"restart_actor" => RestartActor},
+                 stale_after_ms: 1
+               )
+
+      assert counts.restarted == 1
+      assert episode.id in MapSet.to_list(:sys.get_state(actor).active_episodes)
+
+      GenServer.stop(actor)
+    end
+  end
+
   describe "sweep with dynamic actor DB fallback" do
     test "resolves recovery_policy from agent_definitions table" do
       # Insert a dynamic actor definition with recovery_policy: restart

@@ -205,17 +205,32 @@ defmodule Cyclium.Recovery do
     end
   end
 
-  # Resolve the running actor process for an actor_id.
+  # Resolve the running actor process for an actor_id, in order of reliability:
   #
-  #   * Compiled actors are registered under their module name (the default
-  #     `name:` in `use Cyclium.Actor`), which the recovery `actor_registry`
-  #     maps from actor_id. Looked up locally via `Process.whereis/1`.
-  #   * Dynamic actors register globally as `:"cyclium_dynamic_<actor_id>"`.
+  #   1. `Cyclium.ActorProcessRegistry` — every actor (compiled or dynamic)
+  #      registers here under its actor_id on boot, regardless of the `name:` it
+  #      was started under. This is the authoritative local lookup.
+  #   2. The recovery `actor_registry` module name (`Process.whereis/1`) — a
+  #      fallback for the rare case the process registry isn't running.
+  #   3. The dynamic actor's global name (`:"cyclium_dynamic_<id>"`) — covers a
+  #      dynamic actor living on another node (single global instance).
   #
-  # Returns `nil` when neither resolves — the caller then enqueues directly.
+  # Returns `nil` when none resolve — the caller then enqueues directly.
   defp actor_pid(actor_id, actor_registry) do
-    compiled_actor_pid(Map.get(actor_registry, actor_id)) ||
+    registered_actor_pid(actor_id) ||
+      compiled_actor_pid(Map.get(actor_registry, actor_id)) ||
       dynamic_actor_pid(actor_id)
+  end
+
+  defp registered_actor_pid(actor_id) do
+    registry = Cyclium.Actor.Server.actor_process_registry()
+
+    if Process.whereis(registry) do
+      case Registry.lookup(registry, to_string(actor_id)) do
+        [{pid, _} | _] -> pid
+        [] -> nil
+      end
+    end
   end
 
   defp compiled_actor_pid(module) when is_atom(module) and not is_nil(module),

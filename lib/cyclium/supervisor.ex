@@ -19,6 +19,11 @@ defmodule Cyclium.Supervisor do
     children =
       [
         Cyclium.Mode,
+        # Per-node actor process registry, keyed by actor_id string. Lets recovery
+        # (and anything else) find a live actor's pid by id regardless of the
+        # `name:` it was started under or which supervisor owns it. Compiled and
+        # dynamic actors both register here from `Actor.Server.init_state_from_config/3`.
+        {Registry, keys: :unique, name: Cyclium.ActorProcessRegistry},
         {DynamicSupervisor, name: Cyclium.ActorSupervisor, strategy: :one_for_one},
         {DynamicSupervisor, name: Cyclium.EpisodeSupervisor, strategy: :one_for_one},
         {Task.Supervisor, name: Cyclium.TaskSupervisor}
