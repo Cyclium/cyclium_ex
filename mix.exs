@@ -1,10 +1,12 @@
 defmodule Cyclium.MixProject do
   use Mix.Project
 
+  @source_url "https://github.com/Cyclium/cyclium_ex"
+
   def project do
     [
       app: :cyclium,
-      version: "0.1.5",
+      version: "0.1.6",
       elixir: "~> 1.18",
       elixirc_paths: elixirc_paths(Mix.env()),
       start_permanent: Mix.env() == :prod,
@@ -14,8 +16,10 @@ defmodule Cyclium.MixProject do
         plt_file: {:no_warn, "priv/plts/dialyzer.plt"}
       ],
       name: "Cyclium",
+      source_url: @source_url,
       description: description(),
-      package: package()
+      package: package(),
+      docs: docs()
     ]
   end
 
@@ -50,7 +54,29 @@ defmodule Cyclium.MixProject do
   defp package do
     [
       licenses: ["MIT"],
-      links: %{}
+      links: %{"GitHub" => @source_url}
+    ]
+  end
+
+  defp docs do
+    [
+      main: "readme",
+      source_url: @source_url,
+      extras: [
+        "README.md",
+        "guides/actors_and_strategies.md",
+        "guides/findings_and_outputs.md",
+        "guides/workflows.md",
+        "guides/dynamic_actors.md",
+        "guides/observability.md",
+        "guides/distributed_ops.md",
+        "guides/advanced.md",
+        "guides/interactive_actors.md",
+        "guides/conversation_ui.md"
+      ],
+      groups_for_extras: [
+        Guides: ~r{guides/.*}
+      ]
     ]
   end
 end
