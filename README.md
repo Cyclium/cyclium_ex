@@ -73,8 +73,7 @@ outputs — and need the lifecycle, audit trail, and coordination to go with the
 
 > The guides use a generic **resource monitoring** example: a `ResourceMonitor`
 > actor that evaluates a resource's usage against a limit and classifies status,
-> plus a `ResourceAdvisorActor` that produces an LLM-powered summary. See the
-> [demo application](#demo-application) for a full working implementation.
+> plus a `ResourceAdvisorActor` that produces an LLM-powered summary.
 
 ### Supervision tree
 
@@ -183,7 +182,7 @@ EpisodeTask starts
 ```elixir
 # mix.exs
 def deps do
-  [{:cyclium, path: "../cyclium_ex"}]
+  [{:cyclium, "~> 0.1.5"}]
 end
 ```
 
@@ -348,16 +347,6 @@ coordination. V6 adds the `cyclium_work_claims` table. V7 adds
 `cyclium_agent_definitions` and `mode`/`dry_run_opts` columns to episodes. V8 adds
 `cyclium_workflow_definitions`. V10 adds `caused_by_key` (finding causality
 chains) and `expires_at` (TTL-based expiration) to `cyclium_findings`.
-
-## Demo application
-
-See [cyclium_ex_hapi](../cyclium_ex_hapi) for a complete Phoenix LiveView
-application demonstrating Cyclium:
-
-- Real-time evaluation with deterministic and LLM-powered actors
-- Simulation controls for testing different scenarios
-- Episode detail view with step timeline and rendered logs
-- Reactive UI via Bus event subscriptions
 
 ## Development
 
