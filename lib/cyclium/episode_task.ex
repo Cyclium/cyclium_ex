@@ -49,10 +49,22 @@ defmodule Cyclium.EpisodeTask do
       end
 
     try do
-      Cyclium.EpisodeRunner.execute_loop(episode, strategy, state, synthesizer: synthesizer)
+      case Cyclium.EpisodeRunner.execute_loop(episode, strategy, state, synthesizer: synthesizer) do
+        {:error, :claim_lost} ->
+          # The lease was stolen mid-run; the new owner is driving this episode
+          # now. Do NOT complete the claim or touch the episode row — leave both
+          # to the owner so we don't clobber its outcome or double-deliver.
+          require Logger
 
-      # Complete claim on successful completion
-      Cyclium.WorkClaims.gate_complete(episode.dedupe_key, Cyclium.NodeIdentity.name())
+          Logger.warning(
+            "[Cyclium.EpisodeTask] Episode #{episode_id} lost its work claim mid-run — " <>
+              "abandoning to the new owner"
+          )
+
+        _ ->
+          # Release the claim. (Failures already set episode status in the runner.)
+          Cyclium.WorkClaims.gate_complete(episode.dedupe_key, Cyclium.NodeIdentity.name())
+      end
     rescue
       e ->
         require Logger
@@ -87,11 +99,17 @@ defmodule Cyclium.EpisodeTask do
           "exception" => message
         })
     after
-      # Safety net: ensure episode is never left in running state regardless
-      # of how the process terminates. Catches cases where rescue doesn't fire
-      # (e.g. throw, abnormal exit). The only case this can't cover is :kill,
-      # which is handled by the StaleEpisodeWatchdog.
-      ensure_episode_not_running(episode_id)
+      # Safety net: ensure the episode is never left :running regardless of how
+      # the process terminates — catches cases where the rescue doesn't fire
+      # (throw, abnormal exit). A hard :kill can't be covered here; those stale
+      # :running episodes are recovered by `Cyclium.Recovery.sweep/1` instead.
+      #
+      # Skip when the claim was lost mid-run: the new owner is driving the
+      # episode, so we must not mark its row failed.
+      unless Process.get(:cyclium_claim_lost) do
+        ensure_episode_not_running(episode_id)
+      end
+
       if heartbeat_pid, do: Cyclium.WorkClaims.Heartbeat.stop(heartbeat_pid)
     end
   end
@@ -140,8 +158,17 @@ defmodule Cyclium.EpisodeTask do
           {:ok, migrated} ->
             migrated
 
-          {:error, _reason} ->
-            # Migration failed — fall back to fresh init
+          {:error, reason} ->
+            # Migration failed — fall back to fresh init. This restarts the
+            # episode from scratch, so any pre-block/pre-checkpoint side effects
+            # will replay; log loudly rather than silently starting over.
+            require Logger
+
+            Logger.warning(
+              "[Cyclium.EpisodeTask] Checkpoint migration failed for episode #{episode.id} " <>
+                "(v#{checkpoint.schema_version}: #{inspect(reason)}) — restarting from fresh init"
+            )
+
             trigger = deserialize_trigger(episode.trigger_type, episode.trigger_ref)
             {:ok, initial_state} = strategy.init(episode, trigger)
             initial_state
@@ -260,7 +287,8 @@ defmodule Cyclium.EpisodeTask do
         Cyclium.WorkClaims.Heartbeat.start_link(
           dedupe_key: episode.dedupe_key,
           owner_node: Cyclium.NodeIdentity.name(),
-          lease_seconds: lease_seconds
+          lease_seconds: lease_seconds,
+          task_pid: self()
         )
 
       pid

@@ -20,6 +20,11 @@ defmodule Cyclium.WorkClaims.Heartbeat do
     * `:owner_node` — the node that holds the claim (required)
     * `:lease_seconds` — lease duration for renewals (required)
     * `:interval_ms` — renewal interval in ms (default: lease_seconds * 1000 / 3)
+    * `:task_pid` — the EpisodeTask process to notify if the claim is lost
+      (optional). On `:not_owner`, the heartbeat sends
+      `{:cyclium_claim_lost, dedupe_key}` to this pid so the running episode can
+      abort before delivering outputs (it otherwise has no way to learn the
+      lease was stolen out from under it).
   """
 
   use GenServer
@@ -50,6 +55,7 @@ defmodule Cyclium.WorkClaims.Heartbeat do
       owner_node: owner_node,
       lease_seconds: lease_seconds,
       interval_ms: interval_ms,
+      task_pid: Keyword.get(opts, :task_pid),
       consecutive_failures: 0
     }
 
@@ -66,8 +72,11 @@ defmodule Cyclium.WorkClaims.Heartbeat do
 
       {:error, :not_owner} ->
         Logger.warning(
-          "[Cyclium.Heartbeat] Lost claim ownership for #{state.dedupe_key} — stopping heartbeat"
+          "[Cyclium.Heartbeat] Lost claim ownership for #{state.dedupe_key} — " <>
+            "signalling episode task to abort and stopping heartbeat"
         )
+
+        if state.task_pid, do: send(state.task_pid, {:cyclium_claim_lost, state.dedupe_key})
 
         {:stop, :normal, state}
     end

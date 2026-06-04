@@ -68,6 +68,18 @@ defmodule Cyclium.EpisodeRunner do
 
   defp drain_exit_signals(episode, started_at) do
     receive do
+      {:cyclium_claim_lost, _dedupe_key} ->
+        # The heartbeat detected our lease was stolen. Abort before the next
+        # step / converge so we don't deliver outputs the new owner will also
+        # deliver. We do NOT mark the episode failed — the new owner drives it.
+        Logger.warning(
+          "Work claim lost mid-run — aborting episode before further side effects",
+          cyclium_episode_id: episode.id
+        )
+
+        Process.put(:cyclium_claim_lost, true)
+        {:error, :claim_lost}
+
       :budget_wall_exceeded ->
         elapsed = DateTime.diff(DateTime.utc_now(), started_at, :millisecond)
 
@@ -329,11 +341,18 @@ defmodule Cyclium.EpisodeRunner do
           do_loop(episode, strategy, state, started_at)
 
         {:approval, request} ->
+          # Checkpoint at the block so resume re-enters exactly here, not at the
+          # strategy's last voluntary checkpoint — otherwise steps between that
+          # checkpoint and the block (including side-effecting tool calls) replay.
+          save_checkpoint(episode, "__blocked__", state)
           journal_step!(episode, :approval_requested, %{args_redacted: request})
           Cyclium.Episodes.update_status(episode.id, :blocked)
           {:blocked, state}
 
         {:wait, external_ref} ->
+          # See :approval above — checkpoint at the block so resume doesn't
+          # replay the steps leading up to it.
+          save_checkpoint(episode, "__blocked__", state)
           journal_step!(episode, :wait_started, %{result_ref: external_ref})
           Cyclium.Episodes.update_status(episode.id, :blocked)
           {:blocked, state}
@@ -419,6 +438,40 @@ defmodule Cyclium.EpisodeRunner do
 
   defp post_converge(episode, converge_result) do
     dry_run? = episode.mode == "dry_run"
+
+    # Re-assert claim ownership before any side effects. If the lease was stolen
+    # while this episode ran (e.g. a long GC pause past the lease, then a steal),
+    # the new owner is now responsible — skip findings/outputs so we don't
+    # double-deliver. This also renews the lease, extending our hold across the
+    # converge writes. (Dry runs have no external effects, so they're exempt.)
+    if not dry_run? and lost_claim?(episode) do
+      Logger.warning(
+        "Lost work claim before post-converge — skipping findings/outputs to avoid double execution",
+        cyclium_episode_id: episode.id
+      )
+
+      Process.put(:cyclium_claim_lost, true)
+      {:error, :claim_lost}
+    else
+      do_post_converge(episode, converge_result, dry_run?)
+    end
+  end
+
+  # Returns true only when work claims are configured, the episode has a
+  # dedupe_key, and we no longer hold the lease. `gate_renew` is a no-op (`:ok`)
+  # when claims are unconfigured or the key is nil, so this is false in those
+  # cases.
+  defp lost_claim?(episode) do
+    Cyclium.WorkClaims.gate_renew(
+      episode.dedupe_key,
+      Cyclium.NodeIdentity.name(),
+      lease_seconds()
+    ) == {:error, :not_owner}
+  end
+
+  defp lease_seconds, do: Application.get_env(:cyclium, :work_claims_lease_seconds, 120)
+
+  defp do_post_converge(episode, converge_result, dry_run?) do
     findings = converge_result.findings || []
 
     # Step 1+2+3: Persist findings (journaled in dry run; optionally persisted with prefix)

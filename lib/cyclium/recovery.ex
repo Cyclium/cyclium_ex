@@ -267,15 +267,32 @@ defmodule Cyclium.Recovery do
 
   defp resolve_policy_from_module(episode, actor_module) do
     with true <- function_exported?(actor_module, :__cyclium_expectations__, 0),
+         {:ok, expectation_id} <- Cyclium.AtomGuard.existing_atom(episode.expectation_id),
          raw_expectations <- actor_module.__cyclium_expectations__(),
-         expectation_id <- String.to_existing_atom(episode.expectation_id),
          {_id, opts} <- List.keyfind(raw_expectations, expectation_id, 0) do
       Keyword.get(opts, :recovery_policy, :fail)
     else
-      _ -> :fail
+      reason ->
+        # Distinguish a genuine miss from a code-load-ordering problem (the
+        # expectation atom not existing yet). Both default to :fail, but log so
+        # an episode that *should* have restarted isn't silently killed.
+        Logger.warning(
+          "Recovery defaulting to :fail for #{episode.actor_id}/#{episode.expectation_id} " <>
+            "(could not resolve recovery_policy from #{inspect(actor_module)}: #{inspect(reason)})",
+          cyclium_episode_id: episode.id
+        )
+
+        :fail
     end
   rescue
-    _ -> :fail
+    e ->
+      Logger.warning(
+        "Recovery policy resolution raised for #{episode.actor_id}/#{episode.expectation_id} " <>
+          "(#{inspect(e)}); defaulting to :fail",
+        cyclium_episode_id: episode.id
+      )
+
+      :fail
   end
 
   defp resolve_policy_from_db(episode) do
