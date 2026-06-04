@@ -34,8 +34,8 @@ This sets two module attributes and imports all helper functions:
 |---|---|---|
 | `load_or_create_conversation/4` | `{conversation, messages}` | Mount helper — loads existing or creates new |
 | `load_messages_from_episodes/1` | `[%{role, content, timestamp}]` | Reconstructs chat history from episodes |
-| `on_episode_completed/3` | `{:ok, assigns_map}` or `:ignore` | Handles episode.completed bus event |
-| `on_episode_failed/3` | `{:ok, assigns_map}` or `:ignore` | Handles episode.failed bus event |
+| `on_episode_completed/4` | `{:ok, assigns_map}` or `:ignore` | Handles episode.completed bus event (verifies conversation + actor) |
+| `on_episode_failed/4` | `{:ok, assigns_map}` or `:ignore` | Handles episode.failed bus event (verifies conversation + actor) |
 | `on_conversation_status_change/2` | `{:ok, conversation}` or `:ignore` | Handles conversation lifecycle events |
 | `dispatch_message/5` | `{:ok, messages}` or `{:error, messages, reason}` | Sends a message and returns updated message list |
 
@@ -231,14 +231,14 @@ defmodule MyAppWeb.ConversationLive.Show do
 
   @impl true
   def handle_info({:bus, "episode.completed", %{episode_id: eid, actor_id: @__actor_id}}, socket) do
-    case on_episode_completed(eid, socket.assigns.conversation.id, socket.assigns.messages) do
+    case on_episode_completed(eid, socket.assigns.conversation.id, @__actor_id, socket.assigns.messages) do
       {:ok, new_assigns} -> {:noreply, assign(socket, new_assigns)}
       :ignore -> {:noreply, socket}
     end
   end
 
   def handle_info({:bus, "episode.failed", %{episode_id: eid, actor_id: @__actor_id}}, socket) do
-    case on_episode_failed(eid, socket.assigns.conversation.id, socket.assigns.messages) do
+    case on_episode_failed(eid, socket.assigns.conversation.id, @__actor_id, socket.assigns.messages) do
       {:ok, new_assigns} -> {:noreply, assign(socket, new_assigns)}
       :ignore -> {:noreply, socket}
     end
@@ -290,10 +290,10 @@ end
 ### Key patterns
 
 **Bus event handling — the double filter:**
-1. `actor_id: @__actor_id` in the pattern match — ignores events from workflow step episodes
-2. `on_episode_completed/3` checks `conversation_id` — ignores events from other conversations
+1. `actor_id: @__actor_id` in the pattern match — an early filter that ignores events from workflow step episodes
+2. `on_episode_completed/4` re-checks **both** `conversation_id` and `actor_id` against the loaded episode — ignores events from other conversations, and enforces the actor match even if step 1's pattern is later loosened
 
-Both filters are required. Without actor_id filtering, tools that trigger workflows (like `initiate_health_check`) will cause the chat to show spurious error/completion messages from the workflow's internal episodes.
+Passing `@__actor_id` to the helper is what bakes the actor check in. Without actor_id filtering, tools that trigger workflows (like `initiate_health_check`) would cause the chat to show spurious error/completion messages from the workflow's internal episodes.
 
 **Data-returning helpers:**
 The `on_*` helpers return `{:ok, assigns_map}` or `:ignore` — you apply them to the socket with `assign/2`. This keeps Phoenix-specific code in the LiveView where it belongs.

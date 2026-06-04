@@ -37,7 +37,7 @@ findings: [
 ]
 ```
 
-### Finding key scoping — deduplicated vs. distinct
+### Finding key scoping: deduplicated vs distinct
 
 The `finding_key` controls deduplication. An active finding with the same key is
 updated in place (last-writer-wins on mutable fields). Choose your key strategy
@@ -49,7 +49,13 @@ based on intent:
 - **Distinct per episode:** Include the episode ID in the key, e.g.
   `"resource:limits:123:#{episode.id}"`. Each episode creates a separate
   finding — useful for audit trails or point-in-time snapshots where every run
-  should produce its own record.
+  should produce its own record. **Lifecycle caveat:** because the key is unique
+  per run, a later episode never updates, supersedes, or `{:clear, ...}`s it —
+  these findings only accumulate. `active_for(subject:)` will then return one
+  active row per run, so bound them with a `ttl_seconds` (auto-clear via the
+  finding sweep) or archive them, or you'll grow an unbounded active set. Reach
+  for distinct keys only when you actually want point-in-time history; for
+  ongoing status tracking, the deduplicated stable key is almost always right.
 
 The `episode_ctx` map passed to `converge/2` contains `episode_id`, so you can
 reference it directly:

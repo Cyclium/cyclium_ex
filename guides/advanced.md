@@ -9,22 +9,37 @@ test kit.
 ## Checkpointing
 
 Strategies can save state mid-episode for crash recovery. Return
-`{:checkpoint, phase_name}` from `next_step/2` to persist the current state:
+`{:checkpoint, phase_name}` from `next_step/2` to persist the current state at a
+milestone — typically just before an expensive or irreversible phase:
 
 ```elixir
-def next_step(state, _ctx) do
-  if state.phase == :data_collected do
-    {:checkpoint, "data_collected"}
-  else
-    {:tool_call, :data_source, :read_record, %{"record_id" => state.record_id}}
-  end
+def next_step(%{phase: :collecting} = state, _ctx) do
+  {:tool_call, :data_source, :read_record, %{"record_id" => state.record_id}}
+end
+
+# All data gathered — checkpoint the milestone before the costly analysis phase.
+def next_step(%{phase: :collected}, _ctx) do
+  {:checkpoint, "collected"}
+end
+
+def next_step(%{phase: :analyzing} = state, _ctx) do
+  {:tool_call, :analyzer, :run, %{"data" => state.data}}
+end
+
+# The runner hands the checkpoint to handle_result (symmetric with :observe), so
+# advance the phase here. Returning {:checkpoint, _} *without* moving the state
+# forward would re-invoke next_step unchanged and loop.
+def handle_result(%{phase: :collected} = state, %{kind: :checkpoint}, {:ok, _phase}) do
+  {:ok, %{state | phase: :analyzing}}
 end
 ```
 
 The checkpoint saves the full strategy state map to the
-`cyclium_episode_checkpoints` table. On resume, `EpisodeTask` loads the latest
-checkpoint by `checkpoint_no` and passes it to the strategy — execution continues
-from where it left off.
+`cyclium_episode_checkpoints` table, then the runner calls `handle_result/3` with
+a `%EpisodeStep{kind: :checkpoint}` step and `{:ok, phase_name}` — the same shape
+as `:observe`, so the strategy transitions there. On resume, `EpisodeTask` loads
+the latest checkpoint by `checkpoint_no` and passes it to the strategy — execution
+continues from where it left off.
 
 ### Checkpoint schema versioning
 
@@ -531,7 +546,11 @@ end
   updates to the same resource coalesce into one episode
 - **Findings create an audit trail** — the episode-scoped `finding_key`
   (`"resource:limits:#{id}:#{episode_id}"`) means each evaluation produces its own
-  finding, giving you a point-in-time history of how status evolved
+  finding, giving you a point-in-time history of how status evolved. Note this is
+  the *distinct-per-episode* keying: these findings accumulate and are never
+  cleared by later runs, so bound them with a `ttl_seconds` or archival. For
+  ongoing status (one active finding per subject, updated each run) use a stable
+  key instead — see [Finding key scoping](findings_and_outputs.md#finding-key-scoping-deduplicated-vs-distinct).
 
 **When to reach for Batch instead:** If you need to process 500 items in one pass
 (e.g., a nightly classification sweep), a single episode with `Cyclium.Batch` is

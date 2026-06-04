@@ -1,5 +1,8 @@
 # Cyclium
 
+[![Hex.pm](https://img.shields.io/hexpm/v/cyclium.svg)](https://hex.pm/packages/cyclium)
+[![HexDocs](https://img.shields.io/badge/hex-docs-blue.svg)](https://hexdocs.pm/cyclium)
+
 > **Autonomous agent framework for Elixir** — actors monitor domains, run
 > multi-turn episodes with budget enforcement, and produce persistent findings
 > and typed outputs.
@@ -182,7 +185,7 @@ EpisodeTask starts
 ```elixir
 # mix.exs
 def deps do
-  [{:cyclium, "~> 0.1.5"}]
+  [{:cyclium, "~> 0.1.7"}]
 end
 ```
 
@@ -190,33 +193,41 @@ Dependencies pulled in: `ecto`, `ecto_sql`, `jason`, `phoenix_pubsub`.
 
 ### 2. Run migrations
 
+Each schema version is dispatched by passing its number to
+`Cyclium.Migrations.up(version: n)` / `down(version: n)` — no need to name the
+`V<n>` modules. For a **fresh install**, run every version in order via
+`versions/0` (this list stays current as new versions ship):
+
 ```elixir
 # In a migration file:
-def up do
-  Cyclium.Migrations.V1.up()   # episodes, steps, checkpoints, findings, outputs
-  Cyclium.Migrations.V2.up()   # episode_logs
-  Cyclium.Migrations.V3.up()   # workflow_instances
-  Cyclium.Migrations.V4.up()   # archived_at on episodes and findings
-  Cyclium.Migrations.V5.up()   # unique index on episode dedupe_key
-  Cyclium.Migrations.V6.up()   # work_claims table for lease-based coordination
-  # ...V7 through V13...
-  Cyclium.Migrations.V14.up()  # trigger_requests table for deferred execution
-  # ...V15 through V18...
-  Cyclium.Migrations.V19.up()  # SQL Server: convert legacy TEXT columns to nvarchar(max)
-end
+defmodule MyApp.Repo.Migrations.InstallCyclium do
+  use Ecto.Migration
 
-def down do
-  Cyclium.Migrations.V19.down()
-  Cyclium.Migrations.V14.down()
-  # ...V13 through V7...
-  Cyclium.Migrations.V6.down()
-  Cyclium.Migrations.V5.down()
-  Cyclium.Migrations.V4.down()
-  Cyclium.Migrations.V3.down()
-  Cyclium.Migrations.V2.down()
-  Cyclium.Migrations.V1.down()
+  def up do
+    Enum.each(Cyclium.Migrations.versions(), &Cyclium.Migrations.up(version: &1))
+  end
+
+  def down do
+    Cyclium.Migrations.versions()
+    |> Enum.reverse()
+    |> Enum.each(&Cyclium.Migrations.down(version: &1))
+  end
 end
 ```
+
+When **upgrading** an existing install, add one migration file per new version
+(so Ecto tracks each independently):
+
+```elixir
+defmodule MyApp.Repo.Migrations.CycliumV22 do
+  use Ecto.Migration
+  def up, do: Cyclium.Migrations.up(version: 22)
+  def down, do: Cyclium.Migrations.down(version: 22)
+end
+```
+
+See the [Interactive Actors guide](guides/interactive_actors.md) for the
+per-version-file template.
 
 > **Authoring migrations:** do not use bare `:text`. On `Ecto.Adapters.Tds` it
 > emits SQL Server's legacy non-Unicode `TEXT` type, which silently replaces

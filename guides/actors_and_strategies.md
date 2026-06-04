@@ -646,6 +646,21 @@ Strategies invoke tools via
 `ToolExec` wrapper handles capability resolution, caching, redaction, and error
 classification.
 
+### Argument keys: prefer strings
+
+`ToolExec` passes the `args` map to `call/3` **verbatim** — it does not normalize
+string vs. atom keys. This is deliberate: tools see exactly what the strategy
+sent, and the framework never silently creates atoms from external input. By
+convention, **use string keys** (`args["record_id"]`). That's what LLM-driven
+tool calls produce (JSON decodes to string keys), and it's the dominant
+convention across existing tools, so a tool written for string keys works
+identically whether the caller is the synthesizer or a hand-written `next_step`.
+
+If a tool may be invoked both ways and you want to be lenient, read both
+explicitly — `args["id"] || args[:id]` — rather than expecting the framework to
+coerce. Don't `String.to_atom/1` incoming keys (untrusted input → atom-table
+growth); if you must, `String.to_existing_atom/1`.
+
 ## Synthesizers
 
 A **synthesizer** is the bridge between strategies and LLM infrastructure. It

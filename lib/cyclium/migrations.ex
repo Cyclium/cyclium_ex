@@ -9,6 +9,11 @@ defmodule Cyclium.Migrations do
         def up, do: Cyclium.Migrations.up(version: 1)
         def down, do: Cyclium.Migrations.down(version: 1)
       end
+
+  For a fresh install, run every version in order — use `versions/0` so the list
+  stays correct as new versions ship:
+
+      def up, do: Enum.each(Cyclium.Migrations.versions(), &Cyclium.Migrations.up(version: &1))
   """
 
   @versions %{
@@ -35,6 +40,9 @@ defmodule Cyclium.Migrations do
     21 => Cyclium.Migrations.V21,
     22 => Cyclium.Migrations.V22
   }
+
+  @doc "All known migration versions, ascending. Use to run every version in order."
+  def versions, do: @versions |> Map.keys() |> Enum.sort()
 
   def up(opts) do
     version = Keyword.fetch!(opts, :version)

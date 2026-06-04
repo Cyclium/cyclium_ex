@@ -95,21 +95,24 @@ defmodule Cyclium.Conversations.LiveHelpers do
   @doc """
   Handle an `episode.completed` bus event for a conversation LiveView.
 
-  Checks that the episode belongs to the current conversation. If it does,
-  returns `{:ok, assigns_map}` with the updated assigns. Otherwise returns `:ignore`.
+  Verifies the episode belongs to **both** the current conversation and the given
+  actor before reacting. Passing `actor_id` (use `@__actor_id`) bakes the actor
+  check into the helper, so it holds even if the `handle_info` pattern is later
+  broadened to drop the `actor_id:` match. Returns `{:ok, assigns_map}` on a
+  match, `:ignore` otherwise.
 
   ## Example
 
       def handle_info({:bus, "episode.completed", %{episode_id: eid, actor_id: @__actor_id}}, socket) do
-        case on_episode_completed(eid, socket.assigns.conversation.id, socket.assigns.messages) do
+        case on_episode_completed(eid, socket.assigns.conversation.id, @__actor_id, socket.assigns.messages) do
           {:ok, new_assigns} -> {:noreply, assign(socket, new_assigns)}
           :ignore -> {:noreply, socket}
         end
       end
   """
-  def on_episode_completed(episode_id, conversation_id, _current_messages) do
+  def on_episode_completed(episode_id, conversation_id, actor_id, _current_messages) do
     case Episodes.get(episode_id) do
-      %{conversation_id: ^conversation_id} ->
+      %{conversation_id: ^conversation_id, actor_id: ^actor_id} ->
         conversation = Conversations.get!(conversation_id)
         messages = load_messages_from_episodes(conversation_id)
 
@@ -128,11 +131,12 @@ defmodule Cyclium.Conversations.LiveHelpers do
   @doc """
   Handle an `episode.failed` bus event for a conversation LiveView.
 
-  Returns `{:ok, assigns_map}` or `:ignore`.
+  Verifies the episode matches both the conversation and `actor_id` (see
+  `on_episode_completed/4`). Returns `{:ok, assigns_map}` or `:ignore`.
   """
-  def on_episode_failed(episode_id, conversation_id, current_messages) do
+  def on_episode_failed(episode_id, conversation_id, actor_id, current_messages) do
     case Episodes.get(episode_id) do
-      %{conversation_id: ^conversation_id} ->
+      %{conversation_id: ^conversation_id, actor_id: ^actor_id} ->
         error_msg = %{
           role: :assistant,
           content: "Sorry, something went wrong processing your request.",

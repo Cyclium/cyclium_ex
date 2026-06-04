@@ -199,6 +199,14 @@ Breaches emit `[:cyclium, :service_levels, :breach]` telemetry and a
 %{type: :duration, current: 45_000, threshold: 30_000}
 ```
 
+> **Observation only.** Service levels are purely a monitoring signal — a breach
+> emits telemetry and a Bus event, and nothing more. They do **not** throttle,
+> back off, fail episodes, open a circuit, or otherwise change execution. To
+> *act* on a breach, subscribe to the Bus event (or telemetry) and drive the
+> response yourself — page, pause an expectation, trip a circuit breaker, etc.
+> For enforcement primitives that do alter execution, see budgets
+> (`max_*`), sampling, and circuit breakers in the [Advanced guide](advanced.md).
+
 Query metrics: `Cyclium.ServiceLevels.metrics(actor_id, expectation_id)` returns
 `%{success_rate: f, p95_duration_ms: n, sample_count: n}`.
 
