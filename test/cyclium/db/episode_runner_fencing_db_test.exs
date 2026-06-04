@@ -11,7 +11,7 @@ defmodule Cyclium.EpisodeRunnerFencingDbTest do
   use Cyclium.DataCase
 
   alias Cyclium.{ConvergeResult, EpisodeRunner, OutputProposal}
-  alias Cyclium.Schemas.{Episode, EpisodeCheckpoint}
+  alias Cyclium.Schemas.{Episode, EpisodeCheckpoint, WorkClaim}
   alias Cyclium.WorkClaims.EctoClaims
 
   defmodule DeliverStrategy do
@@ -126,6 +126,24 @@ defmodule Cyclium.EpisodeRunnerFencingDbTest do
       {:ok, _} = EctoClaims.acquire("k2", "other_node")
 
       assert {:error, :claim_lost} = EpisodeRunner.execute_loop(episode, DeliverStrategy, %{})
+
+      refute_received {:delivered, _}
+      assert Repo.get!(Episode, episode.id).status == :running
+    end
+
+    test "fence re-check: a since-reacquired lease (same owner, newer fence) aborts before delivery" do
+      Application.put_env(:cyclium, :work_claims, EctoClaims)
+      Application.put_env(:cyclium, :node_identity, "this_node")
+
+      episode = insert_episode(%{dedupe_key: "k7"})
+      {:ok, claim} = EctoClaims.acquire("k7", "this_node")
+
+      # Simulate the lease being taken and re-acquired (even by us) while we ran:
+      # the live claim's fence advances past the one we hold.
+      Repo.update_all(from(w in WorkClaim, where: w.dedupe_key == "k7"), set: [fence: 99])
+
+      assert {:error, :claim_lost} =
+               EpisodeRunner.execute_loop(episode, DeliverStrategy, %{}, claim_fence: claim.fence)
 
       refute_received {:delivered, _}
       assert Repo.get!(Episode, episode.id).status == :running

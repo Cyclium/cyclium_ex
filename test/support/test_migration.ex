@@ -177,6 +177,7 @@ defmodule Cyclium.Test.Migration do
       add(:last_heartbeat_at, :utc_datetime)
       add(:finished_at, :utc_datetime)
       add(:attempt, :integer, default: 1)
+      add(:fence, :integer, default: 0)
       add(:work_type, :string, size: 128)
       add(:error_detail, :map)
     end

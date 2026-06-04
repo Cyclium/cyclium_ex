@@ -47,6 +47,16 @@ defmodule Cyclium.WorkClaims do
   @callback reclaim_expired(limit :: pos_integer()) ::
               {:ok, [WorkClaim.t()]}
 
+  @doc """
+  Returns `true` if `owner_node` still holds the claim on `dedupe_key` at the
+  given `fence` (ownership generation). Optional — adapters that don't implement
+  it fall back to an owner-only ownership check via `renew/3`.
+  """
+  @callback owns?(dedupe_key :: String.t(), owner_node :: String.t(), fence :: integer()) ::
+              boolean()
+
+  @optional_callbacks owns?: 3
+
   # --- Gate dispatch functions ---
 
   @doc """
@@ -175,6 +185,31 @@ defmodule Cyclium.WorkClaims do
     case impl() do
       nil -> {:ok, []}
       mod -> mod.reclaim_expired(limit)
+    end
+  end
+
+  @doc """
+  Returns `true` if `owner_node` still holds the claim at `fence`.
+
+  Returns `true` (we own) when claims are unconfigured. When the configured
+  adapter implements `owns?/3` and a `fence` is known, delegates to it
+  (fence-aware). Otherwise falls back to an owner-only check via `renew/3`,
+  preserving protection for adapters that don't implement the fence callback.
+  """
+  def gate_owns?(nil, _owner_node, _fence), do: true
+
+  def gate_owns?(dedupe_key, owner_node, fence) do
+    case impl() do
+      nil ->
+        true
+
+      mod ->
+        if not is_nil(fence) and function_exported?(mod, :owns?, 3) do
+          mod.owns?(dedupe_key, owner_node, fence)
+        else
+          lease = Application.get_env(:cyclium, :work_claims_lease_seconds, 120)
+          gate_renew(dedupe_key, owner_node, lease) != {:error, :not_owner}
+        end
     end
   end
 

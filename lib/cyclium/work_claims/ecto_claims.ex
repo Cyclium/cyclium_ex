@@ -51,6 +51,7 @@ defmodule Cyclium.WorkClaims.EctoClaims do
       lease_until: lease_until,
       claimed_at: now,
       attempt: 1,
+      fence: 1,
       work_type: Keyword.get(opts, :work_type)
     })
     |> repo().insert()
@@ -78,22 +79,26 @@ defmodule Cyclium.WorkClaims.EctoClaims do
       from(c in WorkClaim,
         where: c.dedupe_key == ^key and c.state == :claimed and c.lease_until < ^now
       )
-      |> repo().update_all(set: takeover_set(owner, now, new_lease), inc: [attempt: 1])
+      |> repo().update_all(set: takeover_set(owner, now, new_lease), inc: [attempt: 1, fence: 1])
       |> finish_take_over(key)
     end
   end
 
-  # Re-claim a completed slot, resetting the attempt counter.
+  # Re-claim a completed slot, resetting the attempt counter (fence still
+  # increments — it's a monotonic ownership generation, not a retry count).
   defp take_over(%{state: :done}, key, owner, now, new_lease) do
     from(c in WorkClaim, where: c.dedupe_key == ^key and c.state == :done)
-    |> repo().update_all(set: [{:attempt, 1} | takeover_set(owner, now, new_lease)])
+    |> repo().update_all(
+      set: [{:attempt, 1} | takeover_set(owner, now, new_lease)],
+      inc: [fence: 1]
+    )
     |> finish_take_over(key)
   end
 
   # Re-claim a failed/expired slot, incrementing the attempt counter.
   defp take_over(%{state: state}, key, owner, now, new_lease) do
     from(c in WorkClaim, where: c.dedupe_key == ^key and c.state == ^state)
-    |> repo().update_all(set: takeover_set(owner, now, new_lease), inc: [attempt: 1])
+    |> repo().update_all(set: takeover_set(owner, now, new_lease), inc: [attempt: 1, fence: 1])
     |> finish_take_over(key)
   end
 
@@ -182,6 +187,19 @@ defmodule Cyclium.WorkClaims.EctoClaims do
       |> repo().all()
 
     {:ok, expired}
+  end
+
+  @impl true
+  def owns?(dedupe_key, owner_node, fence) do
+    repo().exists?(
+      from(c in WorkClaim,
+        where:
+          c.dedupe_key == ^dedupe_key and
+            c.owner_node == ^owner_node and
+            c.state == :claimed and
+            c.fence == ^fence
+      )
+    )
   end
 
   defp repo do

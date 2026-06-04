@@ -17,6 +17,8 @@ defmodule Cyclium.EpisodeRunner do
 
   def execute_loop(%Episode{} = episode, strategy, state, opts \\ []) do
     if synth = opts[:synthesizer], do: Process.put(:cyclium_synthesizer, synth)
+    # Fence (ownership generation) we acquired, for the post-converge re-check.
+    Process.put(:cyclium_claim_fence, opts[:claim_fence])
 
     Logger.metadata(
       cyclium_actor_id: episode.actor_id,
@@ -524,19 +526,18 @@ defmodule Cyclium.EpisodeRunner do
     end
   end
 
-  # Returns true only when work claims are configured, the episode has a
-  # dedupe_key, and we no longer hold the lease. `gate_renew` is a no-op (`:ok`)
-  # when claims are unconfigured or the key is nil, so this is false in those
-  # cases.
+  # True only when work claims are configured, the episode has a dedupe_key, and
+  # we no longer hold the claim at the fence we acquired. `gate_owns?` returns
+  # true (we own) when claims are unconfigured or the key is nil. With a fence it
+  # uses the fence-aware `owns?/3` (catching steal-and-reacquire); without one it
+  # falls back to an owner-only `renew/3` check.
   defp lost_claim?(episode) do
-    Cyclium.WorkClaims.gate_renew(
+    not Cyclium.WorkClaims.gate_owns?(
       episode.dedupe_key,
       Cyclium.NodeIdentity.name(),
-      lease_seconds()
-    ) == {:error, :not_owner}
+      Process.get(:cyclium_claim_fence)
+    )
   end
-
-  defp lease_seconds, do: Application.get_env(:cyclium, :work_claims_lease_seconds, 120)
 
   defp do_post_converge(episode, converge_result, dry_run?) do
     findings = converge_result.findings || []

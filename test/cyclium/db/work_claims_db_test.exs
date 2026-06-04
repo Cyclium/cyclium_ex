@@ -95,6 +95,32 @@ defmodule Cyclium.WorkClaimsDbTest do
       {:ok, claim} = EctoClaims.acquire(key, "node@a", work_type: "episode")
       assert claim.work_type == "episode"
     end
+
+    test "fence starts at 1 and increments on each takeover" do
+      key = unique_key()
+      {:ok, c1} = EctoClaims.acquire(key, "node@a")
+      assert c1.fence == 1
+
+      # Expire the lease, then a different node steals it.
+      Repo.update_all(from(w in WorkClaim, where: w.dedupe_key == ^key),
+        set: [lease_until: past()]
+      )
+
+      {:ok, c2} = EctoClaims.acquire(key, "node@b")
+      assert c2.fence == 2
+      assert c2.owner_node == "node@b"
+    end
+  end
+
+  describe "EctoClaims.owns?/3" do
+    test "matches only the current owner at the current fence" do
+      key = unique_key()
+      {:ok, c} = EctoClaims.acquire(key, "node@a")
+
+      assert EctoClaims.owns?(key, "node@a", c.fence)
+      refute EctoClaims.owns?(key, "node@a", c.fence + 1)
+      refute EctoClaims.owns?(key, "node@b", c.fence)
+    end
   end
 
   # ─── concurrent acquire (race safety) ──────────────────────────────────────

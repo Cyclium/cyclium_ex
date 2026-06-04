@@ -16,6 +16,7 @@ defmodule Cyclium.Schemas.WorkClaim do
           last_heartbeat_at: DateTime.t() | nil,
           finished_at: DateTime.t() | nil,
           attempt: integer(),
+          fence: integer(),
           work_type: String.t() | nil,
           error_detail: map() | nil
         }
@@ -29,6 +30,7 @@ defmodule Cyclium.Schemas.WorkClaim do
     field(:last_heartbeat_at, :utc_datetime)
     field(:finished_at, :utc_datetime)
     field(:attempt, :integer, default: 1)
+    field(:fence, :integer, default: 0)
     field(:work_type, :string)
     field(:error_detail, :map)
   end
@@ -44,6 +46,7 @@ defmodule Cyclium.Schemas.WorkClaim do
       :last_heartbeat_at,
       :finished_at,
       :attempt,
+      :fence,
       :work_type,
       :error_detail
     ])

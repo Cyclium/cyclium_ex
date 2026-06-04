@@ -22,14 +22,15 @@ defmodule Cyclium.EpisodeTask do
     # Claim gate — only runs if work_claims is configured
     lease_seconds = lease_seconds()
 
-    case Cyclium.WorkClaims.gate_acquire(episode.dedupe_key, Cyclium.NodeIdentity.name(),
-           lease_seconds: lease_seconds,
-           work_type: "episode"
-         ) do
-      {:ok, :passthrough} -> :ok
-      {:ok, _claim} -> :ok
-      {:error, :busy} -> exit(:normal)
-    end
+    claim_fence =
+      case Cyclium.WorkClaims.gate_acquire(episode.dedupe_key, Cyclium.NodeIdentity.name(),
+             lease_seconds: lease_seconds,
+             work_type: "episode"
+           ) do
+        {:ok, :passthrough} -> nil
+        {:ok, claim} -> claim.fence
+        {:error, :busy} -> exit(:normal)
+      end
 
     # Start heartbeat for lease renewal if claiming is active
     heartbeat_pid = maybe_start_heartbeat(episode, lease_seconds)
@@ -49,7 +50,10 @@ defmodule Cyclium.EpisodeTask do
       end
 
     try do
-      case Cyclium.EpisodeRunner.execute_loop(episode, strategy, state, synthesizer: synthesizer) do
+      case Cyclium.EpisodeRunner.execute_loop(episode, strategy, state,
+             synthesizer: synthesizer,
+             claim_fence: claim_fence
+           ) do
         {:error, :claim_lost} ->
           # The lease was stolen mid-run; the new owner is driving this episode
           # now. Do NOT complete the claim or touch the episode row — leave both
