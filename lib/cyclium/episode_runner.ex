@@ -854,7 +854,7 @@ defmodule Cyclium.EpisodeRunner do
 
   defp journal_step!(%Episode{} = episode, kind, attrs) do
     now = DateTime.utc_now()
-    step_no = next_step_no(episode.id)
+    step_no = Cyclium.Episodes.next_step_no(episode.id)
     log_strategy = parse_log_strategy(episode.log_strategy)
 
     {args_redacted, result_ref} =
@@ -991,13 +991,6 @@ defmodule Cyclium.EpisodeRunner do
   defp parse_log_strategy("full_debug"), do: :full_debug
   defp parse_log_strategy(atom) when is_atom(atom), do: atom
   defp parse_log_strategy(_), do: :timeline
-
-  defp next_step_no(episode_id) do
-    import Ecto.Query
-
-    (from(s in EpisodeStep, where: s.episode_id == ^episode_id, select: max(s.step_no))
-     |> repo().one() || 0) + 1
-  end
 
   defp resolve_synthesizer do
     Process.get(:cyclium_synthesizer) || Application.get_env(:cyclium, :synthesizer)

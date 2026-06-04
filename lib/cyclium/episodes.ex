@@ -520,11 +520,23 @@ defmodule Cyclium.Episodes do
   defp safe_to_atom(value) when is_atom(value), do: value
   defp safe_to_atom(value) when is_binary(value), do: String.to_existing_atom(value)
 
-  defp next_step_no(episode_id) do
-    (from(s in EpisodeStep,
-       where: s.episode_id == ^episode_id,
-       select: max(s.step_no)
-     )
-     |> repo().one() || 0) + 1
+  @doc """
+  Returns the next step number for an episode's journal (current max + 1, or 1
+  when there are no steps yet).
+
+  Shared by the episode runner and the output router so step numbering stays
+  consistent across both. Steps for a single episode are journaled serially by
+  one process, so the read-then-increment is race-free in practice.
+  """
+  @spec next_step_no(binary()) :: pos_integer()
+  def next_step_no(episode_id) do
+    max_step_no =
+      from(s in EpisodeStep,
+        where: s.episode_id == ^episode_id,
+        select: max(s.step_no)
+      )
+      |> repo().one()
+
+    (max_step_no || 0) + 1
   end
 end

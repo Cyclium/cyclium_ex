@@ -12,8 +12,6 @@ defmodule Cyclium.Output.Router do
     6. Emit telemetry at each outcome
   """
 
-  import Ecto.Query
-
   alias Cyclium.Schemas.{Output, EpisodeStep}
   alias Cyclium.OutputProposal
 
@@ -111,8 +109,10 @@ defmodule Cyclium.Output.Router do
   end
 
   defp journal_output_step!(episode, kind, output, error_class) do
-    now = DateTime.utc_now() |> DateTime.truncate(:second)
-    step_no = next_step_no(episode.id)
+    # EpisodeStep.created_at is :utc_datetime_usec — use full microsecond
+    # precision (matching the runner's journal_step!). A :second-truncated value
+    # raises ArgumentError on dump, which would crash output journaling.
+    step_no = Cyclium.Episodes.next_step_no(episode.id)
 
     repo().insert!(%EpisodeStep{
       episode_id: episode.id,
@@ -121,18 +121,8 @@ defmodule Cyclium.Output.Router do
       tool_name: output.type,
       side_effect_key: output.dedupe_key,
       error_class: error_class,
-      created_at: now
+      created_at: DateTime.utc_now()
     })
-  end
-
-  defp next_step_no(episode_id) do
-    from(s in EpisodeStep,
-      where: s.episode_id == ^episode_id,
-      select: max(s.step_no)
-    )
-    |> repo().one() ||
-      0
-      |> Kernel.+(1)
   end
 
   defp has_unique_error?(changeset, field) do
