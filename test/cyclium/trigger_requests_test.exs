@@ -136,6 +136,29 @@ defmodule Cyclium.TriggerRequestsTest do
       {:ok, _} = create_trigger_request(episode)
       assert {:ok, 0} = TriggerRequests.expire_stale(3600)
     end
+
+    test "source_env scopes expiry so a poller never GCs another env's requests",
+         %{episode: episode} do
+      {:ok, rc} = create_trigger_request(episode, source_env: "rc")
+      ep2 = insert_episode(%{actor_id: "test_actor", expectation_id: "test_exp"})
+      {:ok, prod} = create_trigger_request(ep2, source_env: nil)
+
+      old = ~U[2020-01-01 00:00:00Z]
+
+      Repo.update_all(
+        from(r in Cyclium.Schemas.TriggerRequest, where: r.id in ^[rc.id, prod.id]),
+        set: [inserted_at: old]
+      )
+
+      # The default-env poller (nil) expires only NULL-env rows — not "rc".
+      assert {:ok, 1} = TriggerRequests.expire_stale(60, source_env: nil)
+      assert Repo.get!(Cyclium.Schemas.TriggerRequest, prod.id).status == :expired
+      assert Repo.get!(Cyclium.Schemas.TriggerRequest, rc.id).status == :pending
+
+      # The rc poller expires its own.
+      assert {:ok, 1} = TriggerRequests.expire_stale(60, source_env: "rc")
+      assert Repo.get!(Cyclium.Schemas.TriggerRequest, rc.id).status == :expired
+    end
   end
 
   defp create_trigger_request(episode, extra \\ []) do

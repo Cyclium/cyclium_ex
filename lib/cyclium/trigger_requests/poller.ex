@@ -72,8 +72,9 @@ defmodule Cyclium.TriggerRequests.Poller do
       Enum.each(requests, &dispatch(&1, node_name))
     end
 
-    # Periodically expire stale requests
-    Cyclium.TriggerRequests.expire_stale(@stale_expiry_seconds)
+    # Periodically expire stale requests — scoped to this poller's env so it
+    # never GCs another env's pending requests (mirrors fetch_pending).
+    Cyclium.TriggerRequests.expire_stale(@stale_expiry_seconds, source_env: state.source_env)
   end
 
   defp dispatch(request, node_name) do

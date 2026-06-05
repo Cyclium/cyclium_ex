@@ -88,8 +88,15 @@ defmodule Cyclium.TriggerRequests do
 
   @doc """
   Expires trigger requests that have been pending longer than `max_age_seconds`.
+
+  ## Options
+
+    * `:source_env` — when present, only expires requests from this env, matched
+      by **strict equality** (so a poller never GCs another env's pending
+      requests). Pass `nil` to scope to the unset/default env; omit to expire
+      across all envs. The poller passes its own env, mirroring `fetch_pending/1`.
   """
-  def expire_stale(max_age_seconds \\ 3600) do
+  def expire_stale(max_age_seconds \\ 3600, opts \\ []) do
     cutoff =
       DateTime.utc_now()
       |> DateTime.add(-max_age_seconds, :second)
@@ -99,6 +106,7 @@ defmodule Cyclium.TriggerRequests do
       from(r in TriggerRequest,
         where: r.status == :pending and r.inserted_at < ^cutoff
       )
+      |> filter_source_env(Keyword.get(opts, :source_env, :__unset__))
       |> repo().update_all(set: [status: :expired])
 
     {:ok, count}
