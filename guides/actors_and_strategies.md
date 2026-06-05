@@ -77,7 +77,9 @@ end
 **Trigger types:**
 
 - `{:event, "event.name"}` — fires when a matching Bus event arrives
-- `{:schedule, interval_ms}` — fires on a recurring timer
+- `{:schedule, interval_ms}` — fires on a recurring timer (every N ms, anchored to
+  the last fire; **not** a wall-clock time)
+- `{:cron, "0 5 * * *"}` — fires at a wall-clock time (UTC). See [Cron triggers](#cron-triggers) below
 - `:manual` — fires on explicit request
 - `:workflow` — fires as part of a multi-actor workflow
 - **List** — combine multiple triggers: `[{:event, "resource.updated"}, :workflow]`
@@ -102,6 +104,38 @@ while the `:workflow` marker documents that workflows can also invoke this
 expectation. Workflow-triggered episodes bypass the actor GenServer entirely —
 the workflow engine creates episodes directly — so actor-level debounce/cooldown
 only applies to event triggers.
+
+#### Cron triggers
+
+Use `{:cron, spec}` for wall-clock schedules. `{:schedule, ms}` fires every N ms
+*anchored to the last fire* (so it drifts to whenever it started); `{:cron, ...}`
+fires at a fixed time of day:
+
+```elixir
+expectation(:daily_rollup,
+  strategy: MyApp.Strategies.DailyRollup,
+  trigger: {:cron, "0 5 * * *"}            # 05:00 UTC every day
+)
+```
+
+Standard 5-field crontab — `minute hour day-of-month month day-of-week` — with
+`*`, lists (`,`), ranges (`a-b`), and steps (`*/n`, `a-b/n`). Day-of-week is
+`0..6` (Sunday = 0; `7` also accepted). When **both** day-of-month and day-of-week
+are restricted, a tick matches if **either** does (standard Vixie-cron rule).
+Macros: `@hourly`, `@daily`/`@midnight`, `@weekly`, `@monthly`, `@yearly`/`@annually`.
+
+Key properties:
+
+- **UTC only.** No time-zone or DST handling — `"0 5 * * *"` is 05:00 UTC.
+- **At-most-once per tick, cluster-wide.** Every node computes the same occurrence
+  and keys the episode dedupe on the exact tick, so concurrent fires collapse to
+  one episode per occurrence (per env — see [Distributed Ops](distributed_ops.md)).
+  No external scheduler or leader election needed.
+- **No catch-up.** Only the next future tick is scheduled; if the cluster is down
+  across a tick, that occurrence is skipped (not replayed).
+- **Fail-fast.** A malformed spec raises when the actor boots, not silently never fires.
+- Cron can appear in a trigger list too: `[{:cron, "0 5 * * *"}, {:event, "rollup.requested"}]`.
+- `window:` is ignored for cron (the tick *is* the dedupe bucket).
 
 **Backpressure options** (`episode_overflow`):
 

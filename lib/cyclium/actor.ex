@@ -321,6 +321,9 @@ defmodule Cyclium.Actor.Server do
       end
     end)
 
+    # Fail fast on a malformed cron spec rather than silently never firing.
+    validate_cron_triggers!(expectations)
+
     # Register this process under its actor_id so recovery (and others) can find
     # the live actor regardless of the `name:` it was started under. Guarded: the
     # registry only exists when Cyclium.Supervisor is running (not in standalone
@@ -392,6 +395,36 @@ defmodule Cyclium.Actor.Server do
 
           state = maybe_fire_episode(state, expectation, trigger_ref)
           reschedule_timer(state, expectation)
+      end
+
+    {:noreply, state}
+  end
+
+  def handle_info({:cron_fire, expectation_id, tick}, state) do
+    state =
+      case Map.get(state.expectations, expectation_id) do
+        nil ->
+          state
+
+        expectation ->
+          # Use the planned tick (not now()) as scheduled_at, so the dedupe key
+          # is identical across nodes for this occurrence — at-most-once per tick.
+          trigger_ref = %Cyclium.Trigger.Schedule{scheduled_at: tick}
+          state = maybe_fire_episode(state, expectation, trigger_ref)
+          # Next occurrence strictly after the tick we just fired.
+          arm_cron(state, expectation, tick)
+      end
+
+    {:noreply, state}
+  end
+
+  # Far-future ticks (e.g. @yearly) exceed Process.send_after's ~49-day ceiling;
+  # arm_cron clamps and schedules this no-fire re-arm to walk down to the tick.
+  def handle_info({:cron_rearm, expectation_id}, state) do
+    state =
+      case Map.get(state.expectations, expectation_id) do
+        nil -> state
+        expectation -> arm_cron(state, expectation, DateTime.utc_now())
       end
 
     {:noreply, state}
@@ -548,15 +581,24 @@ defmodule Cyclium.Actor.Server do
         cooldowns: cooldowns
     }
 
-    # Start timers for newly added schedule expectations
+    # Start timers for newly added scheduled / cron expectations
     Enum.reduce(added, state, fn id, acc ->
       case Map.get(new_expectations, id) do
-        %{trigger: {:schedule, interval_ms}} when is_integer(interval_ms) ->
-          ref = Process.send_after(self(), {:schedule_fire, id}, interval_ms)
-          put_in(acc.timers[id], ref)
-
-        _ ->
+        nil ->
           acc
+
+        expectation ->
+          case schedule_kind(expectation.trigger) do
+            {:interval, interval_ms} ->
+              ref = Process.send_after(self(), {:schedule_fire, id}, interval_ms)
+              put_in(acc.timers[id], ref)
+
+            {:cron, _spec} ->
+              arm_cron(acc, expectation, DateTime.utc_now())
+
+            nil ->
+              acc
+          end
       end
     end)
   end
@@ -712,16 +754,81 @@ defmodule Cyclium.Actor.Server do
   defp start_schedule_timers(state) do
     state.expectations
     |> Enum.reduce(state, fn {_id, expectation}, acc ->
-      case find_schedule(expectation.trigger) do
-        {:schedule, interval_ms} ->
-          delay = compute_schedule_delay(state.actor_id, expectation.id, interval_ms)
+      case schedule_kind(expectation.trigger) do
+        {:interval, interval_ms} ->
+          delay = compute_schedule_delay(acc.actor_id, expectation.id, interval_ms)
           ref = Process.send_after(self(), {:schedule_fire, expectation.id}, delay)
           put_in(acc.timers[expectation.id], ref)
+
+        {:cron, _spec} ->
+          arm_cron(acc, expectation, DateTime.utc_now())
 
         nil ->
           acc
       end
     end)
+  end
+
+  # Unifies interval (`{:schedule, ms}`) and cron (`{:cron, spec}`) triggers,
+  # matching either a bare trigger or one inside a trigger list.
+  defp schedule_kind(trigger) do
+    case find_schedule(trigger) do
+      {:schedule, ms} ->
+        {:interval, ms}
+
+      nil ->
+        case find_cron(trigger) do
+          {:cron, spec} -> {:cron, spec}
+          nil -> nil
+        end
+    end
+  end
+
+  defp find_cron({:cron, spec}) when is_binary(spec), do: {:cron, spec}
+
+  defp find_cron(triggers) when is_list(triggers) do
+    Enum.find_value(triggers, fn
+      {:cron, spec} when is_binary(spec) -> {:cron, spec}
+      _ -> nil
+    end)
+  end
+
+  defp find_cron(_), do: nil
+
+  defp validate_cron_triggers!(expectations) do
+    Enum.each(expectations, fn {_id, expectation} ->
+      case find_cron(expectation.trigger) do
+        {:cron, spec} -> Cyclium.Cron.parse!(spec)
+        nil -> :ok
+      end
+    end)
+  end
+
+  # Process.send_after caps at 2^32-1 ms (~49.7 days). Clamp below that and
+  # re-arm (no fire) for far-future ticks; the dedupe key still keys off the
+  # true tick, so the eventual fire is at-most-once per occurrence.
+  @max_send_after_ms 2_000_000_000
+
+  defp arm_cron(state, expectation, from) do
+    case find_cron(expectation.trigger) do
+      {:cron, spec} ->
+        cron = Cyclium.Cron.parse!(spec)
+        tick = Cyclium.Cron.next(cron, from)
+        delay = max(DateTime.diff(tick, DateTime.utc_now(), :millisecond), 0)
+
+        {msg, delay} =
+          if delay > @max_send_after_ms do
+            {{:cron_rearm, expectation.id}, @max_send_after_ms}
+          else
+            {{:cron_fire, expectation.id, tick}, delay}
+          end
+
+        ref = Process.send_after(self(), msg, delay)
+        put_in(state.timers[expectation.id], ref)
+
+      nil ->
+        state
+    end
   end
 
   @min_startup_delay_ms :timer.seconds(10)
@@ -1149,9 +1256,18 @@ defmodule Cyclium.Actor.Server do
       end
 
     bucket =
-      case expectation.window do
-        nil -> Date.to_iso8601(DateTime.to_date(dt))
-        window -> Cyclium.Window.bucket(window, dt)
+      case find_cron(expectation.trigger) do
+        # Cron: bucket by the exact tick (minute precision). Every node computes
+        # the same occurrence, so concurrent fires collapse to one episode per
+        # tick. `window` is ignored — the tick *is* the bucket.
+        {:cron, _spec} ->
+          dt |> DateTime.truncate(:second) |> Map.put(:second, 0) |> DateTime.to_iso8601()
+
+        nil ->
+          case expectation.window do
+            nil -> Date.to_iso8601(DateTime.to_date(dt))
+            window -> Cyclium.Window.bucket(window, dt)
+          end
       end
 
     # Env-scoped when CYCLIUM env is set, so two otherwise-identical :full nodes
