@@ -13,39 +13,33 @@ build_base:
           - Dockerfile.base
           - .tool-versions
   script:
+    - docker login -u gitlab-ci-token -p $CI_JOB_TOKEN $CI_REGISTRY
     - docker buildx build -f Dockerfile.base -t $BASE_IMAGE .
     - docker push $BASE_IMAGE
 
-.elixir_job:
-  before_script:
-    - mix deps.get
-
 lint:
-  extends: .elixir_job
   stage: lint
-  image: $BASE_IMAGE
   script:
-    - mix format --check-formatted
-    - mix dialyzer
+    - docker login -u gitlab-ci-token -p $CI_JOB_TOKEN $CI_REGISTRY
+    - docker pull $BASE_IMAGE
+    - docker run --rm -v $CI_PROJECT_DIR:/app -w /app $BASE_IMAGE
+        sh -c "mix deps.get && mix format --check-formatted && mix dialyzer"
 
 test:
-  extends: .elixir_job
   stage: test
-  image: $BASE_IMAGE
-  variables:
-    MIX_ENV: test
   script:
-    - mix test
+    - docker login -u gitlab-ci-token -p $CI_JOB_TOKEN $CI_REGISTRY
+    - docker pull $BASE_IMAGE
+    - docker run --rm -v $CI_PROJECT_DIR:/app -w /app -e MIX_ENV=test $BASE_IMAGE
+        sh -c "mix deps.get && mix test"
 
 publish_hex:
-  extends: .elixir_job
   stage: publish
-  image: $BASE_IMAGE
-  variables:
-    MIX_ENV: prod
   script:
-    - mix hex.config api_key $HEX_API_KEY
-    - mix hex.publish --yes
+    - docker login -u gitlab-ci-token -p $CI_JOB_TOKEN $CI_REGISTRY
+    - docker pull $BASE_IMAGE
+    - docker run --rm -v $CI_PROJECT_DIR:/app -w /app -e MIX_ENV=prod -e HEX_API_KEY=$HEX_API_KEY $BASE_IMAGE
+        sh -c "mix deps.get && mix hex.config api_key \$HEX_API_KEY && mix hex.publish --yes"
   rules:
     - if: $CI_COMMIT_BRANCH == "main"
       when: manual
