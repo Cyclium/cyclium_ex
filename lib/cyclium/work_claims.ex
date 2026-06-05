@@ -179,7 +179,9 @@ defmodule Cyclium.WorkClaims do
   end
 
   @doc """
-  Reclaim up to `limit` expired claims. Returns empty list if unconfigured.
+  Lists up to `limit` claims whose lease has elapsed (still `:claimed`, past
+  `lease_until`) — read-only, does not transition them. Returns `{:ok, []}` when
+  unconfigured. See `Cyclium.WorkClaims.EctoClaims.reclaim_expired/1`.
   """
   def gate_reclaim_expired(limit \\ 100) do
     case impl() do

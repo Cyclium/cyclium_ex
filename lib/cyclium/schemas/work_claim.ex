@@ -4,12 +4,15 @@ defmodule Cyclium.Schemas.WorkClaim do
 
   @primary_key {:id, :binary_id, autogenerate: true}
 
-  @states [:claimed, :done, :failed, :expired]
+  # An expired lease is NOT a distinct state — it's a `:claimed` row whose
+  # `lease_until` has elapsed (re-acquired via the takeover path). There is no
+  # `:expired` state because nothing ever writes one.
+  @states [:claimed, :done, :failed]
 
   @type t :: %__MODULE__{
           id: binary() | nil,
           dedupe_key: String.t() | nil,
-          state: :claimed | :done | :failed | :expired | nil,
+          state: :claimed | :done | :failed | nil,
           owner_node: String.t() | nil,
           lease_until: DateTime.t() | nil,
           claimed_at: DateTime.t() | nil,

@@ -4,6 +4,9 @@ ENV DEBIAN_FRONTEND=noninteractive
 ENV ASDF_DIR=/root/.asdf
 ENV PATH="${ASDF_DIR}/shims:${ASDF_DIR}/bin:${PATH}"
 
+ENV LANG=en_US.UTF-8
+ENV LC_ALL=en_US.UTF-8
+
 RUN apt-get update -qq && \
     apt-get install -y --no-install-recommends \
       git curl unzip build-essential \

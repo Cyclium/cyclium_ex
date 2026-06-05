@@ -14,7 +14,9 @@ defmodule Cyclium.WorkClaims.EctoClaims do
   throughput optimization, not a correctness requirement.
 
   The `state` column is an `Ecto.Enum` — all reads and writes use atoms
-  (`:claimed`, `:done`, `:failed`, `:expired`).
+  (`:claimed`, `:done`, `:failed`). An expired lease has no distinct state: it's
+  a `:claimed` row whose `lease_until` has elapsed, which the takeover path
+  steals in place.
   """
 
   @behaviour Cyclium.WorkClaims
@@ -175,6 +177,13 @@ defmodule Cyclium.WorkClaims.EctoClaims do
     end
   end
 
+  @doc """
+  Lists up to `limit` claims whose lease has elapsed (still `:claimed`, just
+  past `lease_until`). Read-only — it does **not** transition or re-acquire them;
+  a caller re-acquires each via `acquire/2`, whose takeover path steals the
+  expired `:claimed` row. Recovery uses optimistic `acquire` directly, so the
+  framework itself doesn't call this — it's here for external maintenance sweeps.
+  """
   @impl true
   def reclaim_expired(limit \\ 100) do
     now = DateTime.utc_now()
