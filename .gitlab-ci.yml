@@ -1,33 +1,51 @@
-image: elixir:latest
-
 stages:
+  - build_base
   - lint
   - test
   - publish
 
-before_script:
-  - mix local.hex --force
-  - mix local.rebar --force
-  - mix deps.get
+build_base:
+  stage: build_base
+  rules:
+    - if: $BUILD_BASE_IMAGE == "true"
+    - changes:
+        paths:
+          - Dockerfile.base
+          - .tool-versions
+  script:
+    - docker buildx build -f Dockerfile.base -t $BASE_IMAGE .
+    - docker push $BASE_IMAGE
+
+.elixir_job:
+  before_script:
+    - mix deps.get
 
 lint:
+  extends: .elixir_job
   stage: lint
+  image: $BASE_IMAGE
   script:
     - mix format --check-formatted
     - mix dialyzer
 
 test:
+  extends: .elixir_job
   stage: test
+  image: $BASE_IMAGE
   variables:
     MIX_ENV: test
   script:
     - mix test
 
 publish_hex:
+  extends: .elixir_job
   stage: publish
-  when: manual
+  image: $BASE_IMAGE
   variables:
     MIX_ENV: prod
   script:
     - mix hex.config api_key $HEX_API_KEY
     - mix hex.publish --yes
+  rules:
+    - if: $CI_COMMIT_BRANCH == "main"
+      when: manual
