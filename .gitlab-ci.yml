@@ -1,0 +1,33 @@
+image: elixir:latest
+
+stages:
+  - lint
+  - test
+  - publish
+
+before_script:
+  - mix local.hex --force
+  - mix local.rebar --force
+  - mix deps.get
+
+lint:
+  stage: lint
+  script:
+    - mix format --check-formatted
+    - mix dialyzer
+
+test:
+  stage: test
+  variables:
+    MIX_ENV: test
+  script:
+    - mix test
+
+publish_hex:
+  stage: publish
+  when: manual
+  variables:
+    MIX_ENV: prod
+  script:
+    - mix hex.config api_key $HEX_API_KEY
+    - mix hex.publish --yes
