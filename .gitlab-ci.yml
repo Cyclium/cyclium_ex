@@ -35,12 +35,16 @@ test:
 
 publish_hex:
   stage: publish
+  when: manual
+  allow_failure: true
   script:
     - docker login -u gitlab-ci-token -p $CI_JOB_TOKEN $CI_REGISTRY
     - docker pull $BASE_IMAGE
-    - docker run --rm -v $CI_PROJECT_DIR:/app -w /app -e MIX_ENV=prod -e HEX_API_KEY=$HEX_API_KEY $BASE_IMAGE
+    - docker run --rm -v $CI_PROJECT_DIR:/app -w /app
+        -e MIX_ENV=dev
+        -e HEX_API_KEY=$HEX_API_KEY
+        $BASE_IMAGE
         sh -c "mix deps.get && mix hex.config api_key \$HEX_API_KEY && mix hex.publish --yes"
   rules:
     - if: $CI_COMMIT_BRANCH == "main"
       when: manual
-      allow_failure: true
