@@ -1,0 +1,24 @@
+FROM ubuntu:24.04
+
+ENV DEBIAN_FRONTEND=noninteractive
+ENV ASDF_DIR=/root/.asdf
+ENV PATH="${ASDF_DIR}/shims:${ASDF_DIR}/bin:${PATH}"
+
+RUN apt-get update -qq && \
+    apt-get install -y --no-install-recommends \
+      git curl unzip build-essential \
+      autoconf libncurses5-dev libssl-dev \
+      libwxwidgets-dev libgl1-mesa-dev libglu1-mesa-dev \
+      libpng-dev && \
+    rm -rf /var/lib/apt/lists/*
+
+RUN git clone https://github.com/asdf-vm/asdf.git ${ASDF_DIR} --branch v0.16.7
+
+COPY .tool-versions /root/.tool-versions
+WORKDIR /root
+
+RUN asdf plugin add erlang && \
+    asdf plugin add elixir && \
+    asdf install && \
+    mix local.hex --force && \
+    mix local.rebar --force
