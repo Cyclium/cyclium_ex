@@ -203,4 +203,25 @@ defmodule Cyclium.EpisodesQueryDbTest do
       assert hd(steps).error_class == "canceled"
     end
   end
+
+  describe "active_for_conversation/1" do
+    test "returns the most recent running/blocked episode for the conversation" do
+      conv = Ecto.UUID.generate()
+      t0 = DateTime.add(DateTime.utc_now(), -60, :second)
+      t1 = DateTime.utc_now()
+
+      _old = insert_episode(%{conversation_id: conv, status: :running, started_at: t0})
+      newest = insert_episode(%{conversation_id: conv, status: :running, started_at: t1})
+
+      assert Episodes.active_for_conversation(conv).id == newest.id
+    end
+
+    test "ignores terminal episodes and other conversations" do
+      conv = Ecto.UUID.generate()
+      insert_episode(%{conversation_id: conv, status: :done})
+      insert_episode(%{conversation_id: Ecto.UUID.generate(), status: :running})
+
+      assert Episodes.active_for_conversation(conv) == nil
+    end
+  end
 end

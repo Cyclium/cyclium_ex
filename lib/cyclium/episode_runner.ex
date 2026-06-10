@@ -85,6 +85,12 @@ defmodule Cyclium.EpisodeRunner do
       :budget_wall_exceeded ->
         fail_wall_budget(episode, started_at)
 
+      {:cyclium_cancel, reason} ->
+        # Cancel between steps so the worker itself writes :canceled (no race
+        # with a late converge writing :done), then stop the loop.
+        Cyclium.Episodes.cancel(episode.id, reason)
+        {:error, :canceled}
+
       {:EXIT, _from, :normal} ->
         # Normal exits (e.g. ports closing after System.cmd or HTTP requests)
         # are harmless — just drain them and continue.
@@ -153,6 +159,60 @@ defmodule Cyclium.EpisodeRunner do
     })
 
     {:error, :budget_exceeded}
+  end
+
+  # Offer the strategy a graceful convergence when the turn/token budget is
+  # exhausted. Returns the converge result (a normal continue_loop return) when
+  # the strategy opts in via handle_budget_exhausted/2, or `:fail` otherwise.
+  defp maybe_graceful_budget_converge(episode, strategy, state) do
+    if function_exported?(strategy, :handle_budget_exhausted, 2) do
+      episode_ctx = build_episode_ctx(episode)
+
+      case strategy.handle_budget_exhausted(state, episode_ctx) do
+        {:converge, new_state} ->
+          journal_step!(episode, :observation, %{
+            result_ref: %{"budget_exhausted" => true, "graceful_converge" => true}
+          })
+
+          run_converge(episode, strategy, new_state)
+
+        :fail ->
+          :fail
+      end
+    else
+      :fail
+    end
+  end
+
+  # Hard-fail the episode for turn/token budget exhaustion.
+  defp fail_turn_budget(episode, err) do
+    current = Cyclium.Episodes.get!(episode.id)
+
+    error_detail = %{
+      turns_used: current.turns_used,
+      max_turns: (current.budget || %{})["max_turns"],
+      tokens_used: current.tokens_used,
+      max_tokens: (current.budget || %{})["max_tokens"]
+    }
+
+    journal_step!(episode, :episode_failed, %{
+      error_class: "budget_exceeded",
+      error_detail: error_detail
+    })
+
+    Cyclium.Episodes.update_status(episode.id, :failed, error_class: "budget_exceeded")
+
+    Cyclium.Bus.broadcast("episode.failed", %{
+      episode_id: episode.id,
+      actor_id: episode.actor_id,
+      status: :failed,
+      error_class: "budget_exceeded",
+      error_detail: error_detail,
+      workflow_instance_id: episode.workflow_instance_id,
+      workflow_step_id: episode.workflow_step_id
+    })
+
+    err
   end
 
   # Milliseconds left before the episode's wall-clock budget is exhausted.
@@ -435,33 +495,12 @@ defmodule Cyclium.EpisodeRunner do
       end
     else
       {:error, :budget_exceeded} = err ->
-        current = Cyclium.Episodes.get!(episode.id)
-
-        error_detail = %{
-          turns_used: current.turns_used,
-          max_turns: (current.budget || %{})["max_turns"],
-          tokens_used: current.tokens_used,
-          max_tokens: (current.budget || %{})["max_tokens"]
-        }
-
-        journal_step!(episode, :episode_failed, %{
-          error_class: "budget_exceeded",
-          error_detail: error_detail
-        })
-
-        Cyclium.Episodes.update_status(episode.id, :failed, error_class: "budget_exceeded")
-
-        Cyclium.Bus.broadcast("episode.failed", %{
-          episode_id: episode.id,
-          actor_id: episode.actor_id,
-          status: :failed,
-          error_class: "budget_exceeded",
-          error_detail: error_detail,
-          workflow_instance_id: episode.workflow_instance_id,
-          workflow_step_id: episode.workflow_step_id
-        })
-
-        err
+        # Give the strategy a chance to converge gracefully (e.g. emit a
+        # "ran out of budget for this turn" summary) instead of hard-failing.
+        case maybe_graceful_budget_converge(episode, strategy, state) do
+          :fail -> fail_turn_budget(episode, err)
+          converged -> converged
+        end
 
       {:error, :loop_detected} = err ->
         fingerprints =

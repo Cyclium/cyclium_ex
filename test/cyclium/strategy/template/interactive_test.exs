@@ -543,4 +543,61 @@ defmodule Cyclium.Strategy.Template.InteractiveTest do
       assert wf_result.conversation_id == "conv_123"
     end
   end
+
+  describe "handle_budget_exhausted/2" do
+    test "opts into a graceful converge with the budget_exhausted flag set" do
+      state = base_state(%{phase: :execute})
+
+      assert {:converge, new_state} = Interactive.handle_budget_exhausted(state, %{})
+      assert new_state.budget_exhausted == true
+      assert new_state.phase == :done
+    end
+
+    test "is safe for states resumed before :budget_exhausted existed" do
+      # Older checkpoints have no :budget_exhausted key; Map.put (not %{s | ...})
+      # means this must not raise.
+      state = base_state(%{phase: :execute}) |> Map.delete(:budget_exhausted)
+
+      assert {:converge, new_state} = Interactive.handle_budget_exhausted(state, %{})
+      assert new_state.budget_exhausted == true
+    end
+  end
+
+  describe "converge/2 with budget exhaustion" do
+    test "produces an incomplete classification and a user-facing summary" do
+      state = base_state(%{phase: :done, budget_exhausted: true})
+
+      {:ok, result} = Interactive.converge(state, %{})
+
+      assert result.classification == %{"primary" => "incomplete", "reason" => "budget_exhausted"}
+      assert result.summary =~ "wasn't able to finish"
+    end
+
+    test "reports completed step count when results exist" do
+      state =
+        base_state(%{
+          phase: :done,
+          budget_exhausted: true,
+          execution_results: [{:ok, %{a: 1}}, {:ok, %{b: 2}}]
+        })
+
+      {:ok, result} = Interactive.converge(state, %{})
+      assert result.summary =~ "2 step(s)"
+    end
+
+    test "includes partial progress when an explanation was produced" do
+      state =
+        base_state(%{phase: :done, budget_exhausted: true, explanation: "found the resource id"})
+
+      {:ok, result} = Interactive.converge(state, %{})
+      assert result.summary =~ "found the resource id"
+    end
+
+    test "budget_exhausted takes precedence over a denial reason" do
+      state = base_state(%{phase: :done, budget_exhausted: true, deny_reason: "blocked"})
+
+      {:ok, result} = Interactive.converge(state, %{})
+      assert result.classification["primary"] == "incomplete"
+    end
+  end
 end

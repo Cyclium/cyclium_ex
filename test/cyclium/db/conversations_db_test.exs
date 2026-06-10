@@ -66,6 +66,16 @@ defmodule Cyclium.ConversationsDbTest do
       assert decoded["constraints"]["max_turns"] == 10
     end
 
+    test "stores expectation_id when provided" do
+      conv = start_conversation(%{expectation_id: :deep_review})
+      assert Cyclium.Conversations.get!(conv.id).expectation_id == "deep_review"
+    end
+
+    test "leaves expectation_id nil by default" do
+      conv = start_conversation()
+      assert conv.expectation_id == nil
+    end
+
     test "stores origin as JSON" do
       conv =
         start_conversation(%{

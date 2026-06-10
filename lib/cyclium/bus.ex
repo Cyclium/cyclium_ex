@@ -86,6 +86,40 @@ defmodule Cyclium.Bus do
     end
   end
 
+  @cancel_topic_prefix "cyclium:episode_cancel:"
+
+  @doc """
+  Subscribe the calling process to cancel requests for one episode.
+
+  A running `EpisodeTask` subscribes so a "stop" reaches it on whatever node
+  runs the episode (PubSub is cluster-wide), landing as `{:cyclium_cancel,
+  reason}` handled at the next step boundary.
+  """
+  def subscribe_cancel(episode_id) do
+    case pubsub() do
+      nil -> {:error, :no_pubsub}
+      pubsub -> Phoenix.PubSub.subscribe(pubsub, @cancel_topic_prefix <> to_string(episode_id))
+    end
+  end
+
+  @doc """
+  Broadcast a cancel request for an episode to whichever node runs it. Backs
+  `Cyclium.Episodes.request_cancel/2`.
+  """
+  def publish_cancel(episode_id, reason) do
+    case pubsub() do
+      nil ->
+        {:error, :no_pubsub}
+
+      pubsub ->
+        Phoenix.PubSub.broadcast(
+          pubsub,
+          @cancel_topic_prefix <> to_string(episode_id),
+          {:cyclium_cancel, reason}
+        )
+    end
+  end
+
   defp pubsub do
     Application.get_env(:cyclium, :pubsub)
   end

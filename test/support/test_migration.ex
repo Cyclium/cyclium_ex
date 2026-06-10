@@ -193,6 +193,7 @@ defmodule Cyclium.Test.Migration do
       add(:name, :string, null: false)
       add(:status, :string, null: false, default: "open")
       add(:actor_id, :string)
+      add(:expectation_id, :string)
       add(:goal, :string)
       add(:origin, :string)
       add(:audience_target, :string)

@@ -52,7 +52,8 @@ defmodule Cyclium.Strategy.Template.Interactive do
        execution_results: [],
        current_step_index: 0,
        deny_reason: nil,
-       explanation: nil
+       explanation: nil,
+       budget_exhausted: false
      }}
   end
 
@@ -227,6 +228,10 @@ defmodule Cyclium.Strategy.Template.Interactive do
 
     {summary, classification} =
       cond do
+        state[:budget_exhausted] ->
+          {budget_exhausted_summary(state),
+           %{"primary" => "incomplete", "reason" => "budget_exhausted"}}
+
         state.deny_reason ->
           {"Plan denied: #{state.deny_reason}",
            %{"primary" => "denied", "reason" => state.deny_reason}}
@@ -283,6 +288,13 @@ defmodule Cyclium.Strategy.Template.Interactive do
       classification: converge_result.classification,
       conversation_id: state.conversation_id
     }
+  end
+
+  @impl true
+  def handle_budget_exhausted(state, _episode_ctx) do
+    # Converge with an "out of budget" summary instead of failing. Map.put keeps
+    # this safe for states resumed from a pre-:budget_exhausted checkpoint.
+    {:converge, Map.put(%{state | phase: :done}, :budget_exhausted, true)}
   end
 
   # --- Private: Context assembly ---
@@ -580,6 +592,21 @@ defmodule Cyclium.Strategy.Template.Interactive do
   end
 
   # --- Private: Converge helpers ---
+
+  defp budget_exhausted_summary(state) do
+    base = "I wasn't able to finish this request within the allotted budget for this turn."
+
+    cond do
+      is_binary(state.explanation) and state.explanation != "" ->
+        base <> " Progress so far: " <> state.explanation
+
+      state.execution_results != [] ->
+        base <> " I completed #{length(state.execution_results)} step(s) before stopping."
+
+      true ->
+        base <> " Please try again, or break the request into smaller steps."
+    end
+  end
 
   defp build_execution_summary(state) do
     plan = state.action_plan

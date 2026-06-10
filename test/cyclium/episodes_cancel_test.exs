@@ -64,4 +64,31 @@ defmodule Cyclium.EpisodesCancelTest do
       assert payload.episode_id == episode.id
     end
   end
+
+  describe "request_cancel/2" do
+    test "running episode broadcasts a cancel to the worker", %{episode: episode} do
+      Cyclium.Bus.subscribe_cancel(episode.id)
+
+      assert {:ok, :requested} = Cyclium.Episodes.request_cancel(episode.id, "stop_clicked")
+
+      assert_receive {:cyclium_cancel, "stop_clicked"}
+    end
+
+    test "blocked episode is canceled directly", %{episode: episode} do
+      {:ok, _} = Cyclium.Episodes.update_status(episode.id, :blocked)
+      Cyclium.Bus.subscribe("episode.canceled")
+
+      assert {:ok, :canceled} = Cyclium.Episodes.request_cancel(episode.id)
+
+      assert_receive {:bus, "episode.canceled", %{episode_id: id}}
+      assert id == episode.id
+      assert Cyclium.Episodes.get!(episode.id).status == :canceled
+    end
+
+    test "terminal episode is a no-op", %{episode: episode} do
+      {:ok, _} = Cyclium.Episodes.update_status(episode.id, :done)
+
+      assert {:error, {:not_active, :done}} = Cyclium.Episodes.request_cancel(episode.id)
+    end
+  end
 end

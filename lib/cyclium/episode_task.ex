@@ -19,6 +19,10 @@ defmodule Cyclium.EpisodeTask do
     episode = Cyclium.Episodes.get!(episode_id)
     Process.put(:cyclium_episode_id, episode_id)
 
+    # Receive cancel requests in this process's mailbox; handled at the next
+    # step boundary by the runner's drain.
+    Cyclium.Bus.subscribe_cancel(episode_id)
+
     # Claim gate — only runs if work_claims is configured
     lease_seconds = lease_seconds()
 

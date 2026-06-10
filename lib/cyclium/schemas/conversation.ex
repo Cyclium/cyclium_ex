@@ -13,6 +13,7 @@ defmodule Cyclium.Schemas.Conversation do
              :name,
              :status,
              :actor_id,
+             :expectation_id,
              :goal,
              :origin,
              :audience_target,
@@ -39,6 +40,7 @@ defmodule Cyclium.Schemas.Conversation do
     field(:name, :string)
     field(:status, :string, default: "open")
     field(:actor_id, :string)
+    field(:expectation_id, :string)
     field(:goal, :string)
     field(:origin, :string)
     field(:audience_target, :string)
@@ -62,6 +64,7 @@ defmodule Cyclium.Schemas.Conversation do
       :name,
       :status,
       :actor_id,
+      :expectation_id,
       :goal,
       :origin,
       :audience_target,

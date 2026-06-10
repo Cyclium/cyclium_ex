@@ -38,7 +38,8 @@ defmodule Cyclium.Migrations do
     19 => Cyclium.Migrations.V19,
     20 => Cyclium.Migrations.V20,
     21 => Cyclium.Migrations.V21,
-    22 => Cyclium.Migrations.V22
+    22 => Cyclium.Migrations.V22,
+    23 => Cyclium.Migrations.V23
   }
 
   @doc "All known migration versions, ascending. Use to run every version in order."

@@ -33,6 +33,12 @@ defmodule Cyclium.Conversations.Dispatch do
     - `:principal` — map with user info (e.g. `%{"type" => "user", "id" => "user_123"}`)
     - `:budget` — override budget (default: resolved from actor's expectation)
     - `:log_strategy` — override log strategy (default: resolved from actor's expectation)
+    - `:expectation_id` — explicitly select the interactive expectation to use.
+
+  Resolution order: this `:expectation_id` opt, then the expectation pinned on
+  the conversation (`conversation.expectation_id`), then auto-resolution. For an
+  actor with multiple interactive expectations and no pin, auto-resolution
+  errors with `{:ambiguous_interactive_expectation, ids}`.
 
   Returns `{:ok, episode}` or `{:error, reason}`.
   """
@@ -40,7 +46,14 @@ defmodule Cyclium.Conversations.Dispatch do
     conversation = Conversations.get!(conversation_id)
     actor_id = conversation.actor_id
 
-    case resolve_interactive_expectation(actor_id) do
+    # Priority: explicit opt > expectation pinned on the conversation > auto-resolve.
+    resolution =
+      case Keyword.get(opts, :expectation_id) || conversation.expectation_id do
+        nil -> resolve_interactive_expectation(actor_id)
+        chosen -> resolve_named_expectation(actor_id, chosen)
+      end
+
+    case resolution do
       {:ok, expectation_id, budget, log_strategy} ->
         create_and_enqueue(
           conversation_id,
@@ -113,32 +126,90 @@ defmodule Cyclium.Conversations.Dispatch do
   @doc """
   Resolve the interactive expectation for an actor from persistent_term.
 
-  Scans persistent_term for an expectation registered with the Interactive
+  Scans persistent_term for expectations registered with the Interactive
   strategy template. Also resolves budget and log_strategy for that expectation.
 
-  Returns `{:ok, expectation_id, budget, log_strategy}` or `{:error, :no_interactive_expectation}`.
+  Selection is deterministic:
+    - zero matches → `{:error, :no_interactive_expectation}`
+    - exactly one  → `{:ok, expectation_id, budget, log_strategy}`
+    - two or more  → `{:error, {:ambiguous_interactive_expectation, sorted_ids}}`
+
+  When an actor declares more than one interactive expectation, the conversation
+  record (which only carries `actor_id`) can't say which one a turn belongs to,
+  so resolution refuses to guess — pass `:expectation_id` to `send_message/3`.
   """
   def resolve_interactive_expectation(actor_id) do
     actor_key = safe_to_atom(actor_id)
 
-    :persistent_term.get()
-    |> Enum.find_value(fn
-      {{:cyclium_actor_strategy, ^actor_key, exp_id}, Cyclium.Strategy.Template.Interactive} ->
-        budget = :persistent_term.get({:cyclium_expectation_budget, actor_key, exp_id}, nil)
+    matches =
+      :persistent_term.get()
+      |> Enum.flat_map(fn
+        {{:cyclium_actor_strategy, ^actor_key, exp_id}, Cyclium.Strategy.Template.Interactive} ->
+          [exp_id]
 
-        log_strategy =
-          :persistent_term.get({:cyclium_expectation_log_strategy, actor_key, exp_id}, nil)
+        _ ->
+          []
+      end)
+      |> Enum.sort()
 
-        {:ok, exp_id, budget, log_strategy}
+    case matches do
+      [] ->
+        {:error, :no_interactive_expectation}
 
-      _ ->
-        nil
-    end)
-    |> case do
-      {:ok, _, _, _} = result -> result
-      nil -> {:error, :no_interactive_expectation}
+      [exp_id] ->
+        {:ok, exp_id, expectation_budget(actor_key, exp_id),
+         expectation_log_strategy(actor_key, exp_id)}
+
+      [_ | _] = ids ->
+        Logger.error(
+          "Actor #{actor_id} declares multiple interactive expectations " <>
+            "(#{inspect(ids)}); dispatch cannot choose one automatically. " <>
+            "Pass :expectation_id to send_message/3 to disambiguate."
+        )
+
+        {:error, {:ambiguous_interactive_expectation, ids}}
     end
   end
+
+  # Resolve a caller-specified expectation, verifying it is registered as an
+  # Interactive expectation for this actor.
+  defp resolve_named_expectation(actor_id, expectation_id) do
+    actor_key = safe_to_atom(actor_id)
+
+    # If the id was never interned as an atom, no expectation by that name can
+    # exist — report it as unknown rather than letting to_existing_atom raise.
+    case existing_atom(expectation_id) do
+      nil ->
+        {:error, {:unknown_expectation, expectation_id}}
+
+      exp_key ->
+        case :persistent_term.get({:cyclium_actor_strategy, actor_key, exp_key}, nil) do
+          Cyclium.Strategy.Template.Interactive ->
+            {:ok, exp_key, expectation_budget(actor_key, exp_key),
+             expectation_log_strategy(actor_key, exp_key)}
+
+          nil ->
+            {:error, {:unknown_expectation, expectation_id}}
+
+          other ->
+            {:error, {:not_interactive_expectation, expectation_id, other}}
+        end
+    end
+  end
+
+  defp existing_atom(val) when is_atom(val), do: val
+
+  defp existing_atom(val) when is_binary(val) do
+    String.to_existing_atom(val)
+  rescue
+    ArgumentError -> nil
+  end
+
+  defp expectation_budget(actor_key, exp_id),
+    do: :persistent_term.get({:cyclium_expectation_budget, actor_key, exp_id}, nil)
+
+  defp expectation_log_strategy(actor_key, exp_id),
+    do: :persistent_term.get({:cyclium_expectation_log_strategy, actor_key, exp_id}, nil)
 
   defp normalize_budget(nil),
     do: %{"max_turns" => 20, "max_tokens" => 10_000, "max_wall_ms" => 120_000}

@@ -55,6 +55,7 @@ defmodule Cyclium.Conversations do
       name: attrs[:name] || "Conversation #{DateTime.to_iso8601(now)}",
       status: attrs[:status] || initial_status,
       actor_id: to_string_or_nil(attrs[:actor_id]),
+      expectation_id: to_string_or_nil(attrs[:expectation_id]),
       goal: encode_json(attrs[:goal]),
       origin: encode_json(origin),
       audience_target: encode_json(audience_target),

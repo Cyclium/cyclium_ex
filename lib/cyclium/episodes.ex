@@ -434,6 +434,44 @@ defmodule Cyclium.Episodes do
   end
 
   @doc """
+  Request cancellation of an episode (e.g. a UI "stop" button). Cooperative and
+  safe mid-flight, and never touches the parent conversation:
+
+    - `:running` — broadcasts to the worker (any node), which stops at its next
+      step boundary and writes `:canceled` itself. Returns `{:ok, :requested}`.
+    - `:blocked` — no worker running, so cancel directly. Returns `{:ok, :canceled}`.
+    - terminal — `{:error, {:not_active, status}}`.
+  """
+  def request_cancel(episode_id, reason \\ "user_canceled") do
+    case get!(episode_id) do
+      %{status: :running} ->
+        Cyclium.Bus.publish_cancel(episode_id, reason)
+        {:ok, :requested}
+
+      %{status: :blocked} ->
+        cancel(episode_id, reason)
+        {:ok, :canceled}
+
+      %{status: status} ->
+        {:error, {:not_active, status}}
+    end
+  end
+
+  @doc """
+  Return the most recent still-active (`:running` or `:blocked`) episode for a
+  conversation, or `nil`. Useful for a "stop" button that needs the current
+  turn's episode id.
+  """
+  def active_for_conversation(conversation_id) do
+    from(e in Episode,
+      where: e.conversation_id == ^conversation_id and e.status in [:running, :blocked],
+      order_by: [desc: e.started_at],
+      limit: 1
+    )
+    |> repo().one()
+  end
+
+  @doc """
   Cancel running and blocked episodes for the given actor and expectation.
 
   Returns `{:ok, count}` with the number of episodes canceled.

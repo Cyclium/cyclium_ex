@@ -34,5 +34,21 @@ defmodule Cyclium.EpisodeRunner.Strategy do
   @callback workflow_result(state :: map(), converge_result :: Cyclium.ConvergeResult.t()) ::
               map()
 
-  @optional_callbacks [workflow_result: 2]
+  @doc """
+  Optional hook invoked when the turn/token budget is exhausted between steps.
+
+  Lets a strategy convert a hard budget failure into a graceful convergence —
+  e.g. an interactive actor can emit a "ran out of budget for this turn" summary
+  instead of leaving the episode `:failed` with no user-facing message.
+
+  Return `{:converge, new_state}` to run the normal converge path with the given
+  state, or `:fail` to keep the default behaviour (episode fails with
+  `error_class: "budget_exceeded"`). Strategies that don't implement this
+  callback always fail. This is *not* called for wall-time exhaustion
+  (`max_wall_ms`), which can fire mid-step and is always a hard failure.
+  """
+  @callback handle_budget_exhausted(state :: map(), episode_ctx :: map()) ::
+              {:converge, new_state :: map()} | :fail
+
+  @optional_callbacks [workflow_result: 2, handle_budget_exhausted: 2]
 end

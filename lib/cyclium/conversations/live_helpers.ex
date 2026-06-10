@@ -155,6 +155,38 @@ defmodule Cyclium.Conversations.LiveHelpers do
   end
 
   @doc """
+  Handle an `episode.canceled` bus event. Appends a "stopped" marker and clears
+  the sending state. Returns `{:ok, assigns_map}` or `:ignore`.
+  """
+  def on_episode_canceled(episode_id, conversation_id, actor_id, current_messages) do
+    case Episodes.get(episode_id) do
+      %{conversation_id: ^conversation_id, actor_id: ^actor_id} ->
+        stopped = %{
+          role: :assistant,
+          content: "⏹ Stopped.",
+          timestamp: DateTime.utc_now()
+        }
+
+        {:ok, %{messages: current_messages ++ [stopped], sending: false}}
+
+      _ ->
+        :ignore
+    end
+  end
+
+  @doc """
+  Cancel the current turn (the conversation's active episode), keeping the
+  conversation open. Returns the result of `Episodes.request_cancel/2`, or
+  `{:error, :no_active_episode}` if nothing is running.
+  """
+  def cancel_current_turn(conversation_id, reason \\ "user_canceled") do
+    case Episodes.active_for_conversation(conversation_id) do
+      nil -> {:error, :no_active_episode}
+      episode -> Episodes.request_cancel(episode.id, reason)
+    end
+  end
+
+  @doc """
   Handle a conversation status change event. Returns updated conversation or `:ignore`.
   """
   def on_conversation_status_change(event_conv_id, current_conv_id) do
