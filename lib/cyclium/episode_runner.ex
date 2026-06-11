@@ -692,6 +692,9 @@ defmodule Cyclium.EpisodeRunner do
 
   defp maybe_run_conversation_hook(%{conversation_id: conv_id} = episode, converge_result)
        when is_binary(conv_id) and conv_id != "" do
+    # Reload for the post-increment tokens_used (the struct is stale here).
+    episode = Cyclium.Episodes.get!(episode.id)
+
     Cyclium.Intent.ConversationHook.after_converge(
       conv_id,
       converge_result,

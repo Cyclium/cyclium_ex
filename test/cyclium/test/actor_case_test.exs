@@ -77,6 +77,29 @@ defmodule Cyclium.Test.ActorCaseTest do
       )
     end
 
+    test "validates interactive trigger" do
+      Cyclium.Test.ActorCase.validate_expectation!(SampleActor, :chat, trigger: :interactive)
+    end
+
+    test "validates manual and workflow triggers" do
+      Cyclium.Test.ActorCase.validate_expectation!(SampleActor, :m, trigger: :manual)
+      Cyclium.Test.ActorCase.validate_expectation!(SampleActor, :w, trigger: :workflow)
+    end
+
+    test "validates cron trigger" do
+      Cyclium.Test.ActorCase.validate_expectation!(SampleActor, :nightly,
+        trigger: {:cron, "0 5 * * *"}
+      )
+    end
+
+    test "validates interactive in a trigger list" do
+      Cyclium.Test.ActorCase.validate_expectation!(
+        SampleActor,
+        :test,
+        trigger: [{:event, "test.event"}, :interactive]
+      )
+    end
+
     test "rejects invalid trigger" do
       assert_raise ArgumentError, ~r/invalid trigger/, fn ->
         Cyclium.Test.ActorCase.validate_expectation!(

@@ -219,12 +219,22 @@ defmodule Cyclium.Test.ActorCase do
 
   defp validate_trigger!(_actor, _exp_id, {:schedule, ms}) when is_integer(ms) and ms > 0, do: :ok
 
+  defp validate_trigger!(_actor, _exp_id, {:cron, spec}) when is_binary(spec), do: :ok
+
   defp validate_trigger!(_actor, _exp_id, {:event, type}) when is_binary(type), do: :ok
+
+  # Bare-atom triggers the DSL accepts (Episode @trigger_types): the interactive
+  # conversation path plus manual/workflow-driven episodes.
+  defp validate_trigger!(_actor, _exp_id, trigger)
+       when trigger in [:interactive, :manual, :workflow],
+       do: :ok
 
   defp validate_trigger!(_actor, _exp_id, triggers) when is_list(triggers) do
     Enum.each(triggers, fn
       {:schedule, ms} when is_integer(ms) and ms > 0 -> :ok
+      {:cron, spec} when is_binary(spec) -> :ok
       {:event, type} when is_binary(type) -> :ok
+      trigger when trigger in [:interactive, :manual, :workflow] -> :ok
       other -> raise ArgumentError, message: "Invalid trigger in list: #{inspect(other)}"
     end)
   end
