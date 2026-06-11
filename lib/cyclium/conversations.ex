@@ -223,19 +223,23 @@ defmodule Cyclium.Conversations do
 
   # --- Increment turn ---
 
-  @spec increment_turn(binary(), non_neg_integer()) :: {:ok, Conversation.t()} | {:error, term()}
+  @spec increment_turn(binary(), non_neg_integer()) ::
+          {:ok, Conversation.t()} | {:error, :not_found}
   def increment_turn(conversation_id, tokens \\ 0) do
-    case get(conversation_id) do
-      nil ->
-        {:error, :not_found}
+    now = DateTime.utc_now() |> DateTime.truncate(:second)
 
-      conv ->
-        conv
-        |> Conversation.changeset(%{
-          turns_used: (conv.turns_used || 0) + 1,
-          tokens_used: (conv.tokens_used || 0) + tokens
-        })
-        |> Cyclium.repo().update()
+    # Atomic increment so concurrent episodes converging on the same conversation
+    # don't clobber each other's totals (a read-modify-write would lose updates).
+    {count, _} =
+      from(c in Conversation, where: c.id == ^conversation_id)
+      |> Cyclium.repo().update_all(
+        inc: [turns_used: 1, tokens_used: tokens],
+        set: [updated_at: now]
+      )
+
+    case count do
+      1 -> {:ok, get!(conversation_id)}
+      _ -> {:error, :not_found}
     end
   end
 

@@ -4,6 +4,8 @@ defmodule Cyclium.Schemas.WorkflowDefinition do
 
   @primary_key {:id, :binary_id, autogenerate: true}
 
+  @type t :: %__MODULE__{}
+
   schema "cyclium_workflow_definitions" do
     field(:workflow_id, :string)
     field(:trigger_type, :string)

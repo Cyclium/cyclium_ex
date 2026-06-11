@@ -25,6 +25,8 @@ defmodule Cyclium.Schemas.EpisodeStep do
     :plan_preview
   ]
 
+  @type t :: %__MODULE__{}
+
   schema "cyclium_episode_steps" do
     field(:episode_id, :binary_id)
     field(:step_no, :integer)

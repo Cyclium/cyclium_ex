@@ -8,6 +8,8 @@ defmodule Cyclium.Schemas.Finding do
   @statuses [:active, :cleared, :superseded]
   @severities [:low, :medium, :high, :critical]
 
+  @type t :: %__MODULE__{}
+
   schema "cyclium_findings" do
     field(:actor_id, :string)
     field(:expectation_id, :string)

@@ -5,6 +5,8 @@ defmodule Cyclium.Schemas.EpisodeCheckpoint do
   @primary_key {:id, :binary_id, autogenerate: true}
   @foreign_key_type :binary_id
 
+  @type t :: %__MODULE__{}
+
   schema "cyclium_episode_checkpoints" do
     field(:episode_id, :binary_id)
     field(:checkpoint_no, :integer)

@@ -9,6 +9,8 @@ defmodule Cyclium.Schemas.AgentDefinition do
 
   @primary_key {:id, :binary_id, autogenerate: true}
 
+  @type t :: %__MODULE__{}
+
   schema "cyclium_agent_definitions" do
     field(:actor_id, :string)
     field(:domain, :string)

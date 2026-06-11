@@ -7,6 +7,8 @@ defmodule Cyclium.Schemas.Output do
 
   @statuses [:proposed, :delivered, :failed, :canceled]
 
+  @type t :: %__MODULE__{}
+
   schema "cyclium_outputs" do
     field(:episode_id, :binary_id)
     field(:type, :string)

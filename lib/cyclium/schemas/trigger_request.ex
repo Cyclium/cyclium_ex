@@ -7,6 +7,8 @@ defmodule Cyclium.Schemas.TriggerRequest do
 
   @statuses [:pending, :claimed, :completed, :expired]
 
+  @type t :: %__MODULE__{}
+
   schema "cyclium_trigger_requests" do
     field(:episode_id, :binary_id)
     field(:actor_id, :string)

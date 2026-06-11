@@ -5,6 +5,8 @@ defmodule Cyclium.Schemas.EpisodeLog do
   @primary_key {:id, :binary_id, autogenerate: true}
   @foreign_key_type :binary_id
 
+  @type t :: %__MODULE__{}
+
   schema "cyclium_episode_logs" do
     field(:episode_id, :binary_id)
     field(:format, :string, default: "markdown")

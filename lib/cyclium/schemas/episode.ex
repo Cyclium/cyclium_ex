@@ -8,6 +8,8 @@ defmodule Cyclium.Schemas.Episode do
   @statuses [:running, :blocked, :done, :failed, :partially_failed, :canceled]
   @trigger_types [:schedule, :event, :manual, :workflow, :interactive]
 
+  @type t :: %__MODULE__{}
+
   schema "cyclium_episodes" do
     field(:actor_id, :string)
     field(:expectation_id, :string)

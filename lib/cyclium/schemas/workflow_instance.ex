@@ -6,6 +6,8 @@ defmodule Cyclium.Schemas.WorkflowInstance do
 
   @statuses [:running, :blocked, :done, :failed, :canceled]
 
+  @type t :: %__MODULE__{}
+
   schema "cyclium_workflow_instances" do
     field(:workflow_id, :string)
     field(:trigger_ref, :map)
