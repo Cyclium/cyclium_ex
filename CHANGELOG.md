@@ -6,6 +6,19 @@ All notable changes to Cyclium are recorded here. This project uses
 Entries are high-level, not exhaustive. Versions prior to `0.1.4` are
 reconstructed from git history and are summarized loosely.
 
+## [0.1.12] — 2026-06-11
+
+### Fixed
+- `Conversations.increment_turn/2` now increments atomically (`update_all(inc:)`)
+  instead of a read-modify-write, so concurrent episodes converging on the same
+  conversation can't clobber each other's `turns_used` / `tokens_used` totals.
+
+### Added
+- `@type t :: %__MODULE__{}` on the remaining `Cyclium.Schemas.*` modules
+  (Episode, EpisodeStep, EpisodeCheckpoint, EpisodeLog, AgentDefinition, Finding,
+  Output, TriggerRequest, WorkflowDefinition, WorkflowInstance) so consumers can
+  reference e.g. `Cyclium.Schemas.Episode.t()` in their specs.
+
 ## [0.1.11] — 2026-06-11
 
 ### Fixed

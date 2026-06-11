@@ -41,7 +41,7 @@ testability, and full visibility while still using AI where it adds value. See
 - **OTP-Native** — No Oban or external job queue required; episodes run as Tasks under DynamicSupervisor
 - **Distributed coordination** — DB-based dedup, lease-based work claims, crash recovery, and multi-stack/trigger-only deployment modes — no Redis or leader election
 - **Test Kit** — Assertion macros and fakes for validating actors, strategies, synthesizers, output adapters, workflows, and checkpoint migrations in host apps
-- **SQL Server 2017 Compatible** — Transaction-based upserts, denormalized query columns, no JSON operators in DDL
+- **Database Compatibility** — Transaction-based upserts, denormalized query columns, no JSON operators in DDL
 
 ## Who is this for?
 
@@ -185,7 +185,7 @@ EpisodeTask starts
 ```elixir
 # mix.exs
 def deps do
-  [{:cyclium, "~> 0.1.9"}]
+  [{:cyclium, "~> 0.1.12"}]
 end
 ```
 
@@ -333,9 +333,7 @@ the Reconciler and WorkflowEngine.
 
 ## Database tables
 
-All tables use `binary_id` primary keys and are SQL Server 2017 compatible (no
-JSON operators in DDL, application-layer upserts, denormalized columns for indexed
-queries).
+All tables use `binary_id` primary keys (no JSON operators, application-layer upserts, denormalized columns for indexed queries).
 
 | Table | Migration | Purpose |
 |---|---|---|
