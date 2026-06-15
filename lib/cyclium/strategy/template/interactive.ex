@@ -297,6 +297,84 @@ defmodule Cyclium.Strategy.Template.Interactive do
     {:converge, Map.put(%{state | phase: :done}, :budget_exhausted, true)}
   end
 
+  @impl true
+  def resume_from_block(state, episode) do
+    # Resumed after a human resolved an approval. Rebuild the approved plan from
+    # the journal (no state checkpoint) and jump to :execute/:denied so we run
+    # exactly what was approved — no extra LLM round-trip or re-prompt.
+    case latest_approval(episode.id) do
+      {:ok, plan, plan_hash, true} ->
+        {:ok,
+         %{
+           state
+           | phase: :execute,
+             action_plan: deserialize_plan(plan),
+             plan_hash: plan_hash,
+             current_step_index: 0,
+             execution_results: []
+         }}
+
+      {:ok, _plan, _plan_hash, false} ->
+        {:ok, %{state | phase: :denied, deny_reason: "Plan rejected by user"}}
+
+      :none ->
+        {:ok, state}
+    end
+  end
+
+  # Find the most recent approval_requested step and its matching resolution.
+  # Compares plan_hash in Elixir (not via a DB-specific JSON path) so this stays
+  # adapter-agnostic; resolve_approval/3 already guarantees a resolution only
+  # exists for a requested plan_hash.
+  defp latest_approval(episode_id) do
+    import Ecto.Query
+    alias Cyclium.Schemas.EpisodeStep
+
+    latest = fn kind ->
+      from(s in EpisodeStep,
+        where: s.episode_id == ^episode_id and s.kind == ^kind,
+        order_by: [desc: s.step_no],
+        limit: 1
+      )
+      |> Cyclium.repo().one()
+    end
+
+    with %{args_redacted: %{"plan_hash" => hash, "plan" => plan}} <- latest.(:approval_requested),
+         %{result_ref: %{"approved" => approved, "plan_hash" => ^hash}} <-
+           latest.(:approval_resolved) do
+      {:ok, plan, hash, approved}
+    else
+      _ -> :none
+    end
+  end
+
+  # Inverse of serialize_plan/1 for the subset we journal. String-keyed maps
+  # (from the JSON round-trip) back into the structs the execute phase needs.
+  defp deserialize_plan(%{} = plan) do
+    %ActionPlan{
+      kind: existing_atom(plan["kind"], :tool_call),
+      risk: existing_atom(plan["risk"], :low),
+      why: plan["why"] || "",
+      tool: deserialize_tool(plan["tool"]),
+      steps: plan |> Map.get("steps", []) |> Enum.map(&deserialize_tool/1) |> Enum.reject(&is_nil/1),
+      meta: %{}
+    }
+  end
+
+  defp deserialize_tool(%{} = tool) do
+    %ToolCallStep{tool: tool["tool"], action: tool["action"], args: tool["args"] || %{}}
+  end
+
+  defp deserialize_tool(_), do: nil
+
+  defp existing_atom(value, default) when is_binary(value) do
+    String.to_existing_atom(value)
+  rescue
+    ArgumentError -> default
+  end
+
+  defp existing_atom(_value, default), do: default
+
   # --- Private: Context assembly ---
 
   defp assemble_context(state, episode_ctx) do

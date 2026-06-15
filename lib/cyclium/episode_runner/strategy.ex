@@ -50,5 +50,23 @@ defmodule Cyclium.EpisodeRunner.Strategy do
   @callback handle_budget_exhausted(state :: map(), episode_ctx :: map()) ::
               {:converge, new_state :: map()} | :fail
 
-  @optional_callbacks [workflow_result: 2, handle_budget_exhausted: 2]
+  @doc """
+  Optional hook to resume a `:blocked` episode from the journal instead of a
+  state checkpoint.
+
+  When a strategy implements this, the runner does **not** write a
+  `"__blocked__"` state checkpoint at an approval/wait block — avoiding an extra
+  per-block DB row (and the need to JSON-serialize an arbitrary strategy state).
+  On resume, `EpisodeTask` rebuilds a fresh state via `init/2` and then calls
+  this hook so the strategy can reconstruct where it left off from already-
+  journaled steps (e.g. the `approval_requested` plan + `approval_resolved`
+  decision) and return a state positioned to continue (e.g. `phase: :execute`).
+
+  Return `{:ok, state}`; return the given state unchanged if there's nothing to
+  resume. Strategies that don't implement this keep the checkpoint-based resume.
+  """
+  @callback resume_from_block(state :: map(), episode :: %Cyclium.Schemas.Episode{}) ::
+              {:ok, new_state :: map()}
+
+  @optional_callbacks [workflow_result: 2, handle_budget_exhausted: 2, resume_from_block: 2]
 end

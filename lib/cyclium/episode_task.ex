@@ -47,10 +47,16 @@ defmodule Cyclium.EpisodeTask do
         {true, {:ok, checkpoint}} ->
           migrate_checkpoint(episode, strategy, checkpoint)
 
-        _ ->
+        {resume?, _} ->
           trigger = deserialize_trigger(episode.trigger_type, episode.trigger_ref)
           {:ok, initial_state} = strategy.init(episode, trigger)
-          initial_state
+
+          # On resume with no state checkpoint, let a strategy that opted into
+          # journal-based resume (resume_from_block/2) reposition the fresh
+          # state from already-journaled steps (e.g. an approved plan).
+          if resume?,
+            do: maybe_resume_from_block(strategy, episode, initial_state),
+            else: initial_state
       end
 
     try do
@@ -153,6 +159,17 @@ defmodule Cyclium.EpisodeTask do
     end
   rescue
     _ -> :ok
+  end
+
+  defp maybe_resume_from_block(strategy, episode, state) do
+    if function_exported?(strategy, :resume_from_block, 2) do
+      case strategy.resume_from_block(state, episode) do
+        {:ok, resumed} -> resumed
+        _ -> state
+      end
+    else
+      state
+    end
   end
 
   defp migrate_checkpoint(episode, strategy, checkpoint) do

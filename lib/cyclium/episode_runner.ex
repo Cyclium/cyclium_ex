@@ -477,10 +477,13 @@ defmodule Cyclium.EpisodeRunner do
           do_loop(episode, strategy, state, started_at)
 
         {:approval, request} ->
-          # Checkpoint at the block so resume re-enters exactly here, not at the
-          # strategy's last voluntary checkpoint — otherwise steps between that
-          # checkpoint and the block (including side-effecting tool calls) replay.
-          save_checkpoint(episode, "__blocked__", state)
+          # Checkpoint at the block so resume re-enters here without replaying
+          # earlier (side-effecting) steps. Strategies that implement
+          # resume_from_block/2 rebuild from the journal instead, so skip it.
+          unless function_exported?(strategy, :resume_from_block, 2) do
+            save_checkpoint(episode, "__blocked__", state)
+          end
+
           journal_step!(episode, :approval_requested, %{args_redacted: request})
           Cyclium.Episodes.update_status(episode.id, :blocked)
           {:blocked, state}
@@ -1049,6 +1052,10 @@ defmodule Cyclium.EpisodeRunner do
     |> repo().update_all(inc: [tokens_used: token_cost])
   end
 
+  # Best-effort: a checkpoint exists only to make resume cheaper/safer, so it
+  # must never take down the episode. If the state can't be persisted (e.g. it
+  # carries a value the JSON column can't encode), log loudly and continue —
+  # resume will fall back to a fresh init from the trigger.
   defp save_checkpoint(episode, phase_name, state) do
     now = DateTime.utc_now() |> DateTime.truncate(:second)
     step_count = count_checkpoints(episode.id)
@@ -1061,6 +1068,17 @@ defmodule Cyclium.EpisodeRunner do
       state: state,
       created_at: now
     })
+
+    :ok
+  rescue
+    e ->
+      Logger.error(
+        "[Cyclium.EpisodeRunner] Failed to checkpoint episode #{episode.id} at phase " <>
+          "#{inspect(phase_name)}: #{Exception.message(e)}. Continuing without a checkpoint — " <>
+          "resume will re-init from the trigger."
+      )
+
+      :ok
   end
 
   defp count_checkpoints(episode_id) do
