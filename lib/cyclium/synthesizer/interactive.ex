@@ -208,29 +208,76 @@ defmodule Cyclium.Synthesizer.Interactive do
   # --- JSON parsing ---
 
   defp parse_json_response(text) do
-    json_str = extract_json(text)
-
-    case Jason.decode(json_str) do
-      {:ok, map} when is_map(map) ->
-        {:ok, map}
+    case extract_json(text) do
+      json when is_binary(json) ->
+        case Jason.decode(json) do
+          {:ok, map} when is_map(map) -> {:ok, map}
+          _ -> explain_only(text)
+        end
 
       _ ->
-        {:ok,
-         %{
-           "kind" => "explain_only",
-           "risk" => "low",
-           "why" => "response",
-           "explanation" => text
-         }}
+        explain_only(text)
     end
   end
 
-  defp extract_json(text) do
-    text = String.trim(text)
+  defp explain_only(text) do
+    {:ok,
+     %{"kind" => "explain_only", "risk" => "low", "why" => "response", "explanation" => text}}
+  end
 
+  # Pull a decodable JSON object out of a model response that may wrap it in
+  # prose, code fences, smart/curly quotes, or trailing extra objects. Returns
+  # the first balanced `{...}` object (with quotes normalized), or nil if none.
+  defp extract_json(text) do
+    text
+    |> String.trim()
+    |> strip_code_fence()
+    |> normalize_quotes()
+    |> first_json_object()
+  end
+
+  defp strip_code_fence(text) do
     case Regex.run(~r/```(?:json)?\s*\n?(.*?)\n?\s*```/s, text) do
-      [_, json] -> String.trim(json)
+      [_, inner] -> String.trim(inner)
       nil -> text
+    end
+  end
+
+  # Models sometimes emit the JSON envelope with curly/smart quotes, which break
+  # Jason. Normalize them to straight quotes before decoding.
+  defp normalize_quotes(text) do
+    text
+    |> String.replace(["“", "”", "„", "‟"], "\"")
+    |> String.replace(["‘", "’", "‚", "‛"], "'")
+  end
+
+  # First balanced `{...}` object in the text, respecting string literals and
+  # escapes, so leading prose or trailing extra objects don't break decoding.
+  defp first_json_object(text) do
+    case :binary.match(text, "{") do
+      :nomatch ->
+        nil
+
+      {pos, _} ->
+        text |> binary_part(pos, byte_size(text) - pos) |> balanced_object([], 0, false, false)
+    end
+  end
+
+  defp balanced_object(<<>>, _acc, _depth, _in_str, _esc), do: nil
+
+  defp balanced_object(<<c::utf8, rest::binary>>, acc, depth, in_str, esc) do
+    acc = [acc, <<c::utf8>>]
+
+    cond do
+      esc -> balanced_object(rest, acc, depth, in_str, false)
+      in_str and c == ?\\ -> balanced_object(rest, acc, depth, in_str, true)
+      in_str and c == ?" -> balanced_object(rest, acc, depth, false, false)
+      in_str -> balanced_object(rest, acc, depth, in_str, false)
+      c == ?" -> balanced_object(rest, acc, depth, true, false)
+      c == ?{ -> balanced_object(rest, acc, depth + 1, in_str, false)
+      c == ?} and depth == 1 -> IO.iodata_to_binary(acc)
+      c == ?} -> balanced_object(rest, acc, depth - 1, in_str, false)
+      true -> balanced_object(rest, acc, depth, in_str, false)
     end
   end
 
