@@ -6,6 +6,55 @@ All notable changes to Cyclium are recorded here. This project uses
 Entries are high-level, not exhaustive. Versions prior to `0.1.4` are
 reconstructed from git history and are summarized loosely.
 
+## [0.1.13] — 2026-06-15
+
+### Fixed
+- Interactive approval blocks no longer crash the episode. The `"__blocked__"`
+  state checkpoint couldn't JSON-encode the interactive strategy's state (it
+  carries raw `{:ok, result}` tool-result tuples), and the approval resume path
+  was never wired (nothing turned an `approval_resolved` step into the strategy
+  proceeding). Resolved by resuming from the journal instead of a state
+  checkpoint — see `resume_from_block/2` below. Approving now runs exactly the
+  approved plan with no extra LLM round-trip, and survives a node restart.
+- `save_checkpoint` is now best-effort: a serialization failure logs and
+  continues instead of failing the whole episode.
+
+### Added
+- **`Cyclium.Exports`** — durable, downloadable artifacts (e.g. CSVs) an actor
+  produces for a principal, fetched via a signed, expiring link. New
+  `cyclium_exports` table (migration **V24**), `Cyclium.Schemas.Export`, and
+  `create/1` / `fetch_valid/1` / `purge_expired/0` / `sign/1` / `valid_token?/2`
+  (HMAC via `:crypto`; 7-day default TTL). Storage + signing only — a consuming
+  app serves the bytes behind its own auth.
+- Optional `Cyclium.EpisodeRunner.Strategy` callback **`resume_from_block/2`**.
+  Strategies that implement it resume a blocked episode from the journal, and
+  the runner skips the (potentially unserializable) `"__blocked__"` checkpoint
+  for them. Implemented by the interactive template.
+
+### Telemetry
+- First-class **`[:cyclium, :episode, :started]`** — fires once, on the owning
+  node, with `episode_id`/`actor_id`/`conversation_id` (the old per-node Bus
+  fan-out couldn't be used as a metric). A resumed run (e.g. after an approval
+  block) emits `[:cyclium, :episode, :resumed]` instead of a second `:started`.
+  Added a `duration_ms` measurement to `[:cyclium, :episode, :completed |
+  :failed]`.
+- **Conversation lifecycle events now fire.** `Cyclium.Conversations` emits the
+  declared `[:cyclium, :conversation, :started | :claimed | :resolved |
+  :abandoned | :timed_out | :awaiting_participant]` (with `conversation_id`,
+  `actor_id`, and `outcome`/`reason` where relevant) alongside the Bus
+  broadcasts.
+- **`[:cyclium, :step, :synthesis]`** now carries LLM-observability data:
+  `duration_ms`, `input_tokens`/`output_tokens`/`total_tokens`, the `model`, and
+  `episode_id`/`actor_id`/`conversation_id` — enough to build a `gen_ai` `llm`
+  span and attribute cost without a custom adapter. (Emitted after the call;
+  previously a bare pre-call count with only `episode_id`.)
+- `[:cyclium, :step, :tool_call]` now includes `actor_id`/`conversation_id`, and
+  tool-call steps record `cost_ms` (wall time), for `tool` spans.
+- `[:cyclium, :actor, :event_received]` no longer fires for the high-frequency
+  internal `episode.step_journaled` churn.
+- `[:cyclium, :recovery, :sweep]` is now declared in `@events` (was emitted but
+  undeclared).
+
 ## [0.1.12] — 2026-06-11
 
 ### Fixed
