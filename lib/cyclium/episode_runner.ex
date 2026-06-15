@@ -42,6 +42,22 @@ defmodule Cyclium.EpisodeRunner do
       workflow_step_id: episode.workflow_step_id
     })
 
+    # First-class lifecycle signal: fires on the node that owns the run (unlike
+    # the Bus broadcast above, which every node receives), carrying episode_id so
+    # consumers can correlate start → completion and time runs. A resumed run
+    # (e.g. after an approval block) emits `:resumed`, not a second `:started`.
+    :telemetry.execute(
+      [:cyclium, :episode, if(opts[:resume], do: :resumed, else: :started)],
+      %{count: 1},
+      %{
+        episode_id: episode.id,
+        actor_id: episode.actor_id,
+        expectation_id: episode.expectation_id,
+        conversation_id: episode.conversation_id,
+        trigger_type: episode.trigger_type
+      }
+    )
+
     try do
       do_loop(episode, strategy, state, DateTime.utc_now())
     after
@@ -279,10 +295,13 @@ defmodule Cyclium.EpisodeRunner do
           :telemetry.execute([:cyclium, :step, :tool_call], %{count: 1}, %{
             tool: capability,
             action: action,
-            episode_id: episode.id
+            episode_id: episode.id,
+            actor_id: episode.actor_id,
+            conversation_id: episode.conversation_id
           })
 
           tool_name = "#{capability}.#{action}"
+          tool_started = System.monotonic_time(:millisecond)
 
           case dry_run_tool_override(episode, tool_name) do
             {:mock, mock_result} ->
@@ -319,7 +338,8 @@ defmodule Cyclium.EpisodeRunner do
                       tool_name: tool_name,
                       args_redacted: redacted.args_redacted,
                       result_ref: redacted.result_redacted,
-                      cost_tokens: cost
+                      cost_tokens: cost,
+                      cost_ms: System.monotonic_time(:millisecond) - tool_started
                     })
 
                   increment_budget(episode, cost)
@@ -339,7 +359,8 @@ defmodule Cyclium.EpisodeRunner do
                       tool_name: tool_name,
                       args_redacted: drop_internal_keys(args),
                       error_class: "tool_error",
-                      error_detail: %{reason: format_error_reason(reason)}
+                      error_detail: %{reason: format_error_reason(reason)},
+                      cost_ms: System.monotonic_time(:millisecond) - tool_started
                     })
 
                   handle_strategy_result(episode, strategy, state, step, err, started_at)
@@ -347,8 +368,6 @@ defmodule Cyclium.EpisodeRunner do
           end
 
         {:synthesize, prompt_ctx} ->
-          :telemetry.execute([:cyclium, :step, :synthesis], %{count: 1}, %{episode_id: episode.id})
-
           {prompt_for_synth, prompt_for_storage} = split_transient(prompt_ctx)
 
           case dry_run_synthesis_override(episode) do
@@ -389,6 +408,7 @@ defmodule Cyclium.EpisodeRunner do
 
                 synthesizer ->
                   episode_ctx = build_episode_ctx(episode)
+                  synth_started = System.monotonic_time(:millisecond)
 
                   bounded =
                     run_bounded(
@@ -404,6 +424,8 @@ defmodule Cyclium.EpisodeRunner do
                       token_cost =
                         extract_api_token_cost(result) ||
                           fallback_estimate_tokens(synthesizer, prompt_for_synth)
+
+                      emit_synthesis(episode, result, synth_started)
 
                       step =
                         journal_step!(episode, :synthesis, %{
@@ -424,6 +446,8 @@ defmodule Cyclium.EpisodeRunner do
                       )
 
                     {:completed, {:error, error_class, detail}} ->
+                      emit_synthesis_error(episode, error_class, synth_started)
+
                       step =
                         journal_step!(episode, :synthesis, %{
                           args_redacted: prompt_for_storage,
@@ -674,10 +698,12 @@ defmodule Cyclium.EpisodeRunner do
 
     :telemetry.execute(
       [:cyclium, :episode, if(final_status == :failed, do: :failed, else: :completed)],
-      %{count: 1},
+      %{count: 1, duration_ms: episode_duration_ms(episode)},
       %{
         episode_id: episode.id,
         actor_id: episode.actor_id,
+        expectation_id: episode.expectation_id,
+        conversation_id: episode.conversation_id,
         output_count: length(converge_result.outputs || []),
         finding_count: length(converge_result.findings || [])
       }
@@ -1020,6 +1046,52 @@ defmodule Cyclium.EpisodeRunner do
 
   # Extract actual input + output token counts from the API response.
   # Returns nil if no usage data is present (e.g. non-API synthesizer).
+  # Wall time from the episode's recorded start to now, for the completion event.
+  defp episode_duration_ms(%Episode{started_at: %DateTime{} = started_at}) do
+    DateTime.diff(DateTime.utc_now(), started_at, :millisecond)
+  end
+
+  defp episode_duration_ms(_), do: nil
+
+  # Emit a synthesis (LLM call) event carrying the data needed to build an
+  # `llm` span for LLM observability: duration, input/output/total token usage,
+  # the model, and the ids to correlate (episode + conversation/session).
+  defp emit_synthesis(%Episode{} = episode, result, started_ms) do
+    usage = result[:usage] || result["usage"] || %{}
+    input = usage[:input_tokens] || usage["input_tokens"] || 0
+    output = usage[:output_tokens] || usage["output_tokens"] || 0
+
+    :telemetry.execute(
+      [:cyclium, :step, :synthesis],
+      %{
+        count: 1,
+        duration_ms: System.monotonic_time(:millisecond) - started_ms,
+        input_tokens: input,
+        output_tokens: output,
+        total_tokens: input + output
+      },
+      %{
+        episode_id: episode.id,
+        actor_id: episode.actor_id,
+        conversation_id: episode.conversation_id,
+        model: result[:model] || result["model"]
+      }
+    )
+  end
+
+  defp emit_synthesis_error(%Episode{} = episode, error_class, started_ms) do
+    :telemetry.execute(
+      [:cyclium, :step, :synthesis],
+      %{count: 1, duration_ms: System.monotonic_time(:millisecond) - started_ms},
+      %{
+        episode_id: episode.id,
+        actor_id: episode.actor_id,
+        conversation_id: episode.conversation_id,
+        error_class: to_string(error_class)
+      }
+    )
+  end
+
   defp extract_api_token_cost(result) do
     usage = result[:usage] || result["usage"]
 

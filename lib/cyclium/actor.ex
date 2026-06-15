@@ -446,10 +446,15 @@ defmodule Cyclium.Actor.Server do
   end
 
   def handle_info({:bus, event_type, payload}, state) do
-    :telemetry.execute([:cyclium, :actor, :event_received], %{count: 1}, %{
-      actor_id: state.actor_id,
-      event_type: event_type
-    })
+    # Skip the high-frequency internal journaling churn (one per journaled step)
+    # — it drowned the real lifecycle signals multiplexed through this event and
+    # forced every consumer to filter it out by magic string.
+    unless event_type == "episode.step_journaled" do
+      :telemetry.execute([:cyclium, :actor, :event_received], %{count: 1}, %{
+        actor_id: state.actor_id,
+        event_type: event_type
+      })
+    end
 
     # Handle episode lifecycle events — free up active_episodes slots
     state =

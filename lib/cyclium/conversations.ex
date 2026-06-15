@@ -71,11 +71,22 @@ defmodule Cyclium.Conversations do
     |> Conversation.changeset(changeset_attrs)
     |> Cyclium.repo().insert()
     |> tap_ok(fn conv ->
+      emit_conversation(:started, %{
+        conversation_id: conv.id,
+        actor_id: conv.actor_id,
+        expectation_id: conv.expectation_id
+      })
+
       if initial_status == "awaiting_participant" do
         Cyclium.Bus.broadcast("conversation.awaiting_participant", %{
           conversation_id: conv.id,
           actor_id: conv.actor_id,
           audience_target: audience_target
+        })
+
+        emit_conversation(:awaiting_participant, %{
+          conversation_id: conv.id,
+          actor_id: conv.actor_id
         })
       end
     end)
@@ -103,6 +114,7 @@ defmodule Cyclium.Conversations do
           principal_type: principal["type"]
         })
         |> Cyclium.repo().update()
+        |> tap_ok(&emit_claimed/1)
 
       %{principal_id: existing_id} when not is_nil(existing_id) ->
         {:error, :already_claimed}
@@ -115,6 +127,7 @@ defmodule Cyclium.Conversations do
           principal_type: principal["type"]
         })
         |> Cyclium.repo().update()
+        |> tap_ok(&emit_claimed/1)
     end
   end
 
@@ -147,6 +160,12 @@ defmodule Cyclium.Conversations do
             result: result,
             actor_id: updated.actor_id
           })
+
+          emit_conversation(:resolved, %{
+            conversation_id: updated.id,
+            actor_id: updated.actor_id,
+            outcome: outcome
+          })
         end)
     end
   end
@@ -175,6 +194,12 @@ defmodule Cyclium.Conversations do
             reason: reason,
             actor_id: updated.actor_id
           })
+
+          emit_conversation(:abandoned, %{
+            conversation_id: updated.id,
+            actor_id: updated.actor_id,
+            reason: reason
+          })
         end)
     end
   end
@@ -196,6 +221,11 @@ defmodule Cyclium.Conversations do
         |> Cyclium.repo().update()
         |> tap_ok(fn updated ->
           Cyclium.Bus.broadcast("conversation.timed_out", %{
+            conversation_id: updated.id,
+            actor_id: updated.actor_id
+          })
+
+          emit_conversation(:timed_out, %{
             conversation_id: updated.id,
             actor_id: updated.actor_id
           })
@@ -347,4 +377,15 @@ defmodule Cyclium.Conversations do
   end
 
   defp tap_ok(other, _fun), do: other
+
+  # Conversation lifecycle telemetry, emitted alongside the Bus broadcasts so
+  # consumers can build conversation/session metrics (and group LLM-obs spans by
+  # conversation) without subscribing to PubSub.
+  defp emit_conversation(event, meta) when is_atom(event) and is_map(meta) do
+    :telemetry.execute([:cyclium, :conversation, event], %{count: 1}, meta)
+  end
+
+  defp emit_claimed(%Conversation{} = conv) do
+    emit_conversation(:claimed, %{conversation_id: conv.id, actor_id: conv.actor_id})
+  end
 end

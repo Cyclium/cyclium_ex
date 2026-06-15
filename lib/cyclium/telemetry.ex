@@ -143,6 +143,8 @@ defmodule Cyclium.Telemetry do
     # Finding sweep
     [:cyclium, :finding_sweep, :completed],
     [:cyclium, :finding_sweep, :failed],
+    # Recovery sweep (re-enqueues stale running episodes)
+    [:cyclium, :recovery, :sweep],
     # Work claims
     [:cyclium, :work_claims, :acquired],
     [:cyclium, :work_claims, :steal],

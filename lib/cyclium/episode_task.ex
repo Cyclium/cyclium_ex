@@ -62,7 +62,8 @@ defmodule Cyclium.EpisodeTask do
     try do
       case Cyclium.EpisodeRunner.execute_loop(episode, strategy, state,
              synthesizer: synthesizer,
-             claim_fence: claim_fence
+             claim_fence: claim_fence,
+             resume: opts[:resume] == true
            ) do
         {:error, :claim_lost} ->
           # The lease was stolen mid-run; the new owner is driving this episode
