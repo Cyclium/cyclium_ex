@@ -23,31 +23,41 @@ defmodule Cyclium.Exports do
   alias Cyclium.Schemas.Export
 
   @default_ttl_seconds 7 * 24 * 60 * 60
+  @default_max_bytes 5 * 1024 * 1024
 
   @doc """
   Create an export. Required: `:principal_type`, `:principal_id`, `:filename`,
   `:content`. Optional: `:type` (default "csv"), `:content_type`,
   `:episode_id`, `:conversation_id`, `:ttl_seconds`. Stamps `created_at`,
   `expires_at`, and `byte_size`.
+
+  Content larger than `:export_max_bytes` (config; default 5 MB) is rejected with
+  `{:error, :too_large}` — the content lives inline in the DB, so this guards
+  against a runaway export bloating the table. Raise the limit or add GCS
+  offload when genuinely-large exports are needed.
   """
-  @spec create(map()) :: {:ok, Export.t()} | {:error, Ecto.Changeset.t()}
+  @spec create(map()) :: {:ok, Export.t()} | {:error, :too_large | Ecto.Changeset.t()}
   def create(attrs) when is_map(attrs) do
     attrs = normalize(attrs)
     now = DateTime.utc_now() |> DateTime.truncate(:second)
     ttl = Map.get(attrs, :ttl_seconds, ttl_seconds())
     content = attrs[:content] || ""
 
-    %Export{}
-    |> Export.changeset(
-      attrs
-      |> Map.drop([:ttl_seconds])
-      |> Map.merge(%{
-        created_at: now,
-        expires_at: DateTime.add(now, ttl, :second),
-        byte_size: byte_size(content)
-      })
-    )
-    |> Cyclium.repo().insert()
+    if byte_size(content) > max_bytes() do
+      {:error, :too_large}
+    else
+      %Export{}
+      |> Export.changeset(
+        attrs
+        |> Map.drop([:ttl_seconds])
+        |> Map.merge(%{
+          created_at: now,
+          expires_at: DateTime.add(now, ttl, :second),
+          byte_size: byte_size(content)
+        })
+      )
+      |> Cyclium.repo().insert()
+    end
   end
 
   @doc "Fetch an export by id only if it exists and has not expired."
@@ -114,6 +124,8 @@ defmodule Cyclium.Exports do
   end
 
   defp ttl_seconds, do: Application.get_env(:cyclium, :export_ttl_seconds, @default_ttl_seconds)
+
+  defp max_bytes, do: Application.get_env(:cyclium, :export_max_bytes, @default_max_bytes)
 
   # Accept string or atom keys; keep the canonical atom set the changeset expects.
   defp normalize(attrs) do

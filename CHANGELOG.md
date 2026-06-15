@@ -6,6 +6,38 @@ All notable changes to Cyclium are recorded here. This project uses
 Entries are high-level, not exhaustive. Versions prior to `0.1.4` are
 reconstructed from git history and are summarized loosely.
 
+## [0.1.14] — 2026-06-15
+
+### Fixed
+- Interactive synthesizer no longer leaks raw JSON (and silently skips tool
+  calls) when the model emits the response envelope with smart/curly quotes or
+  wraps it in prose / multiple objects. `parse_json_response` now normalizes
+  curly quotes to straight and extracts the first balanced `{...}` object before
+  `Jason.decode`, so the envelope parses, the tool call executes, and the
+  summary is clean prose.
+
+### Added
+- Per-actor LLM options. Synthesizer opts beyond `:llm` (e.g. `model:`,
+  `max_tokens:`) declared as `synthesizer({Cyclium.Synthesizer.Interactive, llm:
+  Adapter, model: "..."})` are kept in `persistent_term` and forwarded to the
+  LLM client's `chat/3` opts — so an actor can pick a model without a bespoke
+  adapter. Falls back to `config :cyclium, :interactive_llm_opts`.
+- `Cyclium.Exports.create/1` size guard: content larger than
+  `:export_max_bytes` (default 5 MB) is rejected with `{:error, :too_large}`,
+  guarding the inline-content table against runaway exports.
+
+### Telemetry
+- Emit `[:cyclium, :episode, :blocked]` (with `episode_id`/`actor_id`/
+  `conversation_id` and `reason: :approval | :wait`) when an episode parks on an
+  approval or external wait — previously declared but never fired.
+  (Note: `finding.*` and `output.*` events *are* emitted, via dynamic atoms in
+  `Findings`/`Output.Router` — they only looked unfired to a literal source scan.)
+- Trimmed declared-but-never-emitted events from `@events` and the moduledoc, so
+  consumers don't build against a phantom contract: `episode.queued`,
+  `budget.tokens`, `budget.turns`, `step.output`, `phase.changed`, and
+  `guardrail.triggered` (guardrails are not implemented). Confirmed none are
+  emitted via a dynamic atom before removing.
+
 ## [0.1.13] — 2026-06-15
 
 ### Fixed

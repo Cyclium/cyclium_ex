@@ -248,6 +248,14 @@ defmodule Cyclium.Actor.Server do
             :persistent_term.put({:cyclium_interactive_llm, config.actor_id}, llm)
           end
 
+          # Keep the remaining synthesizer opts (e.g. `model:`) so the synthesizer
+          # can forward them to the LLM client — lets an actor pick a model without
+          # a bespoke adapter: synthesizer({..., llm: Adapter, model: "..."}).
+          :persistent_term.put(
+            {:cyclium_synthesizer_opts, config.actor_id},
+            Keyword.delete(opts, :llm)
+          )
+
         mod when is_atom(mod) ->
           :persistent_term.put({:cyclium_actor_synthesizer, config.actor_id}, mod)
       end

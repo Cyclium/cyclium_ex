@@ -48,14 +48,15 @@ defmodule Cyclium.Synthesizer.Interactive do
   @impl true
   def synthesize(prompt_ctx, episode_ctx) do
     llm_client = resolve_llm_client(episode_ctx)
+    llm_opts = resolve_llm_opts(episode_ctx)
     system_prompt = prompt_ctx[:system_prompt] || default_system_prompt()
 
     case prompt_ctx[:task] do
       :summarize_results ->
-        synthesize_summary(llm_client, system_prompt, prompt_ctx)
+        synthesize_summary(llm_client, llm_opts, system_prompt, prompt_ctx)
 
       _ ->
-        synthesize_interpret(llm_client, system_prompt, prompt_ctx)
+        synthesize_interpret(llm_client, llm_opts, system_prompt, prompt_ctx)
     end
   end
 
@@ -69,10 +70,10 @@ defmodule Cyclium.Synthesizer.Interactive do
 
   # --- Interpret ---
 
-  defp synthesize_interpret(llm_client, system_prompt, prompt_ctx) do
+  defp synthesize_interpret(llm_client, llm_opts, system_prompt, prompt_ctx) do
     user_message = build_user_message(prompt_ctx)
 
-    case llm_client.chat(system_prompt, user_message, max_tokens: 2048) do
+    case llm_client.chat(system_prompt, user_message, chat_opts(llm_opts)) do
       {:ok, text} ->
         parse_json_response(text)
 
@@ -87,7 +88,7 @@ defmodule Cyclium.Synthesizer.Interactive do
 
   # --- Summarize ---
 
-  defp synthesize_summary(llm_client, system_prompt, prompt_ctx) do
+  defp synthesize_summary(llm_client, llm_opts, system_prompt, prompt_ctx) do
     context = prompt_ctx[:context] || %{}
 
     user_message = """
@@ -105,7 +106,7 @@ defmodule Cyclium.Synthesizer.Interactive do
        {"kind": "tool_call", "risk": "low", "why": "reason", "tool": {"tool": "TOOL", "action": "ACTION", "args": {ARGS}}}
     """
 
-    case llm_client.chat(system_prompt, user_message, max_tokens: 2048) do
+    case llm_client.chat(system_prompt, user_message, chat_opts(llm_opts)) do
       {:ok, text} ->
         parse_json_response(text)
 
@@ -299,14 +300,7 @@ defmodule Cyclium.Synthesizer.Interactive do
   defp resolve_llm_client(episode_ctx) do
     # Check for {Cyclium.Synthesizer.Interactive, llm: MyModule} tuple config
     # stored as synthesizer opts in persistent_term, or fall back to app config
-    actor_key =
-      if episode_ctx[:actor_id] do
-        try do
-          String.to_existing_atom(to_string(episode_ctx[:actor_id]))
-        rescue
-          _ -> nil
-        end
-      end
+    actor_key = actor_key(episode_ctx)
 
     from_persistent =
       if actor_key do
@@ -317,6 +311,35 @@ defmodule Cyclium.Synthesizer.Interactive do
       Application.get_env(:cyclium, :interactive_llm) ||
       raise "No LLM client configured for Cyclium.Synthesizer.Interactive. " <>
               "Set config :cyclium, :interactive_llm, MyApp.LLMClient"
+  end
+
+  # Extra synthesizer opts (e.g. `model:`) declared on the actor —
+  # `synthesizer({Cyclium.Synthesizer.Interactive, llm: Adapter, model: "..."})`
+  # — forwarded to the LLM client's `chat/3` opts so a model can be chosen per
+  # actor without a bespoke adapter. Falls back to app config, then none.
+  defp resolve_llm_opts(episode_ctx) do
+    actor_key = actor_key(episode_ctx)
+
+    from_persistent =
+      if actor_key do
+        :persistent_term.get({:cyclium_synthesizer_opts, actor_key}, nil)
+      end
+
+    from_persistent || Application.get_env(:cyclium, :interactive_llm_opts, [])
+  end
+
+  # Per-call chat opts: a default output cap the synthesizer opts can override
+  # (so e.g. `model:` flows through, and `max_tokens:` can be tuned per actor).
+  defp chat_opts(llm_opts), do: Keyword.merge([max_tokens: 2048], llm_opts)
+
+  defp actor_key(episode_ctx) do
+    if episode_ctx[:actor_id] do
+      try do
+        String.to_existing_atom(to_string(episode_ctx[:actor_id]))
+      rescue
+        _ -> nil
+      end
+    end
   end
 
   defp default_system_prompt do

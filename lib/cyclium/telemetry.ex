@@ -9,24 +9,17 @@ defmodule Cyclium.Telemetry do
       [:cyclium, :episode, :started]      — %{episode_id, actor_id}
       [:cyclium, :episode, :completed]    — %{episode_id, actor_id, output_count, finding_count}
       [:cyclium, :episode, :failed]       — %{episode_id, actor_id, error_class}
-      [:cyclium, :episode, :blocked]      — %{episode_id, actor_id}
+      [:cyclium, :episode, :blocked]      — %{episode_id, actor_id, conversation_id, reason}
       [:cyclium, :episode, :resumed]      — %{episode_id, actor_id}
       [:cyclium, :episode, :dropped]      — %{actor_id, expectation_id}
-      [:cyclium, :episode, :queued]       — %{episode_id, actor_id}
       [:cyclium, :episode, :canceled]     — %{episode_id, actor_id, reason}
       [:cyclium, :episode, :sampled_out]  — %{actor_id, expectation_id}
 
   ### Step events
 
-      [:cyclium, :step, :tool_call]       — %{tool, action, episode_id}
-      [:cyclium, :step, :synthesis]       — %{episode_id}
-      [:cyclium, :step, :output]          — %{type, status, episode_id}
+      [:cyclium, :step, :tool_call]       — %{tool, action, episode_id, actor_id, conversation_id}
+      [:cyclium, :step, :synthesis]       — meas %{duration_ms, input_tokens, output_tokens, total_tokens}, meta %{episode_id, actor_id, conversation_id, model}
       [:cyclium, :step, :observation]     — %{actor_id, episode_id}
-
-  ### Budget events
-
-      [:cyclium, :budget, :tokens]        — %{episode_id, used, max, pct}
-      [:cyclium, :budget, :turns]         — %{episode_id, used, max, pct}
 
   ### Actor events
 
@@ -61,13 +54,6 @@ defmodule Cyclium.Telemetry do
       [:cyclium, :work_claims, :completed]    — %{count}, meta: %{dedupe_key, owner_node}
       [:cyclium, :work_claims, :failed]       — %{count}, meta: %{dedupe_key, owner_node}
 
-  ### Phase events
-
-      [:cyclium, :phase, :changed]        — %{from, to, episode_id, actor_id}
-
-  ### Guardrail events
-
-      [:cyclium, :guardrail, :triggered]  — %{rule, episode_id, actor_id, detail}
 
   ### Workflow events
 
@@ -106,17 +92,12 @@ defmodule Cyclium.Telemetry do
     [:cyclium, :episode, :blocked],
     [:cyclium, :episode, :resumed],
     [:cyclium, :episode, :dropped],
-    [:cyclium, :episode, :queued],
     [:cyclium, :episode, :canceled],
     [:cyclium, :episode, :sampled_out],
     # Steps
     [:cyclium, :step, :tool_call],
     [:cyclium, :step, :synthesis],
-    [:cyclium, :step, :output],
     [:cyclium, :step, :observation],
-    # Budget
-    [:cyclium, :budget, :tokens],
-    [:cyclium, :budget, :turns],
     # Actor
     [:cyclium, :actor, :event_received],
     [:cyclium, :actor, :overflow],
@@ -129,8 +110,6 @@ defmodule Cyclium.Telemetry do
     [:cyclium, :finding, :cleared],
     [:cyclium, :finding, :expired],
     [:cyclium, :finding, :escalated],
-    # Phase
-    [:cyclium, :phase, :changed],
     # Service levels
     [:cyclium, :service_levels, :breach],
     # Circuit breaker
@@ -138,8 +117,6 @@ defmodule Cyclium.Telemetry do
     [:cyclium, :circuit_breaker, :closed],
     [:cyclium, :circuit_breaker, :half_open],
     [:cyclium, :circuit_breaker, :rejected],
-    # Guardrails
-    [:cyclium, :guardrail, :triggered],
     # Finding sweep
     [:cyclium, :finding_sweep, :completed],
     [:cyclium, :finding_sweep, :failed],

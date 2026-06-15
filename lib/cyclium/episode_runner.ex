@@ -510,6 +510,7 @@ defmodule Cyclium.EpisodeRunner do
 
           journal_step!(episode, :approval_requested, %{args_redacted: request})
           Cyclium.Episodes.update_status(episode.id, :blocked)
+          emit_blocked(episode, :approval)
           {:blocked, state}
 
         {:wait, external_ref} ->
@@ -518,6 +519,7 @@ defmodule Cyclium.EpisodeRunner do
           save_checkpoint(episode, "__blocked__", state)
           journal_step!(episode, :wait_started, %{result_ref: external_ref})
           Cyclium.Episodes.update_status(episode.id, :blocked)
+          emit_blocked(episode, :wait)
           {:blocked, state}
       end
     else
@@ -1046,6 +1048,17 @@ defmodule Cyclium.EpisodeRunner do
 
   # Extract actual input + output token counts from the API response.
   # Returns nil if no usage data is present (e.g. non-API synthesizer).
+  # Episode parked on an approval/external wait. `reason` is :approval | :wait.
+  defp emit_blocked(%Episode{} = episode, reason) do
+    :telemetry.execute([:cyclium, :episode, :blocked], %{count: 1}, %{
+      episode_id: episode.id,
+      actor_id: episode.actor_id,
+      expectation_id: episode.expectation_id,
+      conversation_id: episode.conversation_id,
+      reason: reason
+    })
+  end
+
   # Wall time from the episode's recorded start to now, for the completion event.
   defp episode_duration_ms(%Episode{started_at: %DateTime{} = started_at}) do
     DateTime.diff(DateTime.utc_now(), started_at, :millisecond)
