@@ -356,7 +356,8 @@ defmodule Cyclium.Strategy.Template.Interactive do
       risk: existing_atom(plan["risk"], :low),
       why: plan["why"] || "",
       tool: deserialize_tool(plan["tool"]),
-      steps: plan |> Map.get("steps", []) |> Enum.map(&deserialize_tool/1) |> Enum.reject(&is_nil/1),
+      steps:
+        plan |> Map.get("steps", []) |> Enum.map(&deserialize_tool/1) |> Enum.reject(&is_nil/1),
       meta: %{}
     }
   end
