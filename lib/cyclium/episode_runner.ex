@@ -35,6 +35,7 @@ defmodule Cyclium.EpisodeRunner do
     Cyclium.Bus.broadcast("episode.started", %{
       episode_id: episode.id,
       actor_id: episode.actor_id,
+      conversation_id: episode.conversation_id,
       expectation_id: episode.expectation_id,
       trigger_type: episode.trigger_type,
       trigger_ref: episode.trigger_ref,
@@ -133,6 +134,7 @@ defmodule Cyclium.EpisodeRunner do
         Cyclium.Bus.broadcast("episode.failed", %{
           episode_id: episode.id,
           actor_id: episode.actor_id,
+          conversation_id: episode.conversation_id,
           status: :failed,
           error_class: "process_terminated",
           error_detail: detail,
@@ -167,6 +169,7 @@ defmodule Cyclium.EpisodeRunner do
     Cyclium.Bus.broadcast("episode.failed", %{
       episode_id: episode.id,
       actor_id: episode.actor_id,
+      conversation_id: episode.conversation_id,
       status: :failed,
       error_class: "budget_exceeded",
       error_detail: error_detail,
@@ -221,6 +224,7 @@ defmodule Cyclium.EpisodeRunner do
     Cyclium.Bus.broadcast("episode.failed", %{
       episode_id: episode.id,
       actor_id: episode.actor_id,
+      conversation_id: episode.conversation_id,
       status: :failed,
       error_class: "budget_exceeded",
       error_detail: error_detail,
@@ -431,7 +435,8 @@ defmodule Cyclium.EpisodeRunner do
                         journal_step!(episode, :synthesis, %{
                           args_redacted: prompt_for_storage,
                           result_ref: result,
-                          cost_tokens: token_cost
+                          cost_tokens: token_cost,
+                          metadata: synthesis_step_metadata(episode, result)
                         })
 
                       increment_budget(episode, token_cost)
@@ -550,6 +555,7 @@ defmodule Cyclium.EpisodeRunner do
         Cyclium.Bus.broadcast("episode.failed", %{
           episode_id: episode.id,
           actor_id: episode.actor_id,
+          conversation_id: episode.conversation_id,
           status: :failed,
           error_class: "loop_detected",
           error_detail: error_detail,
@@ -675,6 +681,7 @@ defmodule Cyclium.EpisodeRunner do
     base_payload = %{
       episode_id: episode.id,
       actor_id: episode.actor_id,
+      conversation_id: episode.conversation_id,
       status: final_status,
       summary: converge_result.summary,
       classification: converge_result.classification,
@@ -752,6 +759,7 @@ defmodule Cyclium.EpisodeRunner do
 
           Cyclium.Bus.broadcast(bus_event, %{
             episode_id: episode.id,
+            conversation_id: episode.conversation_id,
             finding_id: finding.id,
             finding_key: finding.finding_key,
             actor_id: finding.actor_id
@@ -844,6 +852,7 @@ defmodule Cyclium.EpisodeRunner do
     Cyclium.Bus.broadcast("episode.failed", %{
       episode_id: episode.id,
       actor_id: episode.actor_id,
+      conversation_id: episode.conversation_id,
       status: :failed,
       error_class: error_class,
       error_detail: error_detail,
@@ -1105,6 +1114,32 @@ defmodule Cyclium.EpisodeRunner do
     )
   end
 
+  # The episode's `metadata` bag holds the **primary** model (stamped once, on
+  # the first synthesis that reports one). A synthesis step only records a model
+  # in its own metadata when it *diverges* from that primary — so a single-model
+  # episode doesn't repeat the model on every step. Returns the step's metadata
+  # (or nil to leave the column NULL).
+  defp synthesis_step_metadata(%Episode{} = episode, result) do
+    model = result[:model] || result["model"]
+    primary = Process.get(:cyclium_episode_model)
+
+    cond do
+      is_nil(model) ->
+        nil
+
+      is_nil(primary) ->
+        Cyclium.Episodes.merge_metadata(episode.id, %{"model" => model})
+        Process.put(:cyclium_episode_model, model)
+        nil
+
+      model != primary ->
+        %{"model" => model}
+
+      true ->
+        nil
+    end
+  end
+
   defp extract_api_token_cost(result) do
     usage = result[:usage] || result["usage"]
 
@@ -1203,17 +1238,21 @@ defmodule Cyclium.EpisodeRunner do
       side_effect_key: attrs[:side_effect_key],
       cost_tokens: attrs[:cost_tokens],
       cost_ms: attrs[:cost_ms],
+      metadata: attrs[:metadata],
       created_at: now
     }
 
-    inserted = repo().insert!(step)
+    inserted = insert_step(step)
 
-    # Incrementally project the log after each step (append-only)
-    Cyclium.LogProjector.project(episode.id)
+    # Incrementally project the log after each step (append-only), unless the
+    # expectation opted out via `render_log: false` — an actor can keep full step
+    # journaling for a chat UI while skipping the redundant rendered log.
+    if render_log?(episode), do: Cyclium.LogProjector.project(episode.id)
 
     Cyclium.Bus.broadcast("episode.step_journaled", %{
       episode_id: episode.id,
       actor_id: episode.actor_id,
+      conversation_id: episode.conversation_id,
       step_no: step_no,
       kind: kind,
       tool_name: attrs[:tool_name],
@@ -1223,6 +1262,46 @@ defmodule Cyclium.EpisodeRunner do
 
     inserted
   end
+
+  # Insert a journal step. A transient DB-layer fault — e.g. an intermittent Tds
+  # (SQL Server) parameter-encoding / connection blip on a single INSERT, not
+  # caused by any value the actor feeds in — must NOT crash an episode that is
+  # otherwise progressing. Degrade gracefully: log loudly, emit a metric so a
+  # spike is visible, and continue with an in-memory step struct so the loop's
+  # step bookkeeping still holds. The only loss is that one journal row + its
+  # rendered-log/bus projection; the episode still completes and the user still
+  # gets an answer. Non-transient errors (a real schema/encoding bug) still
+  # raise — we don't want to silently mask those.
+  defp insert_step(step) do
+    repo().insert!(step)
+  rescue
+    e ->
+      unless transient_db_error?(e), do: reraise(e, __STACKTRACE__)
+
+      Logger.error("cyclium: step journal write failed; continuing un-journaled",
+        episode_id: step.episode_id,
+        kind: step.kind,
+        error: inspect(e.__struct__)
+      )
+
+      :telemetry.execute(
+        [:cyclium, :step, :journal_dropped],
+        %{count: 1},
+        %{episode_id: step.episode_id, kind: step.kind, error: inspect(e.__struct__)}
+      )
+
+      # In-memory fallback so downstream step bookkeeping (ids, step_no) holds.
+      %{step | id: Ecto.UUID.generate()}
+  end
+
+  # Match transient DB-layer faults by struct so we don't hard-depend on the
+  # optional Tds driver being compiled in (referencing `Tds.Error` directly would
+  # warn when SQL Server isn't a configured adapter). Tds.Error (SQL Server) and
+  # DBConnection.ConnectionError are the transient connection/encoding faults we
+  # degrade on; everything else (e.g. a real constraint/cast error) re-raises.
+  defp transient_db_error?(%DBConnection.ConnectionError{}), do: true
+  defp transient_db_error?(%{__struct__: Tds.Error}), do: true
+  defp transient_db_error?(_), do: false
 
   # Size cap for stored synthesis responses. Larger than this gets truncated
   # on a per-field basis (content text) to keep DB rows reasonable.
@@ -1315,6 +1394,32 @@ defmodule Cyclium.EpisodeRunner do
   defp parse_log_strategy("full_debug"), do: :full_debug
   defp parse_log_strategy(atom) when is_atom(atom), do: atom
   defp parse_log_strategy(_), do: :timeline
+
+  # Whether to materialize the rendered log for this episode. Resolved from the
+  # expectation's `render_log` (stored in persistent_term at actor boot), keyed by
+  # the episode's actor/expectation. Defaults to true when no entry exists (e.g.
+  # the actor isn't registered on this node), so logs render unless opted out.
+  @spec render_log?(Episode.t()) :: boolean()
+  defp render_log?(%Episode{actor_id: actor_id, expectation_id: exp_id}) do
+    with actor_key when is_atom(actor_key) <- existing_atom(actor_id),
+         exp_key when is_atom(exp_key) <- existing_atom(exp_id) do
+      :persistent_term.get({:cyclium_expectation_render_log, actor_key, exp_key}, true)
+    else
+      _ -> true
+    end
+  end
+
+  defp render_log?(_), do: true
+
+  defp existing_atom(value) when is_atom(value), do: value
+
+  defp existing_atom(value) when is_binary(value) do
+    String.to_existing_atom(value)
+  rescue
+    ArgumentError -> nil
+  end
+
+  defp existing_atom(_), do: nil
 
   defp resolve_synthesizer do
     Process.get(:cyclium_synthesizer) || Application.get_env(:cyclium, :synthesizer)

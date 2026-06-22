@@ -127,4 +127,27 @@ defmodule Cyclium.BusPayloadDbTest do
     assert payload.error_class == "custom_failure"
     assert is_map(payload.error_detail)
   end
+
+  test "lifecycle Bus events carry conversation_id" do
+    conv_id = Ecto.UUID.generate()
+
+    Cyclium.Bus.subscribe("episode.started")
+    Cyclium.Bus.subscribe("episode.step_journaled")
+    Cyclium.Bus.subscribe("episode.completed")
+
+    episode =
+      insert_episode(%{
+        actor_id: "bus_payload_actor",
+        expectation_id: "do_work",
+        conversation_id: conv_id,
+        budget: %{"max_turns" => 5, "max_tokens" => 1_000, "max_wall_ms" => 10_000},
+        log_strategy: "full_debug"
+      })
+
+    EpisodeRunner.execute_loop(episode, ToolThenConvergeStrategy, %{phase: :call})
+
+    assert_receive {:bus, "episode.started", %{conversation_id: ^conv_id}}
+    assert_receive {:bus, "episode.step_journaled", %{conversation_id: ^conv_id}}
+    assert_receive {:bus, "episode.completed", %{conversation_id: ^conv_id}}
+  end
 end

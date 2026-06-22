@@ -2,11 +2,18 @@ defmodule Cyclium.LogProjector do
   @moduledoc """
   Materializes human-readable logs from episode steps.
 
-  Driven by `log_strategy` on each episode:
+  Verbosity levels:
   - `:none` — skip entirely
   - `:summary_only` — one-line summary at completion
   - `:timeline` — step-by-step rendered log (default)
   - `:full_debug` — timeline with raw args/results
+
+  The level is the expectation's `render_log_strategy` when set, otherwise it
+  falls back to the episode's `log_strategy`. This lets the rendered log's
+  verbosity be controlled **independently** of what step data is journaled —
+  e.g. journal full step data for a chat UI but render only a summary (or the
+  reverse). `log_strategy` still drives journaling (`EpisodeRunner`); this only
+  governs rendering.
 
   Called from `EpisodeRunner.post_converge/2` and available on-demand
   via `project/1`.
@@ -27,7 +34,7 @@ defmodule Cyclium.LogProjector do
   """
   def project(episode_id) do
     episode = repo().get!(Episode, episode_id)
-    strategy = parse_strategy(episode.log_strategy)
+    strategy = render_strategy(episode)
 
     if strategy == :none do
       :skip
@@ -206,6 +213,35 @@ defmodule Cyclium.LogProjector do
         |> repo().update()
     end
   end
+
+  # Render-log verbosity: the expectation's `render_log_strategy` override
+  # (stored in persistent_term at actor boot, keyed by actor/expectation) when
+  # set, else the episode's `log_strategy`. Independent of journaling detail.
+  defp render_strategy(%Episode{log_strategy: log_strategy} = episode) do
+    case render_log_strategy_override(episode) do
+      nil -> parse_strategy(log_strategy)
+      override -> parse_strategy(override)
+    end
+  end
+
+  defp render_log_strategy_override(%Episode{actor_id: actor_id, expectation_id: exp_id}) do
+    with actor_key when is_atom(actor_key) <- existing_atom(actor_id),
+         exp_key when is_atom(exp_key) <- existing_atom(exp_id) do
+      :persistent_term.get({:cyclium_expectation_render_log_strategy, actor_key, exp_key}, nil)
+    else
+      _ -> nil
+    end
+  end
+
+  defp existing_atom(value) when is_atom(value), do: value
+
+  defp existing_atom(value) when is_binary(value) do
+    String.to_existing_atom(value)
+  rescue
+    ArgumentError -> nil
+  end
+
+  defp existing_atom(_), do: nil
 
   defp parse_strategy(nil), do: :timeline
   defp parse_strategy("none"), do: :none

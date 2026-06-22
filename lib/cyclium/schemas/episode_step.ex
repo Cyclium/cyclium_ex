@@ -40,6 +40,9 @@ defmodule Cyclium.Schemas.EpisodeStep do
     field(:side_effect_key, :string)
     field(:cost_tokens, :integer)
     field(:cost_ms, :integer)
+    # Per-step metadata bag; only populated when a value diverges from the
+    # episode-level bag (e.g. a synthesis step using a non-primary model).
+    field(:metadata, :map)
     field(:created_at, :utc_datetime_usec)
   end
 
@@ -58,6 +61,7 @@ defmodule Cyclium.Schemas.EpisodeStep do
       :side_effect_key,
       :cost_tokens,
       :cost_ms,
+      :metadata,
       :created_at
     ])
     |> validate_required([:episode_id, :step_no, :kind, :created_at])

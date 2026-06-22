@@ -41,6 +41,21 @@ defmodule Cyclium.EpisodesDbTest do
     end
   end
 
+  describe "merge_metadata/2" do
+    test "stamps the metadata bag and merges without clobbering existing keys" do
+      episode = insert_episode(%{status: :running})
+      assert episode.metadata in [nil, %{}]
+
+      assert {:ok, _} = Episodes.merge_metadata(episode.id, %{"model" => "gpt-5.4"})
+      assert Episodes.get!(episode.id).metadata == %{"model" => "gpt-5.4"}
+
+      assert {:ok, _} = Episodes.merge_metadata(episode.id, %{"max_tokens" => 8192})
+      reloaded = Episodes.get!(episode.id).metadata
+      assert reloaded["model"] == "gpt-5.4"
+      assert reloaded["max_tokens"] == 8192
+    end
+  end
+
   describe "list_by_actors/2 ordering" do
     test "orders by workflow_step_no ascending within same started_at" do
       now = DateTime.utc_now()

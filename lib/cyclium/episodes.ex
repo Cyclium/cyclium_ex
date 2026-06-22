@@ -97,6 +97,7 @@ defmodule Cyclium.Episodes do
           actor_id: actor_id,
           expectation_id: expectation_id,
           episode_id: episode.id,
+          conversation_id: episode.conversation_id,
           mode: mode
         })
 
@@ -373,6 +374,19 @@ defmodule Cyclium.Episodes do
     |> repo().update()
   end
 
+  @doc """
+  Shallow-merge `attrs` into an episode's `metadata` bag. Used to stamp per-run
+  attributes (e.g. the primary `model`) without clobbering existing keys.
+  """
+  def merge_metadata(episode_id, attrs) when is_map(attrs) do
+    episode = get!(episode_id)
+    merged = Map.merge(episode.metadata || %{}, attrs)
+
+    episode
+    |> Episode.changeset(%{metadata: merged})
+    |> repo().update()
+  end
+
   defp maybe_set_finished_at(attrs, status)
        when status in [:done, :failed, :partially_failed, :canceled] do
     Map.put_new(attrs, :finished_at, DateTime.utc_now())
@@ -418,6 +432,7 @@ defmodule Cyclium.Episodes do
     Cyclium.Bus.broadcast("episode.canceled", %{
       episode_id: episode_id,
       actor_id: episode.actor_id,
+      conversation_id: episode.conversation_id,
       reason: reason,
       workflow_instance_id: episode.workflow_instance_id,
       workflow_step_id: episode.workflow_step_id

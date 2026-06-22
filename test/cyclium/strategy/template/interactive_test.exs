@@ -228,6 +228,42 @@ defmodule Cyclium.Strategy.Template.InteractiveTest do
       assert new.action_plan.explanation == "here's the answer"
     end
 
+    test "interpret splits a dotted tool name into tool + action" do
+      state = base_state(%{phase: :interpret})
+
+      # gpt-5 sometimes merges tool + action into one dotted name, leaving action
+      # blank — which otherwise fails the plan gate ("not in allowed signatures").
+      raw = %{
+        "kind" => "tool_call",
+        "risk" => "low",
+        "why" => "look up info",
+        "tool" => %{"tool" => "lookup_user.get", "action" => "", "args" => %{"id" => 1}}
+      }
+
+      {:ok, new} = Interactive.handle_result(state, %{}, {:ok, raw})
+      assert new.action_plan.kind == :tool_call
+      assert new.action_plan.tool.tool == "lookup_user"
+      assert new.action_plan.tool.action == "get"
+    end
+
+    test "interpret coerces a non-string explanation into a string" do
+      state = base_state(%{phase: :interpret})
+
+      # gpt-5.2 sometimes over-structures the answer as a nested object instead of
+      # plain prose; it must degrade to text, not leak an inspected blob.
+      raw = %{
+        "kind" => "explain_only",
+        "risk" => "low",
+        "why" => "explaining",
+        "explanation" => %{"ActionPlan" => %{"can_do" => ["x"], "goal" => "g"}}
+      }
+
+      {:ok, new} = Interactive.handle_result(state, %{}, {:ok, raw})
+      assert new.action_plan.kind == :explain_only
+      assert is_binary(new.action_plan.explanation)
+      assert new.action_plan.explanation =~ "ActionPlan"
+    end
+
     test "interpret with unparseable result transitions to done" do
       state = base_state(%{phase: :interpret})
 

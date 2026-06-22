@@ -6,6 +6,82 @@ All notable changes to Cyclium are recorded here. This project uses
 Entries are high-level, not exhaustive. Versions prior to `0.1.4` are
 reconstructed from git history and are summarized loosely.
 
+## [0.1.15] — 2026-06-17
+
+### Added
+- Opt-in **native (structured) tool calling** for the interactive template. Set
+  `strategy_config: %{tool_mode: :native}` on an actor and, when the configured
+  LLM client implements the new optional `chat_with_native_tools/4` callback, the
+  synthesizer passes the actor's tool signatures to the provider as structured
+  `tools` and reads back validated `tool_use` blocks instead of parsing a JSON
+  `ActionPlan` envelope out of free text — removing the whole class of text-parse
+  failures (smart quotes, dotted names, over-structured values). The structured
+  result is shaped back into the same envelope map, so the
+  ActionPlan/validate/approve/execute machinery (and approval gates, trace cards,
+  `plan_hash`) is unchanged. Falls back to the text path when the client lacks
+  native support or an actor has no tools. Default remains `:text`
+  (back-compatible). Each (tool, action) maps to one flat native tool named
+  `"<tool>__<action>"`, split back on return.
+- `Cyclium.Tool` gains an optional `tool_signature/0` callback (defaults to `nil`
+  via `use Cyclium.Tool`) so tools can self-describe in `allowed_tool_signatures`
+  shape and actors can introspect them generically — opt-in, no existing tool is
+  forced to declare one.
+- Per-expectation `render_log` option (default `true`). Set `render_log: false`
+  on an expectation to skip rendered-log materialization (`Cyclium.LogProjector`)
+  while keeping full step journaling — useful for interactive actors whose chat
+  UI reads the step timeline directly and never needs the projected log. The
+  episode runner gates the per-step projection on this flag; existing
+  expectations are unaffected.
+- Per-expectation `render_log_strategy` option. When set, it controls the
+  **rendered log's verbosity** (`:none` / `:summary_only` / `:timeline` /
+  `:full_debug`) independently of `log_strategy`, which continues to drive what
+  step data is *journaled*. So an actor can journal full step data for a chat UI
+  but render only a summary (or the reverse). Unset falls back to `log_strategy`,
+  so existing expectations are unchanged. `Cyclium.LogProjector` resolves the
+  override from persistent_term at render time.
+- Open `metadata` (`:map`) bag on `cyclium_episodes` **and**
+  `cyclium_episode_steps` (migration V25). The episode bag records the
+  **primary** model the run used (e.g. `%{"model" => "..."}`), stamped once on
+  the first synthesis that reports one; a step records a model only when it
+  *diverges* from that primary, so a single-model episode doesn't repeat the
+  model on every step. The interactive synthesizer now tags its result with the
+  configured model (also populating the `model` on `[:cyclium, :step,
+  :synthesis]` telemetry). `Cyclium.Episodes.merge_metadata/2` shallow-merges
+  into the bag. Nullable, additive, backwards-compatible. (Capturing the
+  adapter-*default* model and real token usage needs a richer LLM return — see
+  the native tool-calling work.)
+
+### Fixed
+- `conversation_id` is now included on the episode/workflow lifecycle **Bus**
+  events that previously omitted it (`episode.started`, `episode.failed`,
+  `episode.completed`, `episode.canceled`, `episode.queued`, `episode.dropped`,
+  `expectation.triggered`, `episode.step_journaled`, `finding.*`,
+  `output.delivered`, and `workflow.started/step_started/completed/failed`).
+  Previously only the telemetry events carried it, so Bus subscribers couldn't
+  correlate these events to a conversation. It's `nil` for non-conversational
+  runs (matching the telemetry events). (The shed-path `episode.canceled` in the
+  actor overflow handler still omits it — only the queued id is in scope there.)
+- Interactive template envelope parsing hardened against model-behavior quirks
+  (surfaced by gpt-5-family models on the text-JSON `ActionPlan` protocol):
+  - `Cyclium.Synthesizer.Interactive.extract_json/1` now **decodes first and
+    only normalizes quotes as a fallback**, so a valid payload whose string
+    *values* legitimately contain smart/curly quotes (e.g. inside an
+    `explanation`) is no longer corrupted into a parse failure that leaks the
+    raw envelope to the user.
+  - `Cyclium.Strategy.Template.Interactive` splits a **dotted tool name**
+    (`"episode_query.list_episodes"` with a blank `action`) into tool + action
+    at parse time, so it matches an allowed signature instead of being denied.
+  - A non-string `explanation` (a model over-structuring its answer as a nested
+    object/array) is now **coerced to text** rather than leaking an inspected
+    blob; `nil` is preserved so the explanation-fallback chain still works.
+- Step journaling no longer crashes an episode on a transient DB-layer fault
+  (an intermittent `Tds.Error` / `DBConnection.ConnectionError` on a single
+  INSERT). Such a write now **degrades gracefully**: it's logged at `error`,
+  emits a `[:cyclium, :step, :journal_dropped]` metric so a spike is visible,
+  and the episode continues with an in-memory step struct — only that one
+  journal row + its rendered-log/bus projection is lost. Non-transient errors
+  (a real schema/encoding bug) still raise so they aren't masked.
+
 ## [0.1.14] — 2026-06-15
 
 ### Fixed

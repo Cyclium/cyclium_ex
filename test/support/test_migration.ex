@@ -42,6 +42,7 @@ defmodule Cyclium.Test.Migration do
       add(:dry_run_opts, :map)
       add(:source_stack, :string)
       add(:source_env, :string)
+      add(:metadata, :map)
     end
 
     create(index(:cyclium_episodes, [:actor_id, :expectation_id]))
@@ -72,6 +73,7 @@ defmodule Cyclium.Test.Migration do
       add(:side_effect_key, :string)
       add(:cost_tokens, :integer)
       add(:cost_ms, :integer)
+      add(:metadata, :map)
       add(:created_at, :utc_datetime, null: false)
     end
 

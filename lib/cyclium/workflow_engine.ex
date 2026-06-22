@@ -509,6 +509,7 @@ defmodule Cyclium.WorkflowEngine do
         Cyclium.Bus.broadcast("workflow.started", %{
           workflow_id: config.workflow_id,
           instance_id: instance.id,
+          conversation_id: instance.conversation_id,
           mode: instance.mode
         })
 
@@ -962,6 +963,7 @@ defmodule Cyclium.WorkflowEngine do
         Cyclium.Bus.broadcast("workflow.step_started", %{
           workflow_id: config.workflow_id,
           instance_id: instance.id,
+          conversation_id: instance.conversation_id,
           step_id: step_atom,
           episode_id: episode.id
         })
@@ -988,6 +990,7 @@ defmodule Cyclium.WorkflowEngine do
     Cyclium.Bus.broadcast("workflow.completed", %{
       workflow_id: config.workflow_id,
       instance_id: instance.id,
+      conversation_id: instance.conversation_id,
       mode: instance.mode
     })
 
@@ -1058,6 +1061,7 @@ defmodule Cyclium.WorkflowEngine do
     Cyclium.Bus.broadcast("workflow.failed", %{
       workflow_id: config.workflow_id,
       instance_id: instance.id,
+      conversation_id: instance.conversation_id,
       step_id: step_id,
       mode: instance.mode
     })

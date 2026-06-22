@@ -37,12 +37,43 @@ defmodule Cyclium.Synthesizer.Interactive do
   defmodule LLM do
     @moduledoc """
     Behaviour for LLM clients used by the Interactive synthesizer.
+
+    `chat/3` is the text contract: the model replies with a JSON `ActionPlan`
+    envelope as text, which the synthesizer parses.
+
+    `chat_with_native_tools/4` is the optional **native** contract: tool
+    signatures are passed to the provider as structured `tools`, and the model
+    replies with validated `tool_use` blocks instead of a text envelope —
+    removing the whole class of text-parse failures (smart quotes, dotted names,
+    over-structured values). An adapter opts in simply by implementing it; the
+    synthesizer auto-selects the native path when the actor's `strategy_config`
+    sets `tool_mode: :native` and the configured client exports
+    `chat_with_native_tools/4`. Return shape:
+
+        {:ok, %{
+          tool_calls: [%{name: "tool__action", input: %{...}}],  # [] if none
+          text: "assistant prose, if any",
+          model: "model-id",   # optional
+          usage: %{...}        # optional
+        }}
     """
 
     @callback chat(system_prompt :: String.t(), user_message :: String.t(), opts :: keyword()) ::
                 {:ok, String.t()}
                 | {:error, :no_api_key}
                 | {:error, {atom(), term()}}
+
+    @callback chat_with_native_tools(
+                system_prompt :: String.t(),
+                user_message :: String.t(),
+                tools :: [map()],
+                opts :: keyword()
+              ) ::
+                {:ok, map()}
+                | {:error, :no_api_key}
+                | {:error, {atom(), term()}}
+
+    @optional_callbacks chat_with_native_tools: 4
   end
 
   @impl true
@@ -51,13 +82,212 @@ defmodule Cyclium.Synthesizer.Interactive do
     llm_opts = resolve_llm_opts(episode_ctx)
     system_prompt = prompt_ctx[:system_prompt] || default_system_prompt()
 
-    case prompt_ctx[:task] do
-      :summarize_results ->
-        synthesize_summary(llm_client, llm_opts, system_prompt, prompt_ctx)
+    result =
+      cond do
+        native_tool_mode?(prompt_ctx, llm_client) ->
+          synthesize_native(llm_client, llm_opts, system_prompt, prompt_ctx)
 
-      _ ->
-        synthesize_interpret(llm_client, llm_opts, system_prompt, prompt_ctx)
+        prompt_ctx[:task] == :summarize_results ->
+          synthesize_summary(llm_client, llm_opts, system_prompt, prompt_ctx)
+
+        true ->
+          synthesize_interpret(llm_client, llm_opts, system_prompt, prompt_ctx)
+      end
+
+    annotate_model(result, llm_opts[:model])
+  end
+
+  # Tag a successful result with the configured model so the episode runner can
+  # record it on the episode/step `metadata` and the synthesis telemetry can
+  # populate its `llm` span. `Map.put_new/3`, so the native path's *actual*
+  # model (returned by `chat_with_native_tools/4`) takes precedence; the text
+  # `chat/3` contract doesn't return one, so it falls back to the configured model.
+  defp annotate_model({:ok, map}, model) when is_map(map) and is_binary(model) do
+    {:ok, Map.put_new(map, :model, model)}
+  end
+
+  defp annotate_model(result, _model), do: result
+
+  # --- Native (structured) tool calling ---
+
+  # Auto-selected when the actor opts in via `strategy_config: %{tool_mode:
+  # :native}` AND the configured LLM client implements
+  # `chat_with_native_tools/4`. Otherwise the text-envelope path runs.
+  defp native_tool_mode?(prompt_ctx, llm_client) do
+    prompt_ctx[:tool_mode] in [:native, "native"] and
+      Code.ensure_loaded?(llm_client) and
+      function_exported?(llm_client, :chat_with_native_tools, 4)
+  end
+
+  # Pass the actor's tool signatures to the provider as structured `tools` and
+  # read back validated tool_use blocks, then shape them into the SAME map the
+  # text path produces — so the strategy's ActionPlan / validate / approve /
+  # execute machinery is unchanged; only the fragile text envelope is gone.
+  defp synthesize_native(llm_client, llm_opts, system_prompt, prompt_ctx) do
+    tools = build_native_tools(prompt_ctx[:tool_menu] || [])
+
+    user_message =
+      case prompt_ctx[:task] do
+        :summarize_results -> build_native_summary_message(prompt_ctx)
+        _ -> build_user_message(prompt_ctx)
+      end
+
+    # Nothing to call (an actor with no tools): fall back to a plain text reply
+    # and treat it as an explanation rather than sending an empty `tools` list.
+    if tools == [] do
+      synthesize_native_textonly(llm_client, llm_opts, system_prompt, user_message, prompt_ctx)
+    else
+      case llm_client.chat_with_native_tools(
+             system_prompt,
+             user_message,
+             tools,
+             chat_opts(llm_opts)
+           ) do
+        {:ok, %{} = resp} ->
+          {:ok, native_envelope(resp)}
+
+        {:error, :no_api_key} ->
+          Logger.warning("[Interactive.Synthesizer] No API key — returning placeholder")
+          native_fallback(prompt_ctx)
+
+        {:error, {error_class, detail}} ->
+          {:error, error_class, detail}
+      end
     end
+  end
+
+  defp synthesize_native_textonly(llm_client, llm_opts, system_prompt, user_message, prompt_ctx) do
+    case llm_client.chat(system_prompt, user_message, chat_opts(llm_opts)) do
+      {:ok, text} ->
+        {:ok,
+         %{
+           "kind" => "explain_only",
+           "risk" => "low",
+           "why" => "response",
+           "explanation" => text
+         }}
+
+      {:error, :no_api_key} ->
+        Logger.warning("[Interactive.Synthesizer] No API key — returning placeholder")
+        native_fallback(prompt_ctx)
+
+      {:error, {error_class, detail}} ->
+        {:error, error_class, detail}
+    end
+  end
+
+  defp native_fallback(%{task: :summarize_results} = prompt_ctx) do
+    context = prompt_ctx[:context] || %{}
+    {:ok, %{"explanation" => context[:tool_results] || "Tool executed successfully."}}
+  end
+
+  defp native_fallback(prompt_ctx), do: fallback_response(prompt_ctx)
+
+  # Build provider-shaped tool schemas from cyclium's tool menu. cyclium models a
+  # tool + action pair; native function-calling is flat, so each (tool, action)
+  # becomes one native tool named `"<tool>__<action>"` (kept to the
+  # `^[a-zA-Z0-9_-]+$` charset providers require), split back apart on return.
+  defp build_native_tools(tool_menu) do
+    Enum.flat_map(tool_menu, fn t ->
+      tool_name = t[:name] || t["name"]
+      side_effect = t[:side_effect] || t["side_effect"]
+
+      case t[:actions] || t["actions"] do
+        actions when is_list(actions) and actions != [] ->
+          Enum.map(actions, fn a ->
+            action_name = a["name"] || a[:name]
+            desc = a["description"] || a[:description] || ""
+            args = a["args"] || a[:args] || %{}
+
+            %{
+              name: "#{tool_name}__#{action_name}",
+              description: native_description(desc, side_effect),
+              input_schema: native_input_schema(args)
+            }
+          end)
+
+        _ ->
+          []
+      end
+    end)
+  end
+
+  defp native_description(desc, nil), do: desc
+  defp native_description(desc, side_effect), do: "#{desc} (side_effect: #{side_effect})"
+
+  defp native_input_schema(args) when is_map(args) and map_size(args) > 0 do
+    props =
+      Map.new(args, fn {k, hint} ->
+        prop =
+          if is_binary(hint),
+            do: %{"type" => "string", "description" => hint},
+            else: %{"type" => "string"}
+
+        {to_string(k), prop}
+      end)
+
+    %{"type" => "object", "properties" => props, "additionalProperties" => true}
+  end
+
+  defp native_input_schema(_), do: %{"type" => "object", "additionalProperties" => true}
+
+  # Shape native tool_use blocks (or final text) into the text-path's envelope
+  # map so `parse_action_plan` consumes it unchanged. One call → tool_call; many
+  # → multi_tool_plan; none → explain_only.
+  defp native_envelope(%{} = resp) do
+    calls = resp[:tool_calls] || resp["tool_calls"] || []
+
+    envelope =
+      case Enum.map(calls, &native_tool_call/1) do
+        [] ->
+          text = resp[:text] || resp["text"] || ""
+          %{"kind" => "explain_only", "risk" => "low", "why" => "response", "explanation" => text}
+
+        [single] ->
+          %{"kind" => "tool_call", "risk" => "low", "why" => "native tool call", "tool" => single}
+
+        many ->
+          %{
+            "kind" => "multi_tool_plan",
+            "risk" => "low",
+            "why" => "native tool calls",
+            "steps" => many
+          }
+      end
+
+    case resp[:model] || resp["model"] do
+      nil -> envelope
+      model -> Map.put(envelope, :model, model)
+    end
+  end
+
+  defp native_tool_call(call) do
+    name = call[:name] || call["name"] || ""
+    input = call[:input] || call["input"] || %{}
+    {tool, action} = split_native_tool_name(name)
+    %{"tool" => tool, "action" => action, "args" => input}
+  end
+
+  defp split_native_tool_name(name) do
+    case String.split(name, "__", parts: 2) do
+      [tool, action] -> {tool, action}
+      [tool] -> {tool, nil}
+    end
+  end
+
+  defp build_native_summary_message(prompt_ctx) do
+    context = prompt_ctx[:context] || %{}
+
+    """
+    The user asked: #{prompt_ctx[:message]}
+
+    A tool was executed: #{context[:tool_executed]}
+
+    Tool results:
+    #{context[:tool_results]}
+
+    Summarize the results for the user, or call another tool if more data is needed.
+    """
   end
 
   @impl true
@@ -228,13 +458,23 @@ defmodule Cyclium.Synthesizer.Interactive do
 
   # Pull a decodable JSON object out of a model response that may wrap it in
   # prose, code fences, smart/curly quotes, or trailing extra objects. Returns
-  # the first balanced `{...}` object (with quotes normalized), or nil if none.
+  # the first balanced `{...}` object, or nil if none.
+  #
+  # Decode-first / normalize-as-fallback: `normalize_quotes/1` is a recovery path
+  # for models that emit the *structural* JSON quotes as curly. Applying it
+  # unconditionally corrupts otherwise-valid JSON whose string *values*
+  # legitimately contain smart quotes (gpt-5 emits curly quotes inside prose,
+  # e.g. inside an `explanation`), injecting unescaped quotes and breaking decode.
+  # So try the payload as-is first, and only normalize when it doesn't decode.
   defp extract_json(text) do
-    text
-    |> String.trim()
-    |> strip_code_fence()
-    |> normalize_quotes()
-    |> first_json_object()
+    stripped = text |> String.trim() |> strip_code_fence()
+
+    with obj when is_binary(obj) <- first_json_object(stripped),
+         {:ok, _} <- Jason.decode(obj) do
+      obj
+    else
+      _ -> stripped |> normalize_quotes() |> first_json_object()
+    end
   end
 
   defp strip_code_fence(text) do

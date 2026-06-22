@@ -305,6 +305,25 @@ defmodule Cyclium.Actor.Server do
         exp.loop_detection != false
       )
 
+      # Registered unconditionally so an explicit `render_log: false` is recorded
+      # (the runner projects logs by default when no entry exists). Lets an actor
+      # keep full step journaling while skipping the redundant
+      # rendered-log materialization.
+      :persistent_term.put(
+        {:cyclium_expectation_render_log, config.actor_id, exp.id},
+        exp.render_log != false
+      )
+
+      # Optional render-log verbosity override (controls the rendered log's
+      # detail independently of `log_strategy`, which still drives journaling).
+      # Only recorded when set; unset falls back to `log_strategy` at render time.
+      if exp.render_log_strategy do
+        :persistent_term.put(
+          {:cyclium_expectation_render_log_strategy, config.actor_id, exp.id},
+          exp.render_log_strategy
+        )
+      end
+
       if exp.strategy_config do
         :persistent_term.put(
           {:cyclium_strategy_config, config.actor_id, exp.id},
@@ -645,6 +664,8 @@ defmodule Cyclium.Actor.Server do
       budget:
         Keyword.get(opts, :budget, %{max_turns: 12, max_tokens: 25_000, max_wall_ms: 120_000}),
       log_strategy: Keyword.get(opts, :log_strategy, :timeline),
+      render_log: Keyword.get(opts, :render_log, true),
+      render_log_strategy: Keyword.get(opts, :render_log_strategy),
       audit_level: Keyword.get(opts, :audit_level, :standard),
       retention_days: Keyword.get(opts, :retention_days, 90),
       description: Keyword.get(opts, :description, ""),
@@ -1100,7 +1121,8 @@ defmodule Cyclium.Actor.Server do
         Bus.broadcast("expectation.triggered", %{
           actor_id: state.actor_id,
           expectation_id: params.expectation_id,
-          episode_id: episode.id
+          episode_id: episode.id,
+          conversation_id: episode.conversation_id
         })
 
         Map.update!(state, :active_episodes, &MapSet.put(&1, episode.id))
@@ -1153,7 +1175,8 @@ defmodule Cyclium.Actor.Server do
         Bus.broadcast("episode.queued", %{
           episode_id: episode.id,
           actor_id: state.actor_id,
-          expectation_id: params.expectation_id
+          expectation_id: params.expectation_id,
+          conversation_id: episode.conversation_id
         })
 
         Map.update!(state, :queued_episodes, &:queue.in(episode.id, &1))
@@ -1187,7 +1210,8 @@ defmodule Cyclium.Actor.Server do
 
     Bus.broadcast("episode.dropped", %{
       actor_id: state.actor_id,
-      expectation_id: params.expectation_id
+      expectation_id: params.expectation_id,
+      conversation_id: params[:conversation_id]
     })
 
     state

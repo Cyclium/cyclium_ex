@@ -206,9 +206,9 @@ defmodule Cyclium.Strategy.Template.Interactive do
       _ ->
         explanation =
           case result do
-            %{"explanation" => text} when is_binary(text) -> text
-            %{explanation: text} when is_binary(text) -> text
-            other -> inspect(other)
+            %{"explanation" => value} -> coerce_explanation(value)
+            %{explanation: value} -> coerce_explanation(value)
+            other -> coerce_explanation(other)
           end
 
         {:ok, %{state | phase: :done, explanation: explanation}}
@@ -364,6 +364,7 @@ defmodule Cyclium.Strategy.Template.Interactive do
 
   defp deserialize_tool(%{} = tool) do
     %ToolCallStep{tool: tool["tool"], action: tool["action"], args: tool["args"] || %{}}
+    |> split_dotted_tool()
   end
 
   defp deserialize_tool(_), do: nil
@@ -429,28 +430,33 @@ defmodule Cyclium.Strategy.Template.Interactive do
   # --- Private: Interpretation ---
 
   defp build_interpret_prompt(state) do
-    signatures = state.strategy_config["allowed_tool_signatures"] || []
     allowed_outputs = state.strategy_config["allowed_output_types"] || []
-
-    tool_menu =
-      Enum.map(signatures, fn sig ->
-        %{
-          name: sig["name"],
-          side_effect: sig["side_effect"],
-          constraints: sig["constraints"],
-          actions: sig["actions"]
-        }
-      end)
 
     %{
       task: :interpret_intent,
       message: state.message,
       context: state.gathered_context,
-      tool_menu: tool_menu,
+      tool_menu: tool_menu_from_config(state.strategy_config),
+      tool_mode: state.strategy_config["tool_mode"],
       allowed_output_types: allowed_outputs,
       goal: state.goal,
       system_prompt: Cyclium.Synthesizer.PromptBuilder.build(state.strategy_config)
     }
+  end
+
+  # Tool signatures reshaped into the synthesizer's tool menu. Shared by the
+  # interpret and summarize prompts so the native path can offer the same tools
+  # on a follow-up call.
+  defp tool_menu_from_config(strategy_config) do
+    (strategy_config["allowed_tool_signatures"] || [])
+    |> Enum.map(fn sig ->
+      %{
+        name: sig["name"],
+        side_effect: sig["side_effect"],
+        constraints: sig["constraints"],
+        actions: sig["actions"]
+      }
+    end)
   end
 
   defp build_summarize_prompt(state) do
@@ -473,6 +479,8 @@ defmodule Cyclium.Strategy.Template.Interactive do
     %{
       task: :summarize_results,
       message: state.message,
+      tool_menu: tool_menu_from_config(state.strategy_config),
+      tool_mode: state.strategy_config["tool_mode"],
       context: %{
         tool_executed: tool_desc,
         tool_results: results_text
@@ -493,7 +501,7 @@ defmodule Cyclium.Strategy.Template.Interactive do
       tool: parse_tool_call(result["tool"] || result[:tool]),
       steps: parse_tool_steps(result["steps"] || result[:steps] || []),
       output: parse_output(result["output"] || result[:output]),
-      explanation: result["explanation"] || result[:explanation],
+      explanation: coerce_explanation(result["explanation"] || result[:explanation]),
       workflow: parse_workflow(result["workflow"] || result[:workflow]),
       approval: result["approval"] || result[:approval],
       meta: result["meta"] || result[:meta] || %{}
@@ -527,7 +535,33 @@ defmodule Cyclium.Strategy.Template.Interactive do
       action: tc["action"] || tc[:action],
       args: tc["args"] || tc[:args] || %{}
     }
+    |> split_dotted_tool()
   end
+
+  # Models (notably gpt-5) sometimes merge tool + action into a single dotted
+  # name — `"episode_query.list_episodes"` — leaving `action` blank. The plan
+  # gate then matches no signature ("not in allowed signatures"). Split it at
+  # parse time so the signature matcher and executor see a clean tool + action;
+  # done here rather than by loosening the matcher.
+  defp split_dotted_tool(%ToolCallStep{tool: tool, action: action} = tc)
+       when is_binary(tool) and (is_nil(action) or action == "") do
+    case String.split(tool, ".", parts: 2) do
+      [t, a] when a != "" -> %{tc | tool: t, action: a}
+      _ -> tc
+    end
+  end
+
+  defp split_dotted_tool(tc), do: tc
+
+  # An `explanation` must be a plain string, but models sometimes over-structure
+  # it (a nested object/array — gpt-5.2 returned a nested ActionPlan) or emit a
+  # non-string. Coerce to text so a misformatted payload degrades gracefully
+  # instead of leaking an inspected blob to the user. `nil` is preserved so the
+  # downstream `plan.explanation || ...` fallback chain still fires.
+  defp coerce_explanation(nil), do: nil
+  defp coerce_explanation(text) when is_binary(text), do: text
+  defp coerce_explanation(value) when is_map(value) or is_list(value), do: Jason.encode!(value)
+  defp coerce_explanation(other), do: to_string(other)
 
   defp parse_tool_steps(steps) when is_list(steps) do
     Enum.map(steps, &parse_tool_call/1)

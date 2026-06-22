@@ -28,6 +28,19 @@ defmodule Cyclium.Tool do
 
   @callback cache_scope(args :: map()) :: binary()
 
+  @doc """
+  Optional self-description of the tool — its `name`, `side_effect` class,
+  `constraints`, and `actions` (each with `name`/`description`/`args`) — in the
+  same shape as an `allowed_tool_signatures` entry. Lets actors introspect tools
+  generically (e.g. to build native tool schemas, or to validate that a tool an
+  actor allows actually exists) instead of re-declaring every signature by hand.
+
+  Defaults to `nil` ("not declared") via `use Cyclium.Tool`, so it is opt-in per
+  tool: introspection stays generic (`MyTool.tool_signature()` is always
+  callable) without forcing every existing tool to declare one.
+  """
+  @callback tool_signature() :: map() | nil
+
   defmacro __using__(_opts) do
     quote do
       @behaviour Cyclium.Tool
@@ -47,7 +60,15 @@ defmodule Cyclium.Tool do
       @impl true
       def cache_scope(_args), do: ""
 
-      defoverridable redact: 1, redact_result: 1, side_effect?: 0, cache_ttl: 0, cache_scope: 1
+      @impl true
+      def tool_signature, do: nil
+
+      defoverridable redact: 1,
+                     redact_result: 1,
+                     side_effect?: 0,
+                     cache_ttl: 0,
+                     cache_scope: 1,
+                     tool_signature: 0
     end
   end
 end

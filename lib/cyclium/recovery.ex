@@ -189,6 +189,7 @@ defmodule Cyclium.Recovery do
         Cyclium.Bus.broadcast("episode.failed", %{
           episode_id: episode.id,
           actor_id: episode.actor_id,
+          conversation_id: episode.conversation_id,
           status: :failed,
           error_class: "orphaned",
           error_detail: error_detail,

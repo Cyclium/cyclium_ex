@@ -104,6 +104,7 @@ defmodule Cyclium.EpisodeTask do
         Cyclium.Bus.broadcast("episode.failed", %{
           episode_id: episode_id,
           actor_id: episode.actor_id,
+          conversation_id: episode.conversation_id,
           status: :failed,
           error_class: "crash",
           error_detail: error_detail
@@ -149,6 +150,7 @@ defmodule Cyclium.EpisodeTask do
       Cyclium.Bus.broadcast("episode.failed", %{
         episode_id: episode_id,
         actor_id: current.actor_id,
+        conversation_id: current.conversation_id,
         status: :failed,
         error_class: "process_terminated",
         error_detail: error_detail

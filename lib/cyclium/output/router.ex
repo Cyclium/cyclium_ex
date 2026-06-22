@@ -85,6 +85,7 @@ defmodule Cyclium.Output.Router do
 
       Cyclium.Bus.broadcast("output.delivered", %{
         episode_id: episode.id,
+        conversation_id: episode.conversation_id,
         output_id: output.id,
         status: :failed
       })
@@ -101,6 +102,7 @@ defmodule Cyclium.Output.Router do
 
           Cyclium.Bus.broadcast("output.delivered", %{
             episode_id: episode.id,
+            conversation_id: episode.conversation_id,
             output_id: output.id
           })
 
