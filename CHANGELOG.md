@@ -6,6 +6,15 @@ All notable changes to Cyclium are recorded here. This project uses
 Entries are high-level, not exhaustive. Versions prior to `0.1.4` are
 reconstructed from git history and are summarized loosely.
 
+## [0.2.2] — 2026-06-22
+
+### Fixed
+- The journaled `:map` cap (0.2.1) crashed on values that are structs — e.g. a
+  `DateTime` in a `result_ref` — because a struct is a map but isn't
+  `Enumerable`, so truncating its "leaves" raised `protocol Enumerable not
+  implemented for DateTime`. Structs are now treated as leaf values (kept as-is)
+  rather than recursed into.
+
 ## [0.2.1] — 2026-06-22
 
 ### Fixed

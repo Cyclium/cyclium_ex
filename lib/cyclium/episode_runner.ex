@@ -1351,6 +1351,9 @@ defmodule Cyclium.EpisodeRunner do
   end
 
   defp truncate_leaf(v) when is_binary(v), do: slice_chars(v, @map_field_max_chars)
+  # Structs (e.g. DateTime) are maps but aren't Enumerable — treat them as leaves
+  # rather than recursing into them. Must come before the is_map/1 clause.
+  defp truncate_leaf(v) when is_struct(v), do: v
   defp truncate_leaf(v) when is_map(v), do: truncate_map_leaves(v)
   defp truncate_leaf(v) when is_list(v), do: Enum.map(v, &truncate_leaf/1)
   defp truncate_leaf(v), do: v
