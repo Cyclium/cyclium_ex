@@ -211,6 +211,42 @@ defmodule Cyclium.Synthesizer.InteractiveSynthesizerTest do
       assert map["explanation"] == "just a plain answer"
     end
 
+    test "defaults to native (no tool_mode set) when the client supports it" do
+      Application.put_env(:cyclium, :interactive_llm, NativeLLM)
+
+      Application.put_env(
+        :cyclium,
+        :__canned_native__,
+        {:ok, %{tool_calls: [%{name: "episode_query__list_episodes", input: %{}}], text: nil}}
+      )
+
+      result =
+        Synth.synthesize(
+          %{task: :interpret_intent, message: "hi", tool_menu: tool_menu()},
+          %{}
+        )
+
+      assert {:ok, %{"kind" => "tool_call"}} = result
+    end
+
+    test "tool_mode: :text opts out of native even with a native-capable client" do
+      Application.put_env(:cyclium, :interactive_llm, NativeLLM)
+
+      Application.put_env(
+        :cyclium,
+        :__canned_llm_text__,
+        ~s({"kind": "explain_only", "risk": "low", "why": "r", "explanation": "text path"})
+      )
+
+      result =
+        Synth.synthesize(
+          %{task: :interpret_intent, message: "hi", tool_mode: :text, tool_menu: tool_menu()},
+          %{}
+        )
+
+      assert {:ok, %{"explanation" => "text path"}} = result
+    end
+
     test "falls back to the text envelope when the client lacks native support" do
       # CannedLLM implements only chat/3 — native mode must degrade to text.
       Application.put_env(:cyclium, :interactive_llm, CannedLLM)

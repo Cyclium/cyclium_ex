@@ -57,19 +57,43 @@ defmodule Cyclium.Synthesizer.PromptBuilder do
     guidelines = config["guidelines"] || []
     signatures = config["allowed_tool_signatures"] || []
 
-    [
-      role,
-      "",
-      response_format_section(),
-      "",
-      tools_section(signatures),
-      "",
-      guidelines_section(guidelines),
-      "",
-      meta_section()
-    ]
+    sections =
+      if native_tool_mode?(config) do
+        # Native mode: tools are passed to the provider structurally and the model
+        # replies with tool_use blocks, so we MUST NOT instruct a text JSON
+        # envelope or list the tools as prose — doing so makes the model emit the
+        # envelope as text instead of calling tools.
+        [role, "", native_format_section(), "", guidelines_section(guidelines)]
+      else
+        [
+          role,
+          "",
+          response_format_section(),
+          "",
+          tools_section(signatures),
+          "",
+          guidelines_section(guidelines),
+          "",
+          meta_section()
+        ]
+      end
+
+    sections
     |> List.flatten()
     |> Enum.join("\n")
+  end
+
+  # Native is the default; an actor opts out with `tool_mode: :text`. Must match
+  # the synthesizer's path selection so the system prompt and the call style agree.
+  defp native_tool_mode?(config), do: config["tool_mode"] not in [:text, "text"]
+
+  defp native_format_section do
+    """
+    You have a set of tools available via the API. To act, call the appropriate
+    tool directly with its arguments — do NOT describe a tool call in prose or
+    emit JSON. When no tool is needed (or once tools have returned what you need),
+    reply with a plain-text answer for the user.
+    """
   end
 
   defp response_format_section do

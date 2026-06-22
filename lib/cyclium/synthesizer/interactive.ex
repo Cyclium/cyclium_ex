@@ -45,10 +45,11 @@ defmodule Cyclium.Synthesizer.Interactive do
     signatures are passed to the provider as structured `tools`, and the model
     replies with validated `tool_use` blocks instead of a text envelope —
     removing the whole class of text-parse failures (smart quotes, dotted names,
-    over-structured values). An adapter opts in simply by implementing it; the
-    synthesizer auto-selects the native path when the actor's `strategy_config`
-    sets `tool_mode: :native` and the configured client exports
-    `chat_with_native_tools/4`. Return shape:
+    over-structured values). The synthesizer uses the native path **by default**
+    whenever the configured client exports `chat_with_native_tools/4`; an actor
+    opts out with `strategy_config: %{tool_mode: :text}`, and a client that
+    doesn't implement the callback falls back to the text path automatically.
+    Return shape:
 
         {:ok, %{
           tool_calls: [%{name: "tool__action", input: %{...}}],  # [] if none
@@ -110,13 +111,34 @@ defmodule Cyclium.Synthesizer.Interactive do
 
   # --- Native (structured) tool calling ---
 
-  # Auto-selected when the actor opts in via `strategy_config: %{tool_mode:
-  # :native}` AND the configured LLM client implements
-  # `chat_with_native_tools/4`. Otherwise the text-envelope path runs.
+  # Native is the DEFAULT; an actor opts out with `tool_mode: :text`. Falls back
+  # to the text-envelope path when the configured client doesn't implement
+  # `chat_with_native_tools/4` — warning only when native was *explicitly*
+  # requested, so an intentionally text-only client stays quiet.
   defp native_tool_mode?(prompt_ctx, llm_client) do
-    prompt_ctx[:tool_mode] in [:native, "native"] and
-      Code.ensure_loaded?(llm_client) and
-      function_exported?(llm_client, :chat_with_native_tools, 4)
+    mode = prompt_ctx[:tool_mode]
+
+    cond do
+      mode in [:text, "text"] ->
+        false
+
+      native_capable?(llm_client) ->
+        true
+
+      true ->
+        if mode in [:native, "native"] do
+          Logger.warning(
+            "[Interactive.Synthesizer] tool_mode: :native but #{inspect(llm_client)} " <>
+              "does not implement chat_with_native_tools/4 — using the text path"
+          )
+        end
+
+        false
+    end
+  end
+
+  defp native_capable?(llm_client) do
+    Code.ensure_loaded?(llm_client) and function_exported?(llm_client, :chat_with_native_tools, 4)
   end
 
   # Pass the actor's tool signatures to the provider as structured `tools` and
@@ -129,7 +151,7 @@ defmodule Cyclium.Synthesizer.Interactive do
     user_message =
       case prompt_ctx[:task] do
         :summarize_results -> build_native_summary_message(prompt_ctx)
-        _ -> build_user_message(prompt_ctx)
+        _ -> build_native_user_message(prompt_ctx)
       end
 
     # Nothing to call (an actor with no tools): fall back to a plain text reply
@@ -351,42 +373,34 @@ defmodule Cyclium.Synthesizer.Interactive do
 
   # --- Prompt building ---
 
+  # Text-path user message: context + a prose tool list + the instruction to
+  # reply with the JSON ActionPlan envelope.
   defp build_user_message(prompt_ctx) do
-    message = prompt_ctx[:message] || ""
+    """
+    #{build_context_section(prompt_ctx)}## Available Tools
+    #{build_tools_desc(prompt_ctx[:tool_menu] || [])}
+
+    ## User Message
+    #{prompt_ctx[:message] || ""}
+
+    Respond with a JSON object following the ActionPlan schema. Do NOT wrap in markdown code fences.
+    """
+  end
+
+  # Native-path user message: the SAME context, but with NO prose tool list and
+  # NO text-envelope instruction — the tools are given to the model structurally
+  # (API `tools`) and it replies with native tool_use blocks or plain prose, not
+  # a JSON envelope. Including the envelope instruction here makes the model emit
+  # the envelope as text instead of calling tools.
+  defp build_native_user_message(prompt_ctx) do
+    """
+    #{build_context_section(prompt_ctx)}## User Message
+    #{prompt_ctx[:message] || ""}
+    """
+  end
+
+  defp build_context_section(prompt_ctx) do
     context = prompt_ctx[:context] || %{}
-    tool_menu = prompt_ctx[:tool_menu] || []
-
-    tools_desc =
-      Enum.map_join(tool_menu, "\n", fn t ->
-        actions_desc =
-          case t[:actions] do
-            actions when is_list(actions) and actions != [] ->
-              details =
-                Enum.map_join(actions, "\n", fn a ->
-                  name = a["name"] || a[:name]
-                  desc = a["description"] || a[:description] || ""
-                  args = a["args"] || a[:args] || %{}
-
-                  arg_keys =
-                    case args do
-                      m when is_map(m) and map_size(m) > 0 ->
-                        " args: #{inspect(Map.keys(m))}"
-
-                      _ ->
-                        ""
-                    end
-
-                  "      * #{name}#{arg_keys} — #{desc}"
-                end)
-
-              "\n    actions:\n#{details}"
-
-            _ ->
-              ""
-          end
-
-        "  - #{t[:name]}: side_effect=#{t[:side_effect]}#{actions_desc}"
-      end)
 
     history_desc =
       case context[:prior_summaries] do
@@ -425,15 +439,40 @@ defmodule Cyclium.Synthesizer.Interactive do
           ""
       end
 
-    """
-    #{history_desc}#{findings_desc}#{collected_desc}## Available Tools
-    #{tools_desc}
+    "#{history_desc}#{findings_desc}#{collected_desc}"
+  end
 
-    ## User Message
-    #{message}
+  defp build_tools_desc(tool_menu) do
+    Enum.map_join(tool_menu, "\n", fn t ->
+      actions_desc =
+        case t[:actions] do
+          actions when is_list(actions) and actions != [] ->
+            details =
+              Enum.map_join(actions, "\n", fn a ->
+                name = a["name"] || a[:name]
+                desc = a["description"] || a[:description] || ""
+                args = a["args"] || a[:args] || %{}
 
-    Respond with a JSON object following the ActionPlan schema. Do NOT wrap in markdown code fences.
-    """
+                arg_keys =
+                  case args do
+                    m when is_map(m) and map_size(m) > 0 ->
+                      " args: #{inspect(Map.keys(m))}"
+
+                    _ ->
+                      ""
+                  end
+
+                "      * #{name}#{arg_keys} — #{desc}"
+              end)
+
+            "\n    actions:\n#{details}"
+
+          _ ->
+            ""
+        end
+
+      "  - #{t[:name]}: side_effect=#{t[:side_effect]}#{actions_desc}"
+    end)
   end
 
   # --- JSON parsing ---

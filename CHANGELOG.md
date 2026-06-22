@@ -6,22 +6,36 @@ All notable changes to Cyclium are recorded here. This project uses
 Entries are high-level, not exhaustive. Versions prior to `0.1.4` are
 reconstructed from git history and are summarized loosely.
 
+## [0.2.0] — 2026-06-22
+
+### Changed
+- Native (structured) tool calling is now the **default** for the interactive
+  template (was opt-in in 0.1.15). The synthesizer uses the native path whenever
+  the configured client implements `chat_with_native_tools/4`; an actor opts out
+  with `strategy_config: %{tool_mode: :text}`, and a client that lacks the
+  callback falls back to the text path automatically.
+
+### Fixed
+- In native mode the system prompt and user message now omit the text-envelope
+  instructions and the prose tool list. Previously they still told the model to
+  emit a JSON `ActionPlan` envelope, so it returned the envelope as text instead
+  of calling the structured tools (which then surfaced as an `explain_only` whose
+  explanation was the raw envelope JSON).
+
 ## [0.1.15] — 2026-06-17
 
 ### Added
 - Opt-in **native (structured) tool calling** for the interactive template. Set
-  `strategy_config: %{tool_mode: :native}` on an actor and, when the configured
-  LLM client implements the new optional `chat_with_native_tools/4` callback, the
-  synthesizer passes the actor's tool signatures to the provider as structured
-  `tools` and reads back validated `tool_use` blocks instead of parsing a JSON
-  `ActionPlan` envelope out of free text — removing the whole class of text-parse
-  failures (smart quotes, dotted names, over-structured values). The structured
-  result is shaped back into the same envelope map, so the
-  ActionPlan/validate/approve/execute machinery (and approval gates, trace cards,
-  `plan_hash`) is unchanged. Falls back to the text path when the client lacks
-  native support or an actor has no tools. Default remains `:text`
-  (back-compatible). Each (tool, action) maps to one flat native tool named
-  `"<tool>__<action>"`, split back on return.
+  `strategy_config: %{tool_mode: :native}` and, when the configured LLM client
+  implements the new optional `chat_with_native_tools/4` callback, the synthesizer
+  passes the actor's tool signatures to the provider as structured `tools` and
+  reads back validated `tool_use` blocks instead of parsing a JSON `ActionPlan`
+  envelope out of free text — removing the whole class of text-parse failures
+  (smart quotes, dotted names, over-structured values). The structured result is
+  shaped back into the same envelope map, so the ActionPlan/validate/approve/
+  execute machinery (and approval gates, trace cards, `plan_hash`) is unchanged.
+  Each (tool, action) maps to one flat native tool named `"<tool>__<action>"`,
+  split back on return. Default remains `:text`.
 - `Cyclium.Tool` gains an optional `tool_signature/0` callback (defaults to `nil`
   via `use Cyclium.Tool`) so tools can self-describe in `allowed_tool_signatures`
   shape and actors can introspect them generically — opt-in, no existing tool is
