@@ -190,8 +190,11 @@ defmodule Cyclium.Strategy.Template.Interactive do
 
   def handle_result(%{phase: :summarize} = state, _step, {:ok, result}) do
     case parse_action_plan(result) do
-      {:ok, %{kind: :tool_call} = plan} ->
-        # LLM wants to make a follow-up tool call — loop back through validate → execute
+      {:ok, %{kind: kind} = plan} when kind in [:tool_call, :multi_tool_plan] ->
+        # LLM wants to make (more) tool calls — loop back through validate → execute.
+        # Both kinds must be handled: native mode emits a multi_tool_plan whenever
+        # the model calls multiple tools at once, and missing it here would fall
+        # through and stringify the whole envelope into the answer.
         hash = :erlang.phash2(plan) |> Integer.to_string()
 
         {:ok,

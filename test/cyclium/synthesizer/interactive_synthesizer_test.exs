@@ -200,7 +200,10 @@ defmodule Cyclium.Synthesizer.InteractiveSynthesizerTest do
 
       tools = Application.get_env(:cyclium, :__last_native_tools__)
       assert [%{name: "episode_query__list_episodes"} = tool] = tools
-      assert tool.input_schema["properties"]["limit"]["type"] == "string"
+      # Args carry their hint as a description but DON'T force a type, so the model
+      # can pass structured values (arrays/objects), not just strings.
+      assert tool.input_schema["properties"]["limit"]["description"] == "max rows"
+      refute Map.has_key?(tool.input_schema["properties"]["limit"], "type")
     end
 
     test "with no tools to offer, replies as explain_only via the text path" do

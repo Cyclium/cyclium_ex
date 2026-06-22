@@ -1231,10 +1231,10 @@ defmodule Cyclium.EpisodeRunner do
       kind: kind,
       tool_name: attrs[:tool_name],
       args_hash: attrs[:args_hash],
-      args_redacted: args_redacted,
-      result_ref: result_ref,
+      args_redacted: cap_stored_map(args_redacted),
+      result_ref: cap_stored_map(result_ref),
       error_class: attrs[:error_class],
-      error_detail: attrs[:error_detail],
+      error_detail: cap_stored_map(attrs[:error_detail]),
       side_effect_key: attrs[:side_effect_key],
       cost_tokens: attrs[:cost_tokens],
       cost_ms: attrs[:cost_ms],
@@ -1302,6 +1302,62 @@ defmodule Cyclium.EpisodeRunner do
   defp transient_db_error?(%DBConnection.ConnectionError{}), do: true
   defp transient_db_error?(%{__struct__: Tds.Error}), do: true
   defp transient_db_error?(_), do: false
+
+  # SQL Server's Tds driver truncates an nvarchar parameter at ~4000 bytes
+  # (~2000 UTF-16 chars) *before* it reaches an nvarchar(max) column, silently
+  # corrupting a larger JSON `:map` value so it fails to JSON-decode on read —
+  # which crashes every reader of the row (the runner's post-converge AND any UI
+  # building a transcript). Keep stored `:map` fields under that boundary. The
+  # full assistant reply still lives on `episode.summary`; these step `:map`
+  # fields are supplementary, so truncating them is safe.
+  @map_field_max_chars 1_800
+
+  defp cap_stored_map(nil), do: nil
+
+  defp cap_stored_map(map) when is_map(map) do
+    if map_char_size(map) <= @map_field_max_chars do
+      map
+    else
+      # Preserve the shape but truncate string leaves; if it still doesn't fit
+      # (e.g. one dominant string + other fields), fall back to a compact,
+      # always-valid-JSON marker so the row is never stored corrupt.
+      truncated = truncate_map_leaves(map)
+
+      if map_char_size(truncated) <= @map_field_max_chars do
+        truncated
+      else
+        %{
+          "_truncated" => true,
+          "preview" => map |> Jason.encode!() |> slice_chars(@map_field_max_chars - 64)
+        }
+      end
+    end
+  end
+
+  defp cap_stored_map(other), do: other
+
+  # JSON-encoded length in characters (≈ UTF-16 code units for the BMP). Returns
+  # 0 if the value isn't JSON-encodable here — the insert path encodes it the
+  # same way, so any real encode error surfaces there, not silently in the cap.
+  defp map_char_size(map) do
+    case Jason.encode(map) do
+      {:ok, json} -> String.length(json)
+      _ -> 0
+    end
+  end
+
+  defp truncate_map_leaves(map) when is_map(map) do
+    Map.new(map, fn {k, v} -> {k, truncate_leaf(v)} end)
+  end
+
+  defp truncate_leaf(v) when is_binary(v), do: slice_chars(v, @map_field_max_chars)
+  defp truncate_leaf(v) when is_map(v), do: truncate_map_leaves(v)
+  defp truncate_leaf(v) when is_list(v), do: Enum.map(v, &truncate_leaf/1)
+  defp truncate_leaf(v), do: v
+
+  defp slice_chars(s, max) when is_binary(s) do
+    if String.length(s) <= max, do: s, else: String.slice(s, 0, max) <> "…[truncated]"
+  end
 
   # Size cap for stored synthesis responses. Larger than this gets truncated
   # on a per-field basis (content text) to keep DB rows reasonable.

@@ -240,11 +240,12 @@ defmodule Cyclium.Synthesizer.Interactive do
   defp native_input_schema(args) when is_map(args) and map_size(args) > 0 do
     props =
       Map.new(args, fn {k, hint} ->
-        prop =
-          if is_binary(hint),
-            do: %{"type" => "string", "description" => hint},
-            else: %{"type" => "string"}
-
+        # cyclium signatures describe args with free-text hints, not JSON-Schema
+        # types, so we DON'T constrain the type. Forcing "string" makes the model
+        # stringify structured args — a `rows` array, a `headers` list — which then
+        # fail tools that expect real arrays/objects (e.g. generate_csv → no_rows).
+        # Carry the hint as the description and leave the type open.
+        prop = if is_binary(hint), do: %{"description" => hint}, else: %{}
         {to_string(k), prop}
       end)
 

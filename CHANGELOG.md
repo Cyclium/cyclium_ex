@@ -6,6 +6,27 @@ All notable changes to Cyclium are recorded here. This project uses
 Entries are high-level, not exhaustive. Versions prior to `0.1.4` are
 reconstructed from git history and are summarized loosely.
 
+## [0.2.1] — 2026-06-22
+
+### Fixed
+- Native tool schemas no longer force every argument to `type: "string"`. The
+  hint is carried as the property `description` with the type left open, so the
+  model can pass structured arguments (an array of `rows`, a `headers` list)
+  instead of stringifying them — which had made structured-arg tools fail (e.g.
+  `generate_csv` → `no_rows`).
+- The summarize phase now loops back to execute a follow-up `:multi_tool_plan`,
+  not just a single `:tool_call`. Native mode emits a multi_tool_plan whenever
+  the model calls several tools at once on a follow-up turn; previously that fell
+  through and the whole envelope was JSON-encoded into the reply (a raw
+  `multi_tool_plan` blob shown as the assistant's answer).
+- Journaled step `:map` fields (`result_ref`, `args_redacted`, `error_detail`)
+  are capped below the Tds nvarchar parameter boundary (~4000 bytes / ~2000
+  chars). Past it, SQL Server silently truncated the value before it reached the
+  nvarchar(max) column, so it failed to JSON-decode on read and crashed every
+  reader of the row (the runner's post-converge and the chat transcript). The
+  full reply still lives on `episode.summary`; the step `:map` fields are
+  supplementary, so truncating them is safe.
+
 ## [0.2.0] — 2026-06-22
 
 ### Changed

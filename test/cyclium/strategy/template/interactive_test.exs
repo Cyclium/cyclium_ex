@@ -422,6 +422,33 @@ defmodule Cyclium.Strategy.Template.InteractiveTest do
       assert new.action_plan.kind == :tool_call
     end
 
+    test "summarize with follow-up multi_tool_plan loops back (does not leak the envelope)" do
+      state =
+        base_state(%{
+          phase: :summarize,
+          action_plan: tool_call_plan(),
+          execution_results: [{:ok, %{}}]
+        })
+
+      # Native mode emits a multi_tool_plan when the model calls several tools at
+      # once; the summarize handler must re-execute it, not stringify it into the
+      # answer.
+      raw = %{
+        "kind" => "multi_tool_plan",
+        "risk" => "low",
+        "why" => "native tool calls",
+        "steps" => [
+          %{"tool" => "lookup_user", "action" => "get", "args" => %{}},
+          %{"tool" => "lookup_user", "action" => "get", "args" => %{}}
+        ]
+      }
+
+      {:ok, new} = Interactive.handle_result(state, %{}, {:ok, raw})
+      assert new.phase == :validate
+      assert new.action_plan.kind == :multi_tool_plan
+      assert new.explanation in [nil, ""]
+    end
+
     test "summarize error falls back to done" do
       state =
         base_state(%{

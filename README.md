@@ -185,7 +185,7 @@ EpisodeTask starts
 ```elixir
 # mix.exs
 def deps do
-  [{:cyclium, "~> 0.2.0"}]
+  [{:cyclium, "~> 0.2.1"}]
 end
 ```
 
