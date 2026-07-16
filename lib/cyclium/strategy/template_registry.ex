@@ -10,12 +10,16 @@ defmodule Cyclium.Strategy.TemplateRegistry do
   | `"observe_synthesize_converge"` | Gather → LLM → Finding | Health checks, advisors |
   | `"observe_classify_converge"` | Gather → Rules → Finding | Threshold/rule actors |
   | `"dispatch"` | Load entities → Broadcast | Fan-out actors |
+  | `"agentic_task"` | Objective → LLM plans + calls tools → finish | Autonomous, tool-calling episodes |
+  | `"interactive"` | Message → LLM plans + calls tools → reply | Chat-style conversational actors |
   """
 
   @templates %{
     "observe_synthesize_converge" => Cyclium.Strategy.Template.ObserveSynthesizeConverge,
     "observe_classify_converge" => Cyclium.Strategy.Template.ObserveClassifyConverge,
-    "dispatch" => Cyclium.Strategy.Template.Dispatch
+    "dispatch" => Cyclium.Strategy.Template.Dispatch,
+    "agentic_task" => Cyclium.Strategy.Template.AgenticTask,
+    "interactive" => Cyclium.Strategy.Template.Interactive
   }
 
   @doc """

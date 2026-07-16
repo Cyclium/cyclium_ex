@@ -6,6 +6,35 @@ All notable changes to Cyclium are recorded here. This project uses
 Entries are high-level, not exhaustive. Versions prior to `0.1.4` are
 reconstructed from git history and are summarized loosely.
 
+## [0.3.0] — 2026-07-16
+
+### Added
+- **`Cyclium.Strategy.Template.AgenticTask`** — an autonomous, tool-calling
+  strategy template. It runs the same interpret → validate → execute →
+  summarize loop as the interactive template, but with no human in the loop:
+  the run is seeded from an **objective** (a static `strategy_config` template
+  interpolated with `{{key}}` / `{{a.b}}` placeholders from the trigger payload,
+  or an objective supplied on the payload itself), fires from
+  `Event`/`Schedule`/`Manual`/`Workflow` triggers, and lets the LLM call tools
+  as it sees fit (bounded by `allowed_tool_signatures`). It converges to
+  findings and/or outputs. Registered as the `"agentic_task"` template.
+- A reserved **`finish_agentic_task`** tool, auto-injected into the AgenticTask
+  tool menu, gives the model an explicit terminal action. Calling it ends the
+  run and its args (`summary`, `confidence`, `findings`, `outputs`) become the
+  converge result. It is intercepted before `PlanGate`/`ToolExec` — there is no
+  real capability to register — and is never offered by the interactive
+  template. A plain-text (`explain_only`) answer is also accepted as a terminal.
+
+### Changed
+- The shared interpret → validate → preview → execute → summarize loop was
+  extracted from `Cyclium.Strategy.Template.Interactive` into
+  `Cyclium.Strategy.Template.Agentic.Loop`. Both the interactive and
+  `AgenticTask` templates delegate to it; each supplies only its own `init/2`,
+  `:context_assembly` phase, and `converge/2`. Interactive behavior is
+  unchanged (its full test suite passes as-is).
+- `TemplateRegistry` now also registers the previously-unlisted `"interactive"`
+  template alongside the new `"agentic_task"`.
+
 ## [0.2.2] — 2026-06-22
 
 ### Fixed

@@ -876,6 +876,91 @@ no LLM), use `confidence: 1.0`. The LLM confidence pattern is for cases where th
 assessment involves judgment — ambiguous data, sparse evidence, or nuanced
 classification where the LLM's certainty is genuinely informative.
 
+## Autonomous agentic episodes (`AgenticTask`)
+
+Everything above keeps the **developer as the router** — your `next_step/2`
+decides each action. Sometimes you want the opposite for a bounded task: hand
+the LLM an objective and a tool allow-list and let *it* decide which tools to
+call, in what order, until it's done — but with **no human conversation**, unlike
+the [interactive template](interactive_actors.md). That's
+`Cyclium.Strategy.Template.AgenticTask`.
+
+It's the interactive intent loop —
+`interpret → validate → execute → summarize → (loop | done)` — seeded from an
+objective instead of a user message, and terminated by an explicit tool call
+instead of a chat reply. The developer still owns the boundaries: the objective,
+the allow-list, the budget, and what the episode converges into. The LLM only
+gets to choose which permitted tools to call within that envelope. Both templates
+share one implementation (`Cyclium.Strategy.Template.Agentic.Loop`).
+
+Use it for autonomous, one-shot investigations — "review this resource and raise
+a finding if it's over limit," "triage this alert and propose a notification" —
+that fire from an event, schedule, or workflow rather than a chat turn.
+
+```elixir
+expectation(:review_resource,
+  strategy: Cyclium.Strategy.Template.AgenticTask,
+  trigger: [{:event, "resource.updated"}, :workflow],
+  subject_key: :resource_id,
+  synthesizer: {Cyclium.Synthesizer.Interactive, llm: MyApp.LLM},
+  budget: %{max_turns: 30, max_tokens: 40_000, max_wall_ms: 120_000},
+  strategy_config: %{
+    objective:
+      "Review resource {{resource_id}} and raise a finding if it is over its limit.",
+    role: "You are an operations analyst.",
+    guidelines: ["Gather evidence with read tools before concluding."],
+    allowed_tool_signatures: [
+      %{
+        name: "resources",
+        side_effect: "read",
+        actions: [
+          %{name: "lookup_resource", args: %{"resource_id" => "UUID"},
+            description: "get full details for one resource"}
+        ]
+      }
+    ]
+  }
+)
+```
+
+**The objective is static + payload.** The `objective` string is a template
+interpolated with `{{key}}` / `{{a.b}}` placeholders resolved against the trigger
+payload (`Event.payload`, `Workflow.input`, or `Manual`'s `reason`). An
+unresolved placeholder becomes an empty string rather than crashing. A trigger
+payload may also carry its own `"objective"` string, which overrides the static
+template (and is still interpolated) — so the same expectation can run a fixed
+task per event or a fully dynamic one handed in by the caller.
+
+**Termination via `finish_agentic_task`.** A reserved tool by that name is
+auto-injected into the tool menu (you don't declare it). When the model calls
+it, the run ends and the tool's args become the converge result:
+
+```json
+{"tool": "finish_agentic_task", "action": "finish_agentic_task", "args": {
+  "summary": "R-1 is 120% over its limit.",
+  "confidence": 0.9,
+  "findings": [{"action": "raise", "class": "over_limit", "severity": "high",
+                "finding_key": "resource:limits:R-1", "summary": "Over allocated limit"}],
+  "outputs":  [{"type": "slack", "dedupe_key": "r-1-over", "payload": {"text": "…"}}]
+}}
+```
+
+`findings` and `outputs` use the same shapes `ConvergeResult` expects
+(`{:raise, …}` / `{:clear, key, reason}` and `%OutputProposal{}`). If the model
+instead stops with a plain-text answer, that text becomes the summary and the
+episode converges without findings. The `finish_agentic_task` call is intercepted
+*before* `PlanGate` — it never reaches a tool executor — so `finish_agentic_task`
+is a **reserved name**; don't declare a real tool with it.
+
+**Security is the allow-list.** With no human preview by default,
+`allowed_tool_signatures` is the entire security boundary — keep it as narrow as
+the task needs and prefer read-only signatures unless a write is genuinely
+required. The [interactive-actors guide's Security
+section](interactive_actors.md#security) applies verbatim: the LLM proposes, the
+gate disposes. Give autonomous runs a generous `max_turns` (each gather →
+summarize cycle is ~7 turns) since the token budget, not a fixed step count,
+bounds a legitimate multi-tool loop.
+
 ---
 
 **Related guides:** [Findings & Outputs](findings_and_outputs.md) ·
