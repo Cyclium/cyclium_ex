@@ -57,7 +57,9 @@ defmodule Cyclium.RecoveryDbTest do
       assert counts.restarted == 1
       assert counts.failed == 0
 
-      assert episode.id in Cyclium.FakeRunner.enqueued_episodes()
+      # Restarted via the direct runner path (no live actor process) — must
+      # resume from the latest checkpoint, not re-init from the trigger.
+      assert {episode.id, [resume: true]} in Cyclium.FakeRunner.enqueued_calls()
     end
 
     test "fails episode when actor has no recovery_policy (default :fail)" do

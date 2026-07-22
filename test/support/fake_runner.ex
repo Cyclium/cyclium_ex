@@ -13,8 +13,8 @@ defmodule Cyclium.FakeRunner do
   end
 
   @impl true
-  def enqueue(episode_id, _opts \\ []) do
-    Agent.update(__MODULE__, fn calls -> [episode_id | calls] end)
+  def enqueue(episode_id, opts \\ []) do
+    Agent.update(__MODULE__, fn calls -> [{episode_id, opts} | calls] end)
     {:ok, :fake_pid}
   end
 
@@ -25,6 +25,11 @@ defmodule Cyclium.FakeRunner do
   def cancel(_episode_id), do: :ok
 
   def enqueued_episodes do
+    Agent.get(__MODULE__, fn calls -> Enum.map(calls, &elem(&1, 0)) end)
+  end
+
+  @doc "Every enqueue call as `{episode_id, opts}`, newest first."
+  def enqueued_calls do
     Agent.get(__MODULE__, & &1)
   end
 

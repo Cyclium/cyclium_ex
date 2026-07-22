@@ -1184,7 +1184,7 @@ defmodule Cyclium.EpisodeRunner do
       episode_id: episode.id,
       checkpoint_no: step_count + 1,
       phase: phase_name,
-      schema_version: 1,
+      schema_version: checkpoint_schema_version(episode),
       state: state,
       created_at: now
     })
@@ -1209,6 +1209,19 @@ defmodule Cyclium.EpisodeRunner do
       select: count()
     )
     |> repo().one()
+  end
+
+  # Stamp the version the registered checkpoint schema currently writes (same
+  # lookup EpisodeTask uses on restore), so `migrate_to_current/2` sees the true
+  # on-disk version rather than a hardcoded 1. No schema registered → 1.
+  defp checkpoint_schema_version(%Episode{} = episode) do
+    schemas = Application.get_env(:cyclium, :checkpoint_schemas, %{})
+    key = {episode.actor_id, episode.expectation_id}
+
+    case Map.get(schemas, key) || Map.get(schemas, episode.actor_id) do
+      nil -> 1
+      schema -> schema.__checkpoint_version__()
+    end
   end
 
   defp journal_step!(%Episode{} = episode, kind, attrs) do

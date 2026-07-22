@@ -210,7 +210,10 @@ defmodule Cyclium.Recovery do
   defp restart_enqueue(episode, actor_registry) do
     case actor_pid(episode.actor_id, actor_registry) do
       nil ->
-        Cyclium.Mode.runner_for(episode.actor_id).enqueue(episode.id)
+        # `resume: true` so the recovered episode restores from its latest
+        # checkpoint instead of re-initing from the trigger and replaying
+        # completed work (mirrors Runner.OTP.recover_incomplete/0).
+        Cyclium.Mode.runner_for(episode.actor_id).enqueue(episode.id, resume: true)
 
       pid ->
         send(pid, {:recover_episode, episode.id})

@@ -224,6 +224,7 @@ defmodule Cyclium.Actor.Server do
       expectations: expectations,
       active_episodes: MapSet.new(),
       queued_episodes: :queue.new(),
+      recovered_episodes: MapSet.new(),
       timers: %{},
       debounce_timers: %{},
       cooldowns: %{},
@@ -1159,11 +1160,17 @@ defmodule Cyclium.Actor.Server do
         state
 
       MapSet.size(state.active_episodes) < state.config.max_concurrent_episodes ->
-        runner(state.actor_id).enqueue(episode_id)
+        # `resume: true` so the episode restores from its latest checkpoint
+        # instead of re-initing from the trigger and replaying completed work.
+        runner(state.actor_id).enqueue(episode_id, resume: true)
         Map.update!(state, :active_episodes, &MapSet.put(&1, episode_id))
 
       true ->
-        Map.update!(state, :queued_episodes, &:queue.in(episode_id, &1))
+        # Held at capacity — remember it's a recovery so the drain in
+        # `handle_episode_done` also enqueues it with `resume: true`.
+        state
+        |> Map.update!(:queued_episodes, &:queue.in(episode_id, &1))
+        |> Map.update!(:recovered_episodes, &MapSet.put(&1, episode_id))
     end
   end
 
@@ -1242,11 +1249,16 @@ defmodule Cyclium.Actor.Server do
 
     case :queue.out(state.queued_episodes) do
       {{:value, queued_id}, rest} ->
-        runner(state.actor_id).enqueue(queued_id)
+        if MapSet.member?(state.recovered_episodes, queued_id) do
+          runner(state.actor_id).enqueue(queued_id, resume: true)
+        else
+          runner(state.actor_id).enqueue(queued_id)
+        end
 
         state
         |> Map.put(:queued_episodes, rest)
         |> Map.update!(:active_episodes, &MapSet.put(&1, queued_id))
+        |> Map.update!(:recovered_episodes, &MapSet.delete(&1, queued_id))
 
       {:empty, _} ->
         state

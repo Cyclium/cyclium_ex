@@ -159,6 +159,11 @@ defmodule Cyclium.ActorTest do
       assert :queue.len(state.queued_episodes) == 1
       assert length(Cyclium.FakeRunner.enqueued_episodes()) == 2
 
+      # Recovered episodes resume from their checkpoint, never re-init.
+      assert Enum.all?(Cyclium.FakeRunner.enqueued_calls(), fn {_id, opts} ->
+               opts == [resume: true]
+             end)
+
       GenServer.stop(pid)
     end
 
@@ -189,6 +194,14 @@ defmodule Cyclium.ActorTest do
       assert MapSet.size(state.active_episodes) == 2
       assert :queue.is_empty(state.queued_episodes)
       assert length(Cyclium.FakeRunner.enqueued_episodes()) == 3
+
+      # The drained episode was recovered work — it must also resume from its
+      # checkpoint, and its recovered marker is consumed on promotion.
+      assert Enum.all?(Cyclium.FakeRunner.enqueued_calls(), fn {_id, opts} ->
+               opts == [resume: true]
+             end)
+
+      assert MapSet.size(state.recovered_episodes) == 0
 
       GenServer.stop(pid)
     end

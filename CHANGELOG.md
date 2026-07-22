@@ -6,6 +6,23 @@ All notable changes to Cyclium are recorded here. This project uses
 Entries are high-level, not exhaustive. Versions prior to `0.1.4` are
 reconstructed from git history and are summarized loosely.
 
+## [0.3.1] — 2026-07-22
+
+### Fixed
+- Recovery now **resumes** restarted episodes from their latest checkpoint.
+  Both `Recovery.sweep`'s direct runner path and the actor hand-off
+  (`{:recover_episode, id}` → `enqueue_recovered`, including episodes parked in
+  the actor's overflow queue and drained later) previously enqueued without
+  `resume: true`, so a recovered episode re-ran `init/2` from the trigger and
+  replayed every completed step — checkpoints were effectively ignored on the
+  recovery path (only `Runner.OTP.recover_incomplete/0` resumed correctly).
+- `save_checkpoint` no longer hardcodes `schema_version: 1`. It stamps the
+  version the registered `Cyclium.CheckpointSchema` currently writes (resolved
+  from `config :cyclium, :checkpoint_schemas` with the same
+  `{actor_id, expectation_id}` → `actor_id` lookup the restore path uses), so
+  `migrate_to_current/2` sees the true on-disk version and schema migrations
+  can actually fire. Unregistered actors keep writing version 1.
+
 ## [0.3.0] — 2026-07-16
 
 ### Added
