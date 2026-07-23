@@ -6,6 +6,17 @@ All notable changes to Cyclium are recorded here. This project uses
 Entries are high-level, not exhaustive. Versions prior to `0.1.4` are
 reconstructed from git history and are summarized loosely.
 
+## [0.3.3] — 2026-07-23
+
+### Changed
+- Successfully completed episodes now **delete their checkpoints** (both the
+  `:done` step-action path and the post-converge `:episode_completed` path).
+  Checkpoints exist only to resume in-flight work; a completed episode can
+  never resume, so its rows were dead storage. Failed and blocked episodes
+  keep their checkpoints — a re-enqueue with `resume: true` (recovery sweep or
+  manual) resumes from the latest one. Cleanup is best-effort and never fails
+  a finished episode.
+
 ## [0.3.2] — 2026-07-23
 
 ### Added

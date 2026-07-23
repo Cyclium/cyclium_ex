@@ -185,7 +185,7 @@ EpisodeTask starts
 ```elixir
 # mix.exs
 def deps do
-  [{:cyclium, "~> 0.3.2"}]
+  [{:cyclium, "~> 0.3.3"}]
 end
 ```
 
@@ -341,7 +341,7 @@ All tables use `binary_id` primary keys (no JSON operators, application-layer up
 |---|---|---|
 | `cyclium_episodes` | V1 | Episode lifecycle, budget tracking, classification |
 | `cyclium_episode_steps` | V1 | Step-by-step journal (16 step kinds) |
-| `cyclium_episode_checkpoints` | V1 | Versioned strategy state snapshots |
+| `cyclium_episode_checkpoints` | V1 | Versioned strategy state snapshots (deleted on successful completion; kept for failed/blocked episodes so `resume: true` works) |
 | `cyclium_findings` | V1 | Persistent observations with raise/update/clear lifecycle |
 | `cyclium_outputs` | V1 | Output proposals, delivery status, deduplication |
 | `cyclium_episode_logs` | V2 | Materialized human-readable logs |

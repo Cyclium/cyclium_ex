@@ -225,8 +225,8 @@ defmodule Cyclium.EpisodeRunnerFencingDbTest do
       assert {:ok, _} = EpisodeRunner.execute_loop(episode, CheckpointStrategy, %{phase: :go})
 
       assert Repo.get!(Episode, episode.id).status == :done
-      # The checkpoint was still persisted on the way through.
-      assert Repo.get_by(EpisodeCheckpoint, episode_id: episode.id, phase: "go")
+      # Completed episodes clean up their checkpoints (they can never resume).
+      refute Repo.get_by(EpisodeCheckpoint, episode_id: episode.id, phase: "go")
     end
   end
 

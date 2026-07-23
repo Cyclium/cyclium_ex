@@ -41,6 +41,11 @@ as `:observe`, so the strategy transitions there. On resume, `EpisodeTask` loads
 the latest checkpoint by `checkpoint_no` and passes it to the strategy — execution
 continues from where it left off.
 
+Checkpoints live only as long as they can matter: an episode that completes
+successfully deletes its checkpoints (it can never resume), while failed and
+blocked episodes keep theirs so a re-enqueue with `resume: true` — from the
+recovery sweep or manually — picks up from the latest snapshot.
+
 ### Checkpoint schema versioning
 
 If your strategy's state shape changes between deploys, register a checkpoint

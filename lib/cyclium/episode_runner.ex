@@ -10,6 +10,8 @@ defmodule Cyclium.EpisodeRunner do
 
   require Logger
 
+  import Ecto.Query, only: [from: 2]
+
   alias Cyclium.DryRun.FindingPrefixer
   alias Cyclium.Schemas.{Episode, EpisodeStep}
 
@@ -290,6 +292,7 @@ defmodule Cyclium.EpisodeRunner do
         :done ->
           journal_step!(episode, :episode_completed, %{})
           Cyclium.Episodes.update_status(episode.id, :done)
+          delete_checkpoints(episode)
           {:ok, state}
 
         :converge ->
@@ -671,6 +674,11 @@ defmodule Cyclium.EpisodeRunner do
       confidence: converge_result.confidence
     )
 
+    # Completed episodes are never resumed, so their checkpoints are dead
+    # weight — drop them. Failed episodes keep theirs: a re-enqueue with
+    # `resume: true` (recovery or manual) resumes from the latest checkpoint.
+    if step_kind == :episode_completed, do: delete_checkpoints(episode)
+
     # Step 7: Service levels and adaptive budget tracking
     maybe_record_service_levels(episode, final_status)
     maybe_record_adaptive_budget(episode)
@@ -1049,8 +1057,6 @@ defmodule Cyclium.EpisodeRunner do
   end
 
   defp increment_turn(%Episode{} = episode) do
-    import Ecto.Query
-
     from(e in Episode, where: e.id == ^episode.id)
     |> repo().update_all(inc: [turns_used: 1])
   end
@@ -1162,8 +1168,6 @@ defmodule Cyclium.EpisodeRunner do
   end
 
   defp increment_budget(%Episode{} = episode, token_cost) when is_integer(token_cost) do
-    import Ecto.Query
-
     # Running per-process token total, snapshotted by record_step_kind so loop
     # detection can distinguish a stuck cycle from one that's consuming budget.
     Process.put(:cyclium_loop_tokens, Process.get(:cyclium_loop_tokens, 0) + token_cost)
@@ -1201,9 +1205,24 @@ defmodule Cyclium.EpisodeRunner do
       :ok
   end
 
-  defp count_checkpoints(episode_id) do
-    import Ecto.Query
+  # Best-effort cleanup on successful completion — a failure here must never
+  # take down an episode that has already finished its work.
+  defp delete_checkpoints(%Episode{} = episode) do
+    from(c in Cyclium.Schemas.EpisodeCheckpoint, where: c.episode_id == ^episode.id)
+    |> repo().delete_all()
 
+    :ok
+  rescue
+    e ->
+      Logger.warning(
+        "[Cyclium.EpisodeRunner] Failed to delete checkpoints for completed episode " <>
+          "#{episode.id}: #{Exception.message(e)}"
+      )
+
+      :ok
+  end
+
+  defp count_checkpoints(episode_id) do
     from(c in Cyclium.Schemas.EpisodeCheckpoint,
       where: c.episode_id == ^episode_id,
       select: count()
