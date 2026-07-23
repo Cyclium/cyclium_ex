@@ -28,6 +28,13 @@ defmodule Cyclium.ActorTest do
     end
   end
 
+  defmodule FakeCheckpointSchema do
+    use Cyclium.CheckpointSchema, version: 2
+
+    def migrate(2, state), do: {:ok, state}
+    def migrate(_v, _state), do: {:error, :unsupported_version}
+  end
+
   # Actor with strategy and synthesizer declared inline for registration tests
   defmodule RegistrationActor do
     use Cyclium.Actor
@@ -39,6 +46,7 @@ defmodule Cyclium.ActorTest do
 
       expectation(:do_work,
         strategy: __MODULE__.FakeStrategy,
+        checkpoint_schema: Cyclium.ActorTest.FakeCheckpointSchema,
         trigger: {:schedule, :timer.hours(1)},
         budget: %{max_turns: 10, max_tokens: 5_000, max_wall_ms: 30_000},
         log_strategy: :full_debug
@@ -307,6 +315,10 @@ defmodule Cyclium.ActorTest do
         :persistent_term.erase(
           {:cyclium_expectation_log_strategy, :registration_actor, :do_other_work}
         )
+
+        :persistent_term.erase(
+          {:cyclium_expectation_checkpoint_schema, :registration_actor, :do_work}
+        )
       end)
 
       :ok
@@ -323,6 +335,18 @@ defmodule Cyclium.ActorTest do
 
       assert :persistent_term.get({:cyclium_actor_strategy, :registration_actor, :do_other_work}) ==
                RegistrationActor.OtherStrategy
+    end
+
+    test "expectation-declared checkpoint schema is registered in persistent_term" do
+      assert :persistent_term.get(
+               {:cyclium_expectation_checkpoint_schema, :registration_actor, :do_work}
+             ) == FakeCheckpointSchema
+
+      # :do_other_work declares none — no registration
+      assert :persistent_term.get(
+               {:cyclium_expectation_checkpoint_schema, :registration_actor, :do_other_work},
+               nil
+             ) == nil
     end
 
     test "expectation-level synthesizer is registered in persistent_term" do

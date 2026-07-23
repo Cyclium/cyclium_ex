@@ -281,6 +281,13 @@ defmodule Cyclium.Actor.Server do
         :persistent_term.put({:cyclium_actor_strategy, config.actor_id, exp.id}, exp.strategy)
       end
 
+      if exp.checkpoint_schema do
+        :persistent_term.put(
+          {:cyclium_expectation_checkpoint_schema, config.actor_id, exp.id},
+          exp.checkpoint_schema
+        )
+      end
+
       if exp.synthesizer do
         :persistent_term.put(
           {:cyclium_expectation_synthesizer, config.actor_id, exp.id},
@@ -673,6 +680,7 @@ defmodule Cyclium.Actor.Server do
       strategy: Keyword.get(opts, :strategy),
       synthesizer: Keyword.get(opts, :synthesizer) || config.synthesizer,
       strategy_config: Keyword.get(opts, :strategy_config),
+      checkpoint_schema: Keyword.get(opts, :checkpoint_schema),
       recovery_policy: Keyword.get(opts, :recovery_policy, :fail),
       window: Keyword.get(opts, :window) || infer_window(opts),
       dry_run: Keyword.get(opts, :dry_run),

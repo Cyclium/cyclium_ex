@@ -61,4 +61,66 @@ defmodule Cyclium.CheckpointSchemaTest do
       assert {:ok, ^state} = V1Schema.migrate_to_current(1, state)
     end
   end
+
+  describe "resolve/2" do
+    setup do
+      on_exit(fn ->
+        Application.delete_env(:cyclium, :checkpoint_schemas)
+        :persistent_term.erase({:cyclium_expectation_checkpoint_schema, :res_actor, :res_exp})
+      end)
+
+      :ok
+    end
+
+    test "returns nil when nothing is registered" do
+      assert Cyclium.CheckpointSchema.resolve("res_actor", "res_exp") == nil
+    end
+
+    test "resolves from config by {actor_id, expectation_id} key" do
+      Application.put_env(:cyclium, :checkpoint_schemas, %{
+        {"res_actor", "res_exp"} => V3Schema
+      })
+
+      assert Cyclium.CheckpointSchema.resolve("res_actor", "res_exp") == V3Schema
+    end
+
+    test "falls back to actor-level config key" do
+      Application.put_env(:cyclium, :checkpoint_schemas, %{"res_actor" => V1Schema})
+
+      assert Cyclium.CheckpointSchema.resolve("res_actor", "res_exp") == V1Schema
+    end
+
+    test "resolves expectation-declared schema from persistent_term" do
+      :persistent_term.put(
+        {:cyclium_expectation_checkpoint_schema, :res_actor, :res_exp},
+        V3Schema
+      )
+
+      # String ids (as stored on DB-loaded episodes) resolve to the atom-keyed
+      # registration
+      assert Cyclium.CheckpointSchema.resolve("res_actor", "res_exp") == V3Schema
+      # Atom ids resolve too
+      assert Cyclium.CheckpointSchema.resolve(:res_actor, :res_exp) == V3Schema
+    end
+
+    test "config override wins over expectation-declared schema" do
+      :persistent_term.put(
+        {:cyclium_expectation_checkpoint_schema, :res_actor, :res_exp},
+        V3Schema
+      )
+
+      Application.put_env(:cyclium, :checkpoint_schemas, %{
+        {"res_actor", "res_exp"} => V1Schema
+      })
+
+      assert Cyclium.CheckpointSchema.resolve("res_actor", "res_exp") == V1Schema
+    end
+
+    test "ids with no existing atom resolve to nil instead of raising" do
+      assert Cyclium.CheckpointSchema.resolve(
+               "no_such_actor_atom_xyz",
+               "no_such_exp_atom_xyz"
+             ) == nil
+    end
+  end
 end

@@ -20,6 +20,24 @@ defmodule Cyclium.CheckpointSchema do
         def migrate(_v, _state), do: {:error, :unsupported_version}
       end
 
+  ## Registration
+
+  Declare the schema on the expectation (preferred — keeps it next to the
+  strategy whose state it versions):
+
+      expectation(:investigate_po,
+        strategy: MyApp.Strategies.POInvestigation,
+        checkpoint_schema: MyApp.Checkpoints.POInvestigation,
+        ...
+      )
+
+  Or register in app config, which takes precedence over the expectation
+  declaration (useful as a deploy-time override):
+
+      config :cyclium, :checkpoint_schemas, %{
+        {"my_actor", "investigate_po"} => MyApp.Checkpoints.POInvestigation
+      }
+
   ## Guidelines
 
   - Store IDs and refs, not full payloads
@@ -66,6 +84,44 @@ defmodule Cyclium.CheckpointSchema do
 
     :ok
   end
+
+  @doc """
+  Resolve the checkpoint schema module for an actor/expectation pair.
+
+  Precedence:
+
+    1. App-config override — `config :cyclium, :checkpoint_schemas`, keyed by
+       `{actor_id, expectation_id}` or `actor_id` (matched against the raw
+       episode values, which are strings for DB-loaded episodes)
+    2. Expectation-declared schema (`checkpoint_schema: MyModule`), registered
+       in persistent_term when the actor boots
+
+  Returns `nil` when no schema is registered. Used by both the checkpoint
+  write path (version stamping) and the restore path (migration) — they must
+  agree on the schema or migration chains break.
+  """
+  @spec resolve(atom() | binary(), atom() | binary()) :: module() | nil
+  def resolve(actor_id, expectation_id) do
+    schemas = Application.get_env(:cyclium, :checkpoint_schemas, %{})
+
+    Map.get(schemas, {actor_id, expectation_id}) ||
+      Map.get(schemas, actor_id) ||
+      registered(actor_id, expectation_id)
+  end
+
+  defp registered(actor_id, expectation_id) do
+    with {:ok, actor} <- to_existing_atom(actor_id),
+         {:ok, exp} <- to_existing_atom(expectation_id) do
+      :persistent_term.get({:cyclium_expectation_checkpoint_schema, actor, exp}, nil)
+    else
+      # No existing atom means no actor booted under this id on this node,
+      # so there is no registration to find.
+      :error -> nil
+    end
+  end
+
+  defp to_existing_atom(value) when is_atom(value), do: {:ok, value}
+  defp to_existing_atom(value) when is_binary(value), do: Cyclium.AtomGuard.existing_atom(value)
 
   @doc false
   def chain_migrate(_module, version, version, state), do: {:ok, state}

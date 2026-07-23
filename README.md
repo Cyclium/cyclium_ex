@@ -185,7 +185,7 @@ EpisodeTask starts
 ```elixir
 # mix.exs
 def deps do
-  [{:cyclium, "~> 0.3.1"}]
+  [{:cyclium, "~> 0.3.2"}]
 end
 ```
 
@@ -264,7 +264,9 @@ config :cyclium, :output_adapters, %{
   slack: MyApp.Adapters.Slack
 }
 
-# Optional: checkpoint schemas for versioned state migration
+# Optional: checkpoint schema overrides for versioned state migration
+# (prefer declaring `checkpoint_schema: MyModule` on the expectation itself;
+# this config takes precedence when both are set)
 config :cyclium, :checkpoint_schemas, %{
   {"resource_monitor", "check_resource_limits"} => MyApp.Checkpoints.ResourceCheck
 }

@@ -1215,10 +1215,7 @@ defmodule Cyclium.EpisodeRunner do
   # lookup EpisodeTask uses on restore), so `migrate_to_current/2` sees the true
   # on-disk version rather than a hardcoded 1. No schema registered → 1.
   defp checkpoint_schema_version(%Episode{} = episode) do
-    schemas = Application.get_env(:cyclium, :checkpoint_schemas, %{})
-    key = {episode.actor_id, episode.expectation_id}
-
-    case Map.get(schemas, key) || Map.get(schemas, episode.actor_id) do
+    case Cyclium.CheckpointSchema.resolve(episode.actor_id, episode.expectation_id) do
       nil -> 1
       schema -> schema.__checkpoint_version__()
     end

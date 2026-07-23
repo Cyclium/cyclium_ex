@@ -6,6 +6,18 @@ All notable changes to Cyclium are recorded here. This project uses
 Entries are high-level, not exhaustive. Versions prior to `0.1.4` are
 reconstructed from git history and are summarized loosely.
 
+## [0.3.2] — 2026-07-23
+
+### Added
+- Checkpoint schemas can now be declared directly on the expectation
+  (`checkpoint_schema: MyApp.Checkpoints.ResourceCheck`), alongside `strategy`.
+  The actor registers the mapping in persistent_term at boot — no app config
+  needed. `config :cyclium, :checkpoint_schemas` still works and takes
+  precedence over the expectation declaration, so it doubles as a deploy-time
+  override. Resolution is centralized in `Cyclium.CheckpointSchema.resolve/2`,
+  used by both the checkpoint write path (version stamping) and the restore
+  path (migration), so the two can no longer disagree on which schema applies.
+
 ## [0.3.1] — 2026-07-22
 
 ### Fixed

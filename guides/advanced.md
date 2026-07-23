@@ -56,7 +56,20 @@ defmodule MyApp.Checkpoints.ResourceCheck do
 end
 ```
 
-Register in config:
+Declare it on the expectation (preferred — keeps the schema next to the
+strategy whose state it versions):
+
+```elixir
+expectation(:check_resource_limits,
+  strategy: MyApp.Strategies.ResourceLimits,
+  checkpoint_schema: MyApp.Checkpoints.ResourceCheck,
+  ...
+)
+```
+
+Or register in config, which takes precedence over the expectation declaration
+(useful as a deploy-time override), keyed by `{actor_id, expectation_id}` or
+`actor_id`:
 
 ```elixir
 config :cyclium, :checkpoint_schemas, %{

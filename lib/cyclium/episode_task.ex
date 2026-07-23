@@ -205,9 +205,7 @@ defmodule Cyclium.EpisodeTask do
   end
 
   defp resolve_checkpoint_schema(episode) do
-    schemas = Application.get_env(:cyclium, :checkpoint_schemas, %{})
-    key = {episode.actor_id, episode.expectation_id}
-    Map.get(schemas, key) || Map.get(schemas, episode.actor_id)
+    Cyclium.CheckpointSchema.resolve(episode.actor_id, episode.expectation_id)
   end
 
   defp resolve_strategy(episode) do

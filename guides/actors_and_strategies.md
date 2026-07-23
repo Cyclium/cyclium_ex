@@ -150,6 +150,7 @@ Key properties:
 | `strategy` | required | Strategy module for this expectation. Declared inline — Cyclium registers it when the actor boots |
 | `trigger` | required | What fires the episode. Single trigger or list (e.g. `[{:event, "..."}, :workflow]`) |
 | `synthesizer` | `nil` | Synthesizer module override for this expectation. Overrides the actor-level `synthesizer(...)` declaration |
+| `checkpoint_schema` | `nil` | `Cyclium.CheckpointSchema` module for versioned checkpoint state migration. App-config `:checkpoint_schemas` takes precedence when both are set. See the Advanced guide |
 | `filter` | `%{}` | Payload predicates — only fire when all match |
 | `debounce_ms` | `nil` | Coalesce rapid events into one firing |
 | `cooldown_ms` | `nil` | Minimum gap between firings |
