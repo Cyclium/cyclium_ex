@@ -6,6 +6,36 @@ All notable changes to Cyclium are recorded here. This project uses
 Entries are high-level, not exhaustive. Versions prior to `0.1.4` are
 reconstructed from git history and are summarized loosely.
 
+## [0.3.4] — 2026-07-24
+
+### Fixed
+- **Episodes no longer crash once an actor has active findings.** Both the
+  `AgenticTask` and `Interactive` templates seeded their context-assembly
+  observation with raw `%Cyclium.Schemas.Finding{}` Ecto structs, which are not
+  `Jason.Encoder`-able. As soon as an actor had any active finding, the journal
+  insert (JSON-encoded for SQL Server) crashed every subsequent episode —
+  agentic runs *and* every interactive chat turn — at step one. Findings are now
+  projected to compact, JSON-safe maps via `Cyclium.Findings.project_for_context/1`
+  (also drops multi-KB `evidence_refs` narratives from the first prompt).
+- **Conversation dispatch no longer requires strategy module equality.**
+  `Conversations.Dispatch` matched the registered strategy against the literal
+  `Template.Interactive` module, so an app wrapping the template (the sanitizer
+  workaround) had every chat turn rejected with `:not_interactive_expectation`.
+  Dispatch now accepts the stock template or any strategy that opts in with an
+  `interactive?/0` callback returning `true`.
+- **Manual triggers now carry `force_fire`'s payload.** `%Trigger.Manual{}`
+  gained a `payload` field, and `AgenticTask.trigger_payload/1` reads it, so
+  objective `{{placeholders}}` and payload-scoped strategy logic work for
+  manually fired agentic runs.
+- **Agentic `strategy_config` resolves by `{actor, expectation}`.**
+  `Loop.load_strategy_config/2` resolves the exact expectation's config instead
+  of first-match-by-actor, which was nondeterministically wrong for any actor
+  with more than one expectation.
+- **Defense in depth:** the journal's size guard (`cap_stored_map/1`) now
+  degrades a non-JSON-encodable step payload to a preview marker instead of
+  letting the encode failure default to "size 0, pass through" and crash the
+  insert.
+
 ## [0.3.3] — 2026-07-23
 
 ### Changed

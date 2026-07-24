@@ -144,8 +144,8 @@ defmodule Cyclium.Conversations.Dispatch do
     matches =
       :persistent_term.get()
       |> Enum.flat_map(fn
-        {{:cyclium_actor_strategy, ^actor_key, exp_id}, Cyclium.Strategy.Template.Interactive} ->
-          [exp_id]
+        {{:cyclium_actor_strategy, ^actor_key, exp_id}, strategy} ->
+          if interactive_strategy?(strategy), do: [exp_id], else: []
 
         _ ->
           []
@@ -184,18 +184,32 @@ defmodule Cyclium.Conversations.Dispatch do
 
       exp_key ->
         case :persistent_term.get({:cyclium_actor_strategy, actor_key, exp_key}, nil) do
-          Cyclium.Strategy.Template.Interactive ->
-            {:ok, exp_key, expectation_budget(actor_key, exp_key),
-             expectation_log_strategy(actor_key, exp_key)}
-
           nil ->
             {:error, {:unknown_expectation, expectation_id}}
 
-          other ->
-            {:error, {:not_interactive_expectation, expectation_id, other}}
+          strategy ->
+            if interactive_strategy?(strategy) do
+              {:ok, exp_key, expectation_budget(actor_key, exp_key),
+               expectation_log_strategy(actor_key, exp_key)}
+            else
+              {:error, {:not_interactive_expectation, expectation_id, strategy}}
+            end
         end
     end
   end
+
+  # An expectation dispatches conversation turns if its strategy is the stock
+  # Interactive template, or any strategy that opts in with an `interactive?/0`
+  # callback returning true. The callback lets an app compose/wrap the template
+  # (e.g. to sanitize context) without dispatch rejecting it on module identity.
+  defp interactive_strategy?(Cyclium.Strategy.Template.Interactive), do: true
+
+  defp interactive_strategy?(module) when is_atom(module) and not is_nil(module) do
+    Code.ensure_loaded?(module) and function_exported?(module, :interactive?, 0) and
+      module.interactive?()
+  end
+
+  defp interactive_strategy?(_), do: false
 
   defp existing_atom(val) when is_atom(val), do: val
 

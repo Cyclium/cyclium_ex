@@ -122,6 +122,46 @@ defmodule Cyclium.Strategy.Template.AgenticTaskTest do
 
       assert man_state.message == "reason: man"
     end
+
+    test "interpolates the objective from a manual trigger's payload" do
+      put_config(%{"objective" => "Appraise deal {{deal_id}}"})
+
+      episode = build_test_episode(actor_id: @actor_id_str)
+
+      trigger = %Cyclium.Trigger.Manual{
+        requested_by: "force_fire",
+        reason: "manual",
+        payload: %{"deal_id" => "D-42"}
+      }
+
+      {:ok, state} = AgenticTask.init(episode, trigger)
+      assert state.message == "Appraise deal D-42"
+      assert state.payload["deal_id"] == "D-42"
+      # requested_by / reason are preserved alongside the payload.
+      assert state.payload["requested_by"] == "force_fire"
+    end
+
+    test "resolves strategy_config by the exact {actor, expectation} key" do
+      # Two configs registered for the same actor under different expectations.
+      # The agentic run must get its own, not whichever the actor-scan hits first.
+      chat_key = {:cyclium_strategy_config, @actor_id, :chat}
+      task_key = {:cyclium_strategy_config, @actor_id, :task}
+      :persistent_term.put(chat_key, %{"objective" => "chat objective", "role" => "chat"})
+      :persistent_term.put(task_key, %{"objective" => "task objective", "role" => "task"})
+
+      on_exit(fn ->
+        :persistent_term.erase(chat_key)
+        :persistent_term.erase(task_key)
+      end)
+
+      episode = build_test_episode(actor_id: @actor_id_str, expectation_id: "task")
+
+      {:ok, state} =
+        AgenticTask.init(episode, %Cyclium.Trigger.Manual{requested_by: "u", reason: "r"})
+
+      assert state.message == "task objective"
+      assert state.strategy_config["role"] == "task"
+    end
   end
 
   # --- next_step / handle_result: custom phase + delegation ---

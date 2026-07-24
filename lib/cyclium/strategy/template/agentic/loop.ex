@@ -743,9 +743,36 @@ defmodule Cyclium.Strategy.Template.Agentic.Loop do
   # --- Config loading (shared) --------------------------------------------
 
   @doc """
+  Resolve `strategy_config` for a specific `{actor_id, expectation_id}` pair.
+
+  Prefer this over `load_strategy_config/1`: an actor with more than one
+  expectation (e.g. an interactive chat *and* an agentic appraisal) registers a
+  distinct config under each `{:cyclium_strategy_config, actor, exp}` key. The
+  actor-only lookup scans persistent_term for the *first* matching actor entry
+  in unspecified order, so it can hand an agentic run the chat's config — wrong
+  role/guidelines, missing `objective`, and the wrong `allowed_tool_signatures`
+  (so the run's own finding-recording tool may never be in the menu). Resolving
+  by the exact expectation key is deterministic; it falls back to the actor-only
+  path (then the DB) when no per-expectation config is registered.
+  """
+  def load_strategy_config(actor_id, expectation_id) do
+    actor_key = safe_to_atom(actor_id)
+    exp_key = safe_to_atom(expectation_id)
+
+    case :persistent_term.get({:cyclium_strategy_config, actor_key, exp_key}, nil) do
+      config when is_map(config) and config != %{} -> config
+      _ -> load_strategy_config(actor_id)
+    end
+  end
+
+  @doc """
   Resolve an actor's `strategy_config`, checking persistent_term first (set by
   the Actor DSL `strategy_config` option) and falling back to the
   `cyclium_agent_definitions` table for dynamic actors.
+
+  Prefer `load_strategy_config/2` when the expectation id is known — this
+  actor-only lookup is first-match-by-actor and non-deterministic for a
+  multi-expectation actor.
   """
   def load_strategy_config(actor_id) do
     actor_key = safe_to_atom(actor_id)

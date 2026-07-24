@@ -180,6 +180,40 @@ defmodule Cyclium.Findings do
     end
   end
 
+  @doc """
+  Project findings into compact, JSON-safe maps for strategy context assembly.
+
+  Strategies read active findings during context assembly, and that payload is
+  journaled by the episode runner (JSON-encoded for SQL Server via the Tds
+  adapter). Raw `%Finding{}` Ecto structs are **not** `Jason.Encoder`-able —
+  they carry `__meta__` and association fields — so handing them to a strategy
+  crashes the episode at its first journal write the moment the actor has any
+  active finding. Always project findings through this before putting them in a
+  strategy's context.
+
+  The projection is also better prompt context: one summary-shaped line per
+  finding instead of every finding's full `evidence_refs` narrative (which can
+  run to multiple KB and would otherwise ride into every episode's first prompt
+  and journal row).
+  """
+  def project_for_context(findings) when is_list(findings) do
+    Enum.map(findings, &project_finding/1)
+  end
+
+  @doc "Project a single `%Finding{}` into a compact, JSON-safe summary map."
+  def project_finding(%Finding{} = f) do
+    %{
+      "finding_key" => f.finding_key,
+      "class" => f.class,
+      "status" => f.status && to_string(f.status),
+      "severity" => f.severity && to_string(f.severity),
+      "confidence" => f.confidence,
+      "summary" => f.summary,
+      "subject_kind" => f.subject_kind,
+      "subject_id" => f.subject_id
+    }
+  end
+
   # --- Causality queries ---
 
   @doc """

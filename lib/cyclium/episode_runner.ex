@@ -1344,30 +1344,43 @@ defmodule Cyclium.EpisodeRunner do
   defp cap_stored_map(nil), do: nil
 
   defp cap_stored_map(map) when is_map(map) do
-    if map_char_size(map) <= @map_field_max_chars do
-      map
-    else
-      # Preserve the shape but truncate string leaves; if it still doesn't fit
-      # (e.g. one dominant string + other fields), fall back to a compact,
-      # always-valid-JSON marker so the row is never stored corrupt.
-      truncated = truncate_map_leaves(map)
+    case Jason.encode(map) do
+      {:ok, json} ->
+        if String.length(json) <= @map_field_max_chars do
+          map
+        else
+          # Preserve the shape but truncate string leaves; if it still doesn't
+          # fit (e.g. one dominant string + other fields), fall back to a
+          # compact, always-valid-JSON marker so the row is never stored corrupt.
+          truncated = truncate_map_leaves(map)
 
-      if map_char_size(truncated) <= @map_field_max_chars do
-        truncated
-      else
-        %{
-          "_truncated" => true,
-          "preview" => map |> Jason.encode!() |> slice_chars(@map_field_max_chars - 64)
-        }
-      end
+          if map_char_size(truncated) <= @map_field_max_chars do
+            truncated
+          else
+            %{"_truncated" => true, "preview" => slice_chars(json, @map_field_max_chars - 64)}
+          end
+        end
+
+      {:error, _} ->
+        # A leaf isn't JSON-encodable (e.g. a raw Ecto struct that a strategy
+        # leaked into its context payload). The Tds adapter would `Jason.encode!`
+        # this same `:map` parameter at insert time and crash the episode, so
+        # degrade to an inspect-based preview marker instead of passing it
+        # through. Defense in depth — strategies should hand JSON-safe maps.
+        preview =
+          map
+          |> inspect(limit: :infinity, printable_limit: :infinity)
+          |> slice_chars(@map_field_max_chars - 64)
+
+        %{"_unencodable" => true, "preview" => preview}
     end
   end
 
   defp cap_stored_map(other), do: other
 
   # JSON-encoded length in characters (≈ UTF-16 code units for the BMP). Returns
-  # 0 if the value isn't JSON-encodable here — the insert path encodes it the
-  # same way, so any real encode error surfaces there, not silently in the cap.
+  # 0 if the value isn't JSON-encodable — callers that must distinguish an encode
+  # failure from an empty map handle `Jason.encode/1` directly (see cap_stored_map/1).
   defp map_char_size(map) do
     case Jason.encode(map) do
       {:ok, json} -> String.length(json)

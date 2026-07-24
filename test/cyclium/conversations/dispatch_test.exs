@@ -6,6 +6,17 @@ defmodule Cyclium.Conversations.DispatchTest do
   alias Cyclium.Conversations.Dispatch
   alias Cyclium.Strategy.Template.Interactive
 
+  # An app-level strategy that wraps Interactive and opts into dispatch via the
+  # interactive?/0 capability marker instead of being the literal template module.
+  defmodule WrappingInteractive do
+    def interactive?, do: true
+  end
+
+  # A strategy that neither is the Interactive module nor opts in.
+  defmodule NotInteractive do
+    def interactive?, do: false
+  end
+
   # Register an expectation strategy + budget + log_strategy in persistent_term,
   # mirroring what the Actor DSL does at boot. Cleaned up after each test.
   defp register(actor, exp, strategy, budget \\ %{"max_turns" => 7}, log \\ :timeline) do
@@ -44,6 +55,26 @@ defmodule Cyclium.Conversations.DispatchTest do
 
       # Sorted, so the order is stable regardless of persistent_term iteration order.
       assert ids == [:conv_a, :conv_b]
+    end
+
+    test "resolves a wrapper strategy that opts in via interactive?/0" do
+      register(
+        :disp_test_wrap_one,
+        :wrapped_conv,
+        WrappingInteractive,
+        %{"max_turns" => 4},
+        :timeline
+      )
+
+      assert {:ok, :wrapped_conv, %{"max_turns" => 4}, :timeline} =
+               Dispatch.resolve_interactive_expectation(:disp_test_wrap_one)
+    end
+
+    test "ignores a strategy whose interactive?/0 returns false" do
+      register(:disp_test_wrap_none, :not_conv, NotInteractive)
+
+      assert {:error, :no_interactive_expectation} =
+               Dispatch.resolve_interactive_expectation(:disp_test_wrap_none)
     end
   end
 end

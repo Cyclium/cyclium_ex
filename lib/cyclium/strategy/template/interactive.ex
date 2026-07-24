@@ -30,7 +30,7 @@ defmodule Cyclium.Strategy.Template.Interactive do
 
   @impl true
   def init(episode, %Cyclium.Trigger.Interactive{} = trigger) do
-    strategy_config = Loop.load_strategy_config(episode.actor_id)
+    strategy_config = Loop.load_strategy_config(episode.actor_id, episode.expectation_id)
     conversation = load_conversation(episode.conversation_id)
     goal = if conversation, do: Cyclium.Schemas.Conversation.decode_goal(conversation)
 
@@ -171,11 +171,11 @@ defmodule Cyclium.Strategy.Template.Interactive do
   end
 
   defp load_relevant_findings(_state, episode_ctx) do
-    try do
-      Cyclium.Findings.active_for(actor: episode_ctx.actor_id)
-    rescue
-      _ -> []
-    end
+    [actor: episode_ctx.actor_id]
+    |> Cyclium.Findings.active_for()
+    |> Cyclium.Findings.project_for_context()
+  rescue
+    _ -> []
   end
 
   defp load_prior_episode_summaries(%{conversation_id: nil}), do: []

@@ -20,8 +20,9 @@ defmodule Cyclium.Trigger do
   end
 
   defmodule Manual do
-    @type t :: %__MODULE__{requested_by: binary(), reason: binary()}
-    defstruct [:requested_by, :reason]
+    @type t :: %__MODULE__{requested_by: binary(), reason: binary(), payload: map()}
+    # `payload` carries force_fire's trigger data (from `trigger_ref["payload"]`).
+    defstruct [:requested_by, :reason, payload: %{}]
   end
 
   defmodule Workflow do

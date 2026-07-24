@@ -65,8 +65,7 @@ defmodule Cyclium.Strategy.Template.AgenticTask do
     payload = trigger_payload(trigger)
 
     strategy_config =
-      episode.actor_id
-      |> Loop.load_strategy_config()
+      Loop.load_strategy_config(episode.actor_id, episode.expectation_id)
       |> Map.put_new("actor_id", to_string(episode.actor_id))
       |> Loop.with_finish_tool()
       |> ensure_finish_guideline()
@@ -175,7 +174,9 @@ defmodule Cyclium.Strategy.Template.AgenticTask do
   end
 
   defp load_relevant_findings(episode_ctx) do
-    Cyclium.Findings.active_for(actor: episode_ctx.actor_id)
+    [actor: episode_ctx.actor_id]
+    |> Cyclium.Findings.active_for()
+    |> Cyclium.Findings.project_for_context()
   rescue
     _ -> []
   end
@@ -225,8 +226,18 @@ defmodule Cyclium.Strategy.Template.AgenticTask do
   defp trigger_payload(%Cyclium.Trigger.Workflow{input: input}) when is_map(input),
     do: stringify_keys(input)
 
-  defp trigger_payload(%Cyclium.Trigger.Manual{requested_by: rb, reason: reason}),
-    do: %{"requested_by" => rb, "reason" => reason}
+  defp trigger_payload(%Cyclium.Trigger.Manual{
+         payload: payload,
+         requested_by: rb,
+         reason: reason
+       }) do
+    base = %{"requested_by" => rb, "reason" => reason}
+
+    case payload do
+      p when is_map(p) and p != %{} -> Map.merge(base, stringify_keys(p))
+      _ -> base
+    end
+  end
 
   defp trigger_payload(%Cyclium.Trigger.Schedule{scheduled_at: at}),
     do: %{"scheduled_at" => at}
