@@ -6,6 +6,40 @@ All notable changes to Cyclium are recorded here. This project uses
 Entries are high-level, not exhaustive. Versions prior to `0.1.4` are
 reconstructed from git history and are summarized loosely.
 
+## [0.3.5] — 2026-08-11
+
+### Changed (behaviour)
+- **Context findings are now opt-in and scopable.** Both the `AgenticTask` and
+  `Interactive` templates previously seeded context with *every* active finding
+  for the actor — an unbounded read that, for a multi-subject actor, leaked
+  other subjects' findings into the prompt. Templates now default to
+  `context_findings: :none` and accept `:subject` (scoped to this episode's
+  subject via the `finding_config` `subject_kind`/`subject_id_key` convention)
+  or `:actor` (the previous actor-wide behaviour). A `context_findings_limit`
+  (default 50) bounds the row count.
+- **`Cyclium.Findings.active_for/2` raises on unrecognized filters** instead of
+  silently dropping them. A dropped filter returned a *superset* of what was
+  asked for — a wrong result shaped like real data.
+
+### Added
+- **Kind-only subject filter** — `active_for(subject: %{kind: "resource"})` now
+  matches all findings of a kind regardless of id, instead of falling through
+  and returning everything.
+- **`:order_by` option on `active_for/2`** (allow-listed columns:
+  `:updated_at`, `:raised_at`, `:inserted_at`). `raised_at` is the better signal
+  for context — an in-place update bumps `updated_at` without a new run.
+- **`:summary_limit` on `project_finding/2`/`project_for_context/2`**, bounding
+  `summary` length (default 500 graphemes) so context does not grow without
+  bound.
+
+### Fixed
+- **Context assembly no longer hides load failures.** The templates' bare
+  `rescue _ -> []` reported DB timeouts, missing columns, and encoding bugs as
+  "no findings" — indistinguishable from an actor that genuinely has none.
+  Failures are now logged with the actor/episode id, and the assembled context
+  carries a `findings_loaded` flag so a strategy can tell "loaded, empty" from
+  "failed to load".
+
 ## [0.3.4] — 2026-07-24
 
 ### Fixed

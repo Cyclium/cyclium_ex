@@ -157,6 +157,87 @@ defmodule Cyclium.FindingsDbTest do
     end
   end
 
+  describe "active_for filters (Gap 2)" do
+    test "kind-only subject filter matches every finding of that kind" do
+      ep = insert_episode()
+
+      {:ok, _} =
+        Findings.persist_finding(
+          {:raise, finding_params(%{subject: %{kind: "resource", id: "R-1"}})},
+          ep
+        )
+
+      {:ok, _} =
+        Findings.persist_finding(
+          {:raise, finding_params(%{subject: %{kind: "resource", id: "R-2"}})},
+          ep
+        )
+
+      {:ok, _} =
+        Findings.persist_finding(
+          {:raise, finding_params(%{subject: %{kind: "deal", id: "D-1"}})},
+          ep
+        )
+
+      resources = Findings.active_for(subject: %{kind: "resource"})
+      assert length(resources) == 2
+      assert Enum.all?(resources, &(&1.subject_kind == "resource"))
+    end
+
+    test "kind+id subject filter still narrows to one subject" do
+      ep = insert_episode()
+
+      {:ok, _} =
+        Findings.persist_finding(
+          {:raise, finding_params(%{subject: %{kind: "resource", id: "R-1"}})},
+          ep
+        )
+
+      {:ok, _} =
+        Findings.persist_finding(
+          {:raise, finding_params(%{subject: %{kind: "resource", id: "R-2"}})},
+          ep
+        )
+
+      assert [%{subject_id: "R-1"}] = Findings.active_for(subject: %{kind: "resource", id: "R-1"})
+    end
+
+    test "an unrecognized filter key raises ArgumentError naming the key" do
+      assert_raise ArgumentError, ~r/unrecognized filter :bogus/, fn ->
+        Findings.active_for(bogus: "x")
+      end
+    end
+  end
+
+  describe "active_for :order_by (Gap 4)" do
+    test "orders by raised_at when asked, distinct from updated_at ordering" do
+      key_old = "ord:old:#{System.unique_integer([:positive])}"
+      key_new = "ord:new:#{System.unique_integer([:positive])}"
+
+      now = DateTime.utc_now() |> DateTime.truncate(:second)
+      earlier = DateTime.add(now, -3600, :second)
+
+      # `old` was raised earlier but touched most recently; `new` raised later.
+      _old = insert_finding(%{finding_key: key_old, raised_at: earlier, updated_at: now})
+      _new = insert_finding(%{finding_key: key_new, raised_at: now, updated_at: earlier})
+
+      keys = fn opts ->
+        Findings.active_for([], opts) |> Enum.map(& &1.finding_key)
+      end
+
+      # Default (updated_at desc): the recently-touched old finding leads.
+      assert hd(keys.([])) == key_old
+      # raised_at desc: the more-recently-raised new finding leads.
+      assert hd(keys.(order_by: {:desc, :raised_at})) == key_new
+    end
+
+    test "rejects a non-allow-listed order column" do
+      assert_raise ArgumentError, ~r/invalid :order_by/, fn ->
+        Findings.active_for([], order_by: :summary)
+      end
+    end
+  end
+
   describe "FindingSweep.sweep_expired (DB)" do
     alias Cyclium.Findings.FindingSweep
 

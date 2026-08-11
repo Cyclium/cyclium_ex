@@ -27,13 +27,23 @@ defmodule Cyclium.Findings do
 
       Cyclium.Findings.active_for(actor: :po_status, class: "po_stalled")
       Cyclium.Findings.active_for(subject: %{kind: "po", id: "PO-1955"})
+      Cyclium.Findings.active_for(subject: %{kind: "resource"})
       Cyclium.Findings.active_for(finding_key: "po_stalled:PO-1955")
       Cyclium.Findings.active_for(class: "non_responsive")
+
+  An unrecognized filter key raises `ArgumentError` rather than being silently
+  dropped — a dropped filter returns a superset of what was asked for.
 
   ## Options
 
     * `:limit` — max rows to return
     * `:offset` — rows to skip (default: 0)
+    * `:order_by` — override the default `[desc: :updated_at]` ordering. Accepts
+      an allow-listed column (`:updated_at`, `:raised_at`, `:inserted_at`),
+      optionally as `{dir, column}` (e.g. `{:desc, :raised_at}`). `raised_at` is
+      the better signal for context: an in-place update bumps `updated_at`
+      without a new run, so "most recently touched" and "most recently found"
+      diverge.
     * `:exclude_archived` — when `true`, excludes findings with a non-nil `archived_at` (default: `false`)
     * `:env` — override the env scope (defaults to `Cyclium.Env.current()`). Pass
       a string to read another env's findings (demo/staging inspection or
@@ -42,9 +52,10 @@ defmodule Cyclium.Findings do
   def active_for(filters, opts \\ []) when is_list(filters) do
     limit = Keyword.get(opts, :limit)
     offset = Keyword.get(opts, :offset, 0)
+    {dir, column} = order_by(opts)
 
     query =
-      from(f in Finding, where: f.status == :active, order_by: [desc: f.updated_at])
+      from(f in Finding, where: f.status == :active, order_by: [{^dir, field(f, ^column)}])
       |> apply_filters(filters)
       |> maybe_exclude_archived(opts)
       |> scope_env(read_env(opts))
@@ -52,6 +63,19 @@ defmodule Cyclium.Findings do
     query = if limit, do: query |> limit(^limit) |> offset(^offset), else: query
 
     repo().all(query)
+  end
+
+  @order_columns [:updated_at, :raised_at, :inserted_at]
+
+  # Allow-listed ordering — never interpolate a caller-supplied column into an
+  # order_by unchecked. Default preserves the historical [desc: :updated_at].
+  defp order_by(opts) do
+    case Keyword.get(opts, :order_by) do
+      nil -> {:desc, :updated_at}
+      {dir, col} when dir in [:asc, :desc] and col in @order_columns -> {dir, col}
+      col when col in @order_columns -> {:desc, col}
+      other -> raise ArgumentError, "Cyclium.Findings: invalid :order_by #{inspect(other)}"
+    end
   end
 
   @doc "Count active findings matching the given filters. Accepts same opts as `active_for/2`."
@@ -81,6 +105,17 @@ defmodule Cyclium.Findings do
   # and persisting findings against it — the finding follows the episode. An
   # explicit `:env` in the raise params still wins for the rare direct case.
   defp write_env(episode), do: Map.get(episode, :source_env)
+
+  # The changes an update to an existing finding may apply: whitelisted to
+  # the mutable fields, nils rejected — an omitted field on a re-raise must
+  # not clear the stored value (and some adapters can't take a nil param
+  # over a stored value anyway).
+  defp safe_changes(changes, now, allowed) when is_map(changes) and is_list(allowed) do
+    changes
+    |> Map.take(allowed)
+    |> Map.reject(fn {_key, value} -> is_nil(value) end)
+    |> Map.put(:updated_at, now)
+  end
 
   defp get_active_by_key(repo, finding_key, env) do
     from(f in Finding, where: f.finding_key == ^finding_key and f.status == :active)
@@ -112,11 +147,29 @@ defmodule Cyclium.Findings do
     |> apply_filters(rest)
   end
 
+  # Kind-only subject filter, e.g. all findings about resources regardless of id.
+  defp apply_filters(query, [{:subject, %{kind: kind}} | rest]) do
+    kind_str = to_string(kind)
+    query |> where([f], f.subject_kind == ^kind_str) |> apply_filters(rest)
+  end
+
   defp apply_filters(query, [{:caused_by, key} | rest]) do
     query |> where([f], f.caused_by_key == ^key) |> apply_filters(rest)
   end
 
-  defp apply_filters(query, [_ | rest]), do: apply_filters(query, rest)
+  # Raise on unrecognized filters — dropping one returns a superset of what was
+  # asked for, a wrong result that looks like real data.
+  defp apply_filters(_query, [{key, _value} | _rest]) do
+    raise ArgumentError,
+          "Cyclium.Findings: unrecognized filter #{inspect(key)}. " <>
+            "Supported filters: :actor, :class, :finding_key, :subject, :caused_by."
+  end
+
+  defp apply_filters(_query, [other | _rest]) do
+    raise ArgumentError,
+          "Cyclium.Findings: malformed filter #{inspect(other)}. " <>
+            "Filters must be a keyword list of {key, value} tuples."
+  end
 
   defp maybe_exclude_archived(query, opts) do
     if Keyword.get(opts, :exclude_archived, false) do
@@ -169,6 +222,10 @@ defmodule Cyclium.Findings do
         active_for(filters, opts)
 
       prefix ->
+        # Only :actor and :finding_key are prefixed. Subject identity is not
+        # prefixed in a dry run, so :subject (and any other filter) passes
+        # through unchanged by design — this is NOT the silent-drop pattern that
+        # active_for/2's catch-all guards against.
         prefixed_filters =
           Enum.map(filters, fn
             {:actor, actor_id} -> {:actor, "#{prefix}:#{actor_id}"}
@@ -195,23 +252,51 @@ defmodule Cyclium.Findings do
   finding instead of every finding's full `evidence_refs` narrative (which can
   run to multiple KB and would otherwise ride into every episode's first prompt
   and journal row).
+
+  Accepts the same `opts` as `project_finding/2` (e.g. `:summary_limit`).
   """
-  def project_for_context(findings) when is_list(findings) do
-    Enum.map(findings, &project_finding/1)
+  def project_for_context(findings, opts \\ []) when is_list(findings) do
+    Enum.map(findings, &project_finding(&1, opts))
   end
 
-  @doc "Project a single `%Finding{}` into a compact, JSON-safe summary map."
-  def project_finding(%Finding{} = f) do
+  # Findings-context grows with every subject appraised; an unbounded summary
+  # rides into every episode's first prompt and journal row. Bound it by
+  # default; callers that need more can raise `:summary_limit`.
+  @default_summary_limit 500
+
+  @doc """
+  Project a single `%Finding{}` into a compact, JSON-safe summary map.
+
+  ## Options
+
+    * `:summary_limit` — max `summary` length in graphemes (default
+      `#{@default_summary_limit}`); longer summaries are truncated with an `…`
+      suffix. Pass `nil` to disable truncation.
+  """
+  def project_finding(%Finding{} = f, opts \\ []) do
+    limit = Keyword.get(opts, :summary_limit, @default_summary_limit)
+
     %{
       "finding_key" => f.finding_key,
       "class" => f.class,
       "status" => f.status && to_string(f.status),
       "severity" => f.severity && to_string(f.severity),
       "confidence" => f.confidence,
-      "summary" => f.summary,
+      "summary" => truncate_summary(f.summary, limit),
       "subject_kind" => f.subject_kind,
       "subject_id" => f.subject_id
     }
+  end
+
+  defp truncate_summary(summary, nil), do: summary
+  defp truncate_summary(summary, _limit) when not is_binary(summary), do: summary
+
+  defp truncate_summary(summary, limit) when is_integer(limit) and limit > 0 do
+    if String.length(summary) > limit do
+      String.slice(summary, 0, limit) <> "…"
+    else
+      summary
+    end
   end
 
   # --- Causality queries ---
@@ -312,8 +397,8 @@ defmodule Cyclium.Findings do
             repo.insert!(Finding.changeset(%Finding{}, attrs))
 
           existing ->
-            mutable =
-              Map.take(params, [
+            changes =
+              safe_changes(params, now, [
                 :class,
                 :confidence,
                 :severity,
@@ -324,8 +409,6 @@ defmodule Cyclium.Findings do
                 :subject_id,
                 :caused_by_key
               ])
-
-            changes = Map.put(mutable, :updated_at, now)
 
             repo.update!(Finding.changeset(existing, changes))
         end
@@ -350,8 +433,8 @@ defmodule Cyclium.Findings do
         {:error, :not_found}
 
       existing ->
-        allowed = [:confidence, :severity, :evidence_refs, :summary]
-        safe_changes = changes |> Map.take(allowed) |> Map.put(:updated_at, now)
+        safe_changes =
+          safe_changes(changes, now, [:confidence, :severity, :evidence_refs, :summary])
 
         case existing |> Finding.changeset(safe_changes) |> repo().update() do
           {:ok, updated} ->

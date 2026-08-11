@@ -60,4 +60,38 @@ defmodule Cyclium.Findings.ProjectForContextTest do
     assert [%{"severity" => nil, "status" => "active"}] = projected
     assert {:ok, _} = Jason.encode(projected)
   end
+
+  describe "summary bounding (Gap 5)" do
+    test "truncates an over-long summary at the default limit with an ellipsis" do
+      long = String.duplicate("a", 5_000)
+      projected = Findings.project_finding(finding(%{summary: long}))
+
+      # 500 graphemes + the "…" suffix.
+      assert String.length(projected["summary"]) == 501
+      assert String.ends_with?(projected["summary"], "…")
+    end
+
+    test "leaves a short summary untouched" do
+      projected = Findings.project_finding(finding(%{summary: "short"}))
+      assert projected["summary"] == "short"
+    end
+
+    test ":summary_limit overrides the default" do
+      projected = Findings.project_finding(finding(%{summary: "abcdefghij"}), summary_limit: 4)
+      assert projected["summary"] == "abcd…"
+    end
+
+    test ":summary_limit nil disables truncation" do
+      long = String.duplicate("a", 5_000)
+      projected = Findings.project_finding(finding(%{summary: long}), summary_limit: nil)
+      assert projected["summary"] == long
+    end
+
+    test "project_for_context threads opts through to each finding" do
+      projected =
+        Findings.project_for_context([finding(%{summary: "abcdefghij"})], summary_limit: 4)
+
+      assert [%{"summary" => "abcd…"}] = projected
+    end
+  end
 end

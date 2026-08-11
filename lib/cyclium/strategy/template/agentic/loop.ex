@@ -818,4 +818,98 @@ defmodule Cyclium.Strategy.Template.Agentic.Loop do
   rescue
     _ -> val
   end
+
+  # --- Context findings ---
+
+  @default_context_findings_limit 50
+
+  @doc """
+  Load and project the findings that seed a strategy's context, honouring the
+  `context_findings` scoping option in `strategy_config`:
+
+    * `"none"` (default) — skip the query entirely. Findings context is opt-in:
+      the actor-wide read is unbounded and, for a multi-subject actor, leaks
+      other subjects' findings into the prompt, so it must be asked for.
+    * `"subject"` — only findings whose subject matches this episode's, resolved
+      from `subject_kind` + `subject_id_key` (the `finding_config` convention)
+      against `subject_lookup` (the trigger payload / collected fields).
+    * `"actor"` — every active finding for the actor. Actor-wide: a multi-subject
+      actor sees other subjects' findings too, so prefer `"subject"` there.
+
+  `context_findings_limit` bounds the row count (default
+  #{@default_context_findings_limit}) — the safety net even for actor-scoped reads.
+
+  Returns `{:ok, projected}` or `{:error, reason}` so the caller can tell
+  "loaded, empty" from "failed to load"; a bare `rescue _ -> []` conflates them.
+  """
+  def load_context_findings(strategy_config, episode_ctx, subject_lookup \\ %{}) do
+    case context_findings_mode(strategy_config) do
+      :none ->
+        {:ok, []}
+
+      mode ->
+        with {:ok, filters} <-
+               context_findings_filters(mode, strategy_config, episode_ctx, subject_lookup) do
+          query_context_findings(filters, strategy_config)
+        end
+    end
+  end
+
+  defp query_context_findings(filters, strategy_config) do
+    findings =
+      filters
+      |> Cyclium.Findings.active_for(limit: context_findings_limit(strategy_config))
+      |> Cyclium.Findings.project_for_context()
+
+    {:ok, findings}
+  rescue
+    error -> {:error, error}
+  end
+
+  defp context_findings_mode(config) do
+    case config["context_findings"] || config[:context_findings] do
+      m when m in ["subject", :subject] -> :subject
+      m when m in ["actor", :actor] -> :actor
+      _ -> :none
+    end
+  end
+
+  defp context_findings_limit(config) do
+    case config["context_findings_limit"] || config[:context_findings_limit] do
+      n when is_integer(n) and n > 0 -> n
+      _ -> @default_context_findings_limit
+    end
+  end
+
+  defp context_findings_filters(:actor, _config, episode_ctx, _lookup) do
+    {:ok, [actor: episode_ctx.actor_id]}
+  end
+
+  defp context_findings_filters(:subject, config, episode_ctx, lookup) do
+    fc = config["finding_config"] || config[:finding_config] || config
+    subject_kind = fc["subject_kind"] || fc[:subject_kind]
+    subject_id_key = fc["subject_id_key"] || fc[:subject_id_key]
+    subject_id = subject_id_key && lookup_value(lookup, subject_id_key)
+
+    cond do
+      is_nil(subject_kind) or is_nil(subject_id_key) ->
+        {:error, {:subject_scoping_misconfigured, :missing_subject_kind_or_id_key}}
+
+      is_nil(subject_id) or subject_id == "" ->
+        {:error, {:subject_unresolved, subject_id_key}}
+
+      true ->
+        {:ok,
+         [
+           actor: episode_ctx.actor_id,
+           subject: %{kind: subject_kind, id: to_string(subject_id)}
+         ]}
+    end
+  end
+
+  defp lookup_value(map, key) when is_map(map) do
+    Map.get(map, key) || Map.get(map, safe_to_atom(key))
+  end
+
+  defp lookup_value(_map, _key), do: nil
 end

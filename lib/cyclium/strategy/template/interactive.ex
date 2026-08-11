@@ -21,6 +21,8 @@ defmodule Cyclium.Strategy.Template.Interactive do
 
   @behaviour Cyclium.EpisodeRunner.Strategy
 
+  require Logger
+
   alias Cyclium.{ConvergeResult, Conversations}
   alias Cyclium.Strategy.Template.Agentic.Loop
 
@@ -153,15 +155,16 @@ defmodule Cyclium.Strategy.Template.Interactive do
   # --- Private: Context assembly ---
 
   defp assemble_context(state, episode_ctx) do
-    findings = load_relevant_findings(state, episode_ctx)
-    prior_summaries = load_prior_episode_summaries(state)
     collected = load_collected_fields(state)
+    {findings, findings_loaded} = load_relevant_findings(state, episode_ctx, collected)
+    prior_summaries = load_prior_episode_summaries(state)
 
     %{
       message: state.message,
       principal: state.principal,
       history: state.history,
       findings: findings,
+      findings_loaded: findings_loaded,
       prior_summaries: prior_summaries,
       goal: state.goal,
       collected_fields: collected,
@@ -170,12 +173,23 @@ defmodule Cyclium.Strategy.Template.Interactive do
     }
   end
 
-  defp load_relevant_findings(_state, episode_ctx) do
-    [actor: episode_ctx.actor_id]
-    |> Cyclium.Findings.active_for()
-    |> Cyclium.Findings.project_for_context()
-  rescue
-    _ -> []
+  # Returns {findings, loaded?} so the assembled context can distinguish
+  # "loaded, empty" from "failed to load" (Gap 3). Scoping is driven by the
+  # `context_findings` config and defaults to :none. Collected fields are the
+  # subject lookup for `:subject` scoping in a conversation.
+  defp load_relevant_findings(state, episode_ctx, subject_lookup) do
+    case Loop.load_context_findings(state.strategy_config, episode_ctx, subject_lookup) do
+      {:ok, findings} ->
+        {findings, true}
+
+      {:error, reason} ->
+        Logger.warning("cyclium: context findings failed to load: #{inspect(reason)}",
+          cyclium_actor_id: episode_ctx.actor_id,
+          cyclium_episode_id: episode_ctx.episode_id
+        )
+
+        {[], false}
+    end
   end
 
   defp load_prior_episode_summaries(%{conversation_id: nil}), do: []
@@ -191,7 +205,15 @@ defmodule Cyclium.Strategy.Template.Interactive do
     )
     |> Cyclium.repo().all()
   rescue
-    _ -> []
+    error ->
+      # Narrowed from a silent `[] ` — a failed load is logged, not mistaken for
+      # "no prior summaries" (Gap 3). Still degrades to [] so the turn proceeds.
+      Logger.warning(
+        "cyclium: prior episode summaries failed to load: #{inspect(error)}",
+        cyclium_conversation_id: conv_id
+      )
+
+      []
   end
 
   defp load_collected_fields(%{conversation: nil}), do: %{}

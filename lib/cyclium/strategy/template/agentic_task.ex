@@ -55,6 +55,8 @@ defmodule Cyclium.Strategy.Template.AgenticTask do
 
   @behaviour Cyclium.EpisodeRunner.Strategy
 
+  require Logger
+
   alias Cyclium.ConvergeResult
   alias Cyclium.Strategy.Template.Agentic.Loop
 
@@ -165,20 +167,33 @@ defmodule Cyclium.Strategy.Template.AgenticTask do
   # --- Context assembly ---
 
   defp assemble_context(state, episode_ctx) do
+    {findings, findings_loaded} = load_relevant_findings(state, episode_ctx)
+
     %{
       objective: state.message,
       payload: state.payload,
-      findings: load_relevant_findings(episode_ctx),
+      findings: findings,
+      findings_loaded: findings_loaded,
       actor_id: episode_ctx.actor_id
     }
   end
 
-  defp load_relevant_findings(episode_ctx) do
-    [actor: episode_ctx.actor_id]
-    |> Cyclium.Findings.active_for()
-    |> Cyclium.Findings.project_for_context()
-  rescue
-    _ -> []
+  # Returns {findings, loaded?} so the assembled context can distinguish
+  # "loaded, empty" from "failed to load" (Gap 3). Scoping is driven by the
+  # `context_findings` config and defaults to :none — see `Loop.load_context_findings/3`.
+  defp load_relevant_findings(state, episode_ctx) do
+    case Loop.load_context_findings(state.strategy_config, episode_ctx, state.payload || %{}) do
+      {:ok, findings} ->
+        {findings, true}
+
+      {:error, reason} ->
+        Logger.warning("cyclium: context findings failed to load: #{inspect(reason)}",
+          cyclium_actor_id: episode_ctx.actor_id,
+          cyclium_episode_id: episode_ctx.episode_id
+        )
+
+        {[], false}
+    end
   end
 
   # --- Objective interpolation ---
