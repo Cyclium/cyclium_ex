@@ -207,6 +207,24 @@ defmodule Cyclium.FindingsDbTest do
         Findings.active_for(bogus: "x")
       end
     end
+
+    test "reserved option keys passed inline with filters are routed to opts, not raised" do
+      ep = insert_episode()
+      key = "inline:opt:#{System.unique_integer([:positive])}"
+
+      for _ <- 1..3 do
+        {:ok, _} =
+          Findings.persist_finding(
+            {:raise,
+             finding_params(%{finding_key: key, subject: %{kind: "resource", id: "R-1"}})},
+            ep
+          )
+      end
+
+      # Single keyword list — Elixir folds `limit: 1` into the filters arg. It
+      # must be treated as an option (and actually applied), not a filter.
+      assert [_] = Findings.active_for(subject: %{kind: "resource"}, limit: 1)
+    end
   end
 
   describe "active_for :order_by (Gap 4)" do

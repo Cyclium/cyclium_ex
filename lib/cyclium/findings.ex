@@ -32,7 +32,11 @@ defmodule Cyclium.Findings do
       Cyclium.Findings.active_for(class: "non_responsive")
 
   An unrecognized filter key raises `ArgumentError` rather than being silently
-  dropped — a dropped filter returns a superset of what was asked for.
+  dropped — a dropped filter returns a superset of what was asked for. Reserved
+  option keys (`:limit`, `:offset`, `:order_by`, `:env`, `:exclude_archived`) are
+  the exception: they are accepted in the filter list too, so
+  `active_for(finding_key: k, limit: 1)` works despite Elixir folding the
+  trailing keywords into one argument.
 
   ## Options
 
@@ -50,6 +54,7 @@ defmodule Cyclium.Findings do
       backfill), or `nil` to target the unset/default env explicitly.
   """
   def active_for(filters, opts \\ []) when is_list(filters) do
+    {filters, opts} = split_reserved_opts(filters, opts)
     limit = Keyword.get(opts, :limit)
     offset = Keyword.get(opts, :offset, 0)
     {dir, column} = order_by(opts)
@@ -80,11 +85,28 @@ defmodule Cyclium.Findings do
 
   @doc "Count active findings matching the given filters. Accepts same opts as `active_for/2`."
   def count_active(filters \\ [], opts \\ []) when is_list(filters) do
+    {filters, opts} = split_reserved_opts(filters, opts)
+
     from(f in Finding, where: f.status == :active, select: count(f.id))
     |> apply_filters(filters)
     |> maybe_exclude_archived(opts)
     |> scope_env(read_env(opts))
     |> repo().one()
+  end
+
+  # Option keys are reserved and never treated as filters. Because Elixir folds a
+  # trailing keyword list into one argument, `active_for(finding_key: k, limit: 1)`
+  # passes limit *inside* filters — so route reserved keys back to opts rather
+  # than letting apply_filters raise on them. An explicit opts arg still wins.
+  @reserved_opts [:limit, :offset, :order_by, :env, :exclude_archived]
+
+  defp split_reserved_opts(filters, opts) when is_list(filters) do
+    if Keyword.keyword?(filters) do
+      {reserved, real_filters} = Keyword.split(filters, @reserved_opts)
+      {real_filters, Keyword.merge(reserved, opts)}
+    else
+      {filters, opts}
+    end
   end
 
   # Cordon reads/writes to an env (see Cyclium.Env). Strict equality: a NULL env

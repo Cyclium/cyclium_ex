@@ -6,6 +6,19 @@ All notable changes to Cyclium are recorded here. This project uses
 Entries are high-level, not exhaustive. Versions prior to `0.1.4` are
 reconstructed from git history and are summarized loosely.
 
+## [0.3.6] — 2026-08-12
+
+### Fixed
+- **`active_for/2` no longer raises when option keys ride in the filter list.**
+  Elixir folds a trailing keyword list into a single argument, so
+  `active_for(finding_key: k, limit: 1)` passes `:limit` *inside* filters — which
+  0.3.5's unrecognized-filter guard turned into a runtime `ArgumentError`. The
+  reserved option keys (`:limit`, `:offset`, `:order_by`, `:env`,
+  `:exclude_archived`) are now routed back to opts wherever they appear, so such
+  calls work and the `limit` is actually applied (in 0.3.5 and earlier it was
+  silently dropped and never took effect). Genuinely unknown filter keys still
+  raise.
+
 ## [0.3.5] — 2026-08-11
 
 ### Changed (behaviour)
