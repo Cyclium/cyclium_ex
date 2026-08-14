@@ -1332,14 +1332,23 @@ defmodule Cyclium.EpisodeRunner do
   defp transient_db_error?(%{__struct__: Tds.Error}), do: true
   defp transient_db_error?(_), do: false
 
-  # SQL Server's Tds driver truncates an nvarchar parameter at ~4000 bytes
-  # (~2000 UTF-16 chars) *before* it reaches an nvarchar(max) column, silently
-  # corrupting a larger JSON `:map` value so it fails to JSON-decode on read —
-  # which crashes every reader of the row (the runner's post-converge AND any UI
-  # building a transcript). Keep stored `:map` fields under that boundary. The
-  # full assistant reply still lives on `episode.summary`; these step `:map`
-  # fields are supplementary, so truncating them is safe.
-  @map_field_max_chars 1_800
+  # Runaway guard on the JSON size of a stored step `:map` (args_redacted /
+  # result_ref / error_detail) — NOT a driver hard limit. The columns are
+  # `nvarchar(max)` and Tds (2.3.x) PLP-chunks any nvarchar parameter whose
+  # UTF-16 form exceeds 8000 bytes, so larger values round-trip intact — the
+  # earlier "~4000-byte driver truncation" was a misdiagnosis of this app-level
+  # cap firing (verified against Tds.Types.encode_data/3, which routes
+  # `value_size > 8000` through encode_plp/1). The true ceiling is the
+  # `nvarchar(max)`/PLP limit of 2 GB (~1.07e9 UTF-16 chars); we deliberately
+  # stop far short because every reader of the row (post-converge AND transcript
+  # rebuild) JSON-decodes it into memory, so an unbounded blob is a read-cost
+  # risk, not a correctness one. At 1_000_000 (~2 MB/field) every realistic
+  # approval plan and tool result survives journaling — enough to be resumed and
+  # rebuilt into a transcript — while a pathological payload still degrades to a
+  # visible `_truncated` marker instead of wedging readers. Full-fidelity
+  # storage for the pathological case (chunk-and-reassemble, or an out-of-row
+  # blob) remains the longer-term fix.
+  @map_field_max_chars 1_000_000
 
   defp cap_stored_map(nil), do: nil
 
@@ -1455,7 +1464,7 @@ defmodule Cyclium.EpisodeRunner do
 
   defp redact_synthesis_args(nil), do: nil
 
-  defp redact_synthesis_args(args) when is_map(args) do
+  defp redact_synthesis_args(args) when is_map(args) and not is_struct(args) do
     Enum.reduce(args, args, fn {k, _v}, acc ->
       key_str = to_string(k)
 
@@ -1463,18 +1472,20 @@ defmodule Cyclium.EpisodeRunner do
         Map.put(acc, k, "[REDACTED]")
       else
         case Map.get(acc, k) do
-          v when is_map(v) -> Map.put(acc, k, redact_synthesis_args(v))
+          v when is_map(v) and not is_struct(v) -> Map.put(acc, k, redact_synthesis_args(v))
           _ -> acc
         end
       end
     end)
   end
 
+  # Structs (e.g. Cyclium.Intent.GoalSpec) are maps but don't implement
+  # Enumerable, so they must not be walked with Enum.reduce — pass through.
   defp redact_synthesis_args(args), do: args
 
   defp summarize_result(nil), do: nil
 
-  defp summarize_result(result) when is_map(result) do
+  defp summarize_result(result) when is_map(result) and not is_struct(result) do
     # Keep scalar values and counts, drop nested data
     result
     |> Enum.reduce(%{}, fn

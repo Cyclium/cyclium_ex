@@ -188,6 +188,44 @@ config (`config :cyclium, :finding_enrichment`) is supported as a fallback.
 Outputs are typed proposals produced during converge. They flow through the
 **Output Router**, which deduplicates and delivers through app-provided adapters.
 
+### Outputs vs tool calls
+
+In an agentic or interactive loop a plan resolves to one of a few outcomes. Two
+of them can both "do something," but they sit on different sides of the
+application boundary — that boundary, not preview-vs-commit, is the distinction:
+
+- `{:tool_call, tool, action, args}` — an action **within the application's own
+  domain**: reads, and writes that create/update/save first-class records the
+  app owns. A commit is still a tool call — persisting a record, saving an
+  artifact, mutating state all live here, whether or not the result is
+  user-facing. Journaled as a `tool_call`, routed through the tool registry
+  (signatures, redaction, caching); gated by the tool signature's `side_effect`
+  class in `allowed_tool_signatures` (`write` / `external_effect` are previewed).
+  Repeatable and non-terminal — the loop continues — and the effect happens
+  inside the tool's `call/3`, so a host can react to it live.
+- `{:output, type, payload}` — a deliverable that **leaves the application**:
+  something handed to an external destination or audience through an
+  `output_adapter` (email, notification, webhook, a message to another system).
+  It travels the `output_proposed → output_delivered | output_failed` lifecycle
+  and is deduplicated by `dedupe_key` to prevent double-*delivery*. It is the
+  episode's outward-facing result, typically emitted at or near converge.
+
+Choosing between them:
+
+- **Does the effect stay inside the app's domain, or cross out of it?** Creating
+  or saving a record the app owns → tool call (even for a final commit).
+  Delivering something to an external destination/audience → output.
+- **Needs adapter delivery, or dedup against double-send?** → output.
+- **A read, an idempotent refresh, or an interim in-app effect?** → tool call.
+  An interim render and its later committed save are *both* tool calls — the
+  save is an in-domain write, not an output.
+
+Don't reach for an output merely to get an approval step, and don't reach for
+one just because something is being "committed": a side-effecting tool with a
+`write` signature is *already* gated (see `Cyclium.Tool`'s `side_effect?/0` note
+on how gating is actually decided), and an in-app save is a tool call. Reach for
+an output when the result genuinely leaves the application.
+
 Deduplication keys off `cyclium_outputs.dedupe_key`, which only prevents
 double-delivery if the key is **stable across re-runs** of the same work
 (recovery restart, a stolen-lease re-run). There are two ways to supply it:

@@ -1,10 +1,14 @@
 defmodule Cyclium.JournalMapCapDbTest do
   @moduledoc """
-  A journaled step's `:map` fields must stay under the Tds nvarchar parameter
-  boundary (~4000 bytes / ~2000 UTF-16 chars). Past it, SQL Server silently
-  truncates the value before it reaches the nvarchar(max) column, so it fails to
-  JSON-decode on read and crashes every reader of the row. (SQLite doesn't
-  truncate, so this asserts the cyclium-side cap shrinks the value.)
+  A journaled step's `:map` fields (`args_redacted` / `result_ref` /
+  `error_detail`) are bounded by a runaway guard (`@map_field_max_chars`,
+  1,000,000 chars) before insert. This is NOT a driver limit — the columns are
+  `nvarchar(max)` and Tds PLP-chunks oversized parameters, so large JSON
+  round-trips intact — it only stops a pathological blob from wedging every
+  reader of the row. A value past the guard degrades to a `%{"_truncated" =>
+  true}` marker rather than being stored, and struct leaves (e.g. `DateTime`) in
+  the walked map are treated as opaque leaves so capping never calls
+  `Enum.reduce` on a non-Enumerable struct.
   """
   use Cyclium.DataCase
 
@@ -12,6 +16,10 @@ defmodule Cyclium.JournalMapCapDbTest do
 
   alias Cyclium.{ConvergeResult, EpisodeRunner}
   alias Cyclium.Schemas.EpisodeStep
+
+  # Must match @map_field_max_chars in Cyclium.EpisodeRunner. A stored :map's
+  # JSON stays within this (plus the marker wrapper's small overhead).
+  @cap 1_000_000
 
   defmodule BigSummaryStrategy do
     @behaviour Cyclium.EpisodeRunner.Strategy
@@ -31,9 +39,10 @@ defmodule Cyclium.JournalMapCapDbTest do
        %ConvergeResult{
          classification: %{"primary" => "explain_only"},
          confidence: 1.0,
-         # Far past the ~2000-char boundary — the episode_completed step's
-         # result_ref carries this summary, so it must be capped before insert.
-         summary: String.duplicate("abcde ", 1_000),
+         # Far past the 1,000,000-char guard (~1.2M chars) — the
+         # episode_completed step's result_ref carries this summary, so it must
+         # be capped before insert.
+         summary: String.duplicate("abcde ", 200_000),
          findings: [],
          outputs: []
        }}
@@ -48,11 +57,12 @@ defmodule Cyclium.JournalMapCapDbTest do
 
     @impl true
     def next_step(%{observed: false}, _ctx) do
-      # An oversized result_ref whose values include structs (DateTime) — structs
-      # are maps but not Enumerable, so the cap must treat them as leaves.
+      # An oversized result_ref (past the 1,000,000-char guard) whose values
+      # include structs (DateTime) — structs are maps but not Enumerable, so the
+      # cap must treat them as leaves while walking the map to truncate it.
       {:observe,
        %{
-         "blob" => String.duplicate("z", 6_000),
+         "blob" => String.duplicate("z", 1_001_000),
          "ts" => DateTime.utc_now(),
          "nested" => %{"when" => DateTime.utc_now(), "label" => "x"}
        }}
@@ -93,11 +103,11 @@ defmodule Cyclium.JournalMapCapDbTest do
       |> Repo.all()
 
     for step <- steps, not is_nil(step.result_ref) do
-      assert step.result_ref |> Jason.encode!() |> String.length() <= 1_900
+      assert step.result_ref |> Jason.encode!() |> String.length() <= @cap + 100
     end
   end
 
-  test "journaled :map fields are capped under the Tds nvarchar boundary" do
+  test "journaled :map fields are capped under the runaway guard" do
     episode =
       insert_episode(%{
         actor_id: "cap_actor",
@@ -114,7 +124,7 @@ defmodule Cyclium.JournalMapCapDbTest do
 
     # Every stored :map reads back as valid JSON and within the cap.
     for step <- steps, not is_nil(step.result_ref) do
-      assert step.result_ref |> Jason.encode!() |> String.length() <= 1_900
+      assert step.result_ref |> Jason.encode!() |> String.length() <= @cap + 100
     end
 
     # The oversized completion result_ref degraded to the truncation marker
@@ -122,6 +132,6 @@ defmodule Cyclium.JournalMapCapDbTest do
     assert Enum.any?(steps, &(is_map(&1.result_ref) and &1.result_ref["_truncated"] == true))
 
     # The full reply is preserved on the episode itself, not the capped step.
-    assert String.length(Cyclium.Episodes.get!(episode.id).summary) > 4_000
+    assert String.length(Cyclium.Episodes.get!(episode.id).summary) > @cap
   end
 end

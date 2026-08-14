@@ -21,8 +21,7 @@ defmodule Cyclium.Schemas.EpisodeStep do
     :finding_updated,
     :finding_cleared,
     :episode_completed,
-    :episode_failed,
-    :plan_preview
+    :episode_failed
   ]
 
   @type t :: %__MODULE__{}

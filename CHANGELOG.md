@@ -6,6 +6,51 @@ All notable changes to Cyclium are recorded here. This project uses
 Entries are high-level, not exhaustive. Versions prior to `0.1.4` are
 reconstructed from git history and are summarized loosely.
 
+## [0.3.7] — 2026-08-14
+
+### Fixed
+- **`:full_debug`/`:timeline` step logging no longer crashes on synthesis args
+  containing structs.** `redact_synthesis_args/1` (and `summarize_result/1`)
+  guarded on `is_map/1`, which is also true for structs, then walked the value
+  with `Enum.reduce`. A synthesis payload holding a struct such as
+  `Cyclium.Intent.GoalSpec` therefore raised `protocol Enumerable not
+  implemented for Cyclium.Intent.GoalSpec` on every turn. Both the top-level
+  clauses and the nested recursion now guard on `is_map(x) and not
+  is_struct(x)`, so structs pass through untouched while plain-map redaction and
+  summarization are unchanged.
+
+### Changed
+- **Stored step `:map` cap raised from 1,800 to 1,000,000 chars.** The old cap
+  was justified by a supposed "~4000-byte Tds nvarchar truncation"; that was a
+  misdiagnosis — the `args_redacted` / `result_ref` / `error_detail` columns are
+  `nvarchar(max)` and Tds 2.3.x PLP-chunks any oversized nvarchar parameter, so
+  large JSON round-trips intact (verified against `Tds.Types.encode_data/3`).
+  The 1,800 cap was silently truncating approval-plan args — breaking
+  `resume_from_block` / `latest_approval` into an infinite re-plan loop — and
+  large tool payloads in rebuilt transcripts. The cap is now purely a runaway
+  guard against pathological multi-MB blobs (readers JSON-decode these rows into
+  memory); every realistic payload now survives journaling. Fully lossless
+  storage for the pathological case (chunk-and-reassemble / out-of-row blob)
+  remains future work.
+
+### Removed
+- **Dropped the unused `:plan_preview` step kind** from the `EpisodeStep` enum.
+  It had no producer or consumer anywhere in the runtime and was omitted from
+  the documented kind list; removing it leaves 16 kinds. The `kind` column is a
+  plain string, so no migration is required.
+
+### Documentation
+- **`Cyclium.Tool.side_effect?/0` documented as advisory.** Added a `@doc`
+  clarifying that this callback does **not** drive the approval gate — gating is
+  decided by the strategy's `allowed_tool_signatures` `side_effect` class — so
+  setting `side_effect?/0 => true` alone will not gate a write tool.
+- **Added an "Outputs vs tool calls" section** to `guides/findings_and_outputs.md`
+  covering when a strategy should emit `{:output, type, payload}` versus
+  `{:tool_call, …}`. The distinction is the application boundary, not
+  preview-vs-commit: outputs are deliverables that leave the app (delivered
+  through an adapter, deduped against double-send), while tool calls are actions
+  within the app's own domain — reads and in-domain writes/saves alike.
+
 ## [0.3.6] — 2026-08-12
 
 ### Fixed

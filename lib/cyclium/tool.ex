@@ -22,6 +22,16 @@ defmodule Cyclium.Tool do
 
   @callback redact_result(result :: term()) :: term()
 
+  @doc """
+  Advisory declaration of whether the tool mutates state. **This does not drive
+  the approval gate.** Whether a planned call is gated for human preview is
+  decided by the strategy's `allowed_tool_signatures` (the `side_effect` class
+  — `"write"` / `"external_effect"` — matched by `Cyclium.Intent.SignatureMatcher`),
+  not by this callback, which the runtime never reads at gate time. Setting
+  `side_effect?/0 => true` alone will NOT gate a write tool; declare the effect
+  in the signature the strategy allows. Keep the two consistent — treat this as
+  the human-readable intent and let a test cross-check it against the signature.
+  """
   @callback side_effect?() :: boolean()
 
   @callback cache_ttl() :: non_neg_integer() | :no_cache
