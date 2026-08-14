@@ -11,12 +11,30 @@ defmodule Cyclium.FakeRepo do
         on_exit(fn -> Application.delete_env(:cyclium, :repo) end)
         :ok
       end
+
+  `start_link/1` is idempotent and resets state each call, so it is safe to call
+  from every test's `setup`. It is a process-independent singleton (started with
+  `Agent.start`, not linked to the calling test) to avoid a teardown race: with a
+  linked Agent, a just-finished `async: false` test's process exit would tear the
+  named Agent down concurrently with the next test's `setup`, yielding
+  `{:error, {:already_started, <dying pid>}}` (rare locally, frequent under CI
+  parallelism). As an unlinked singleton it persists for the whole run and each
+  `setup` just resets it to a clean state.
   """
 
   use Agent
 
+  @fresh %{records: [], next_id: 1}
+
   def start_link(_opts \\ []) do
-    Agent.start_link(fn -> %{records: [], next_id: 1} end, name: __MODULE__)
+    case Agent.start(fn -> @fresh end, name: __MODULE__) do
+      {:ok, pid} ->
+        {:ok, pid}
+
+      {:error, {:already_started, pid}} ->
+        Agent.update(pid, fn _ -> @fresh end)
+        {:ok, pid}
+    end
   end
 
   def insert(changeset, _opts \\ []) do
