@@ -62,6 +62,57 @@ defmodule Cyclium.CheckpointSchemaTest do
     end
   end
 
+  describe "json_plain?/1" do
+    test "true for JSON-plain state (string keys, scalars, nested lists/maps)" do
+      assert Cyclium.CheckpointSchema.json_plain?(%{
+               "phase" => "collecting",
+               "count" => 3,
+               "done" => false,
+               "items" => [%{"id" => "a"}, %{"id" => "b"}]
+             })
+    end
+
+    test "true for empty map and primitives" do
+      assert Cyclium.CheckpointSchema.json_plain?(%{})
+      assert Cyclium.CheckpointSchema.json_plain?("hello")
+      assert Cyclium.CheckpointSchema.json_plain?(42)
+    end
+
+    test "false for atom keys (they don't round-trip — become strings)" do
+      refute Cyclium.CheckpointSchema.json_plain?(%{phase: "collecting"})
+    end
+
+    test "false for atom values (become strings on decode)" do
+      refute Cyclium.CheckpointSchema.json_plain?(%{"phase" => :collecting})
+    end
+
+    test "false for tuples (not JSON-encodable at all)" do
+      refute Cyclium.CheckpointSchema.json_plain?(%{"range" => {1, 2}})
+    end
+
+    test "false for a struct value" do
+      refute Cyclium.CheckpointSchema.json_plain?(%{"at" => ~D[2026-08-24]})
+    end
+  end
+
+  describe "assert_json_plain!/1" do
+    test "returns :ok for JSON-plain state" do
+      assert Cyclium.CheckpointSchema.assert_json_plain!(%{"phase" => "x"}) == :ok
+    end
+
+    test "raises with a shape-changed message when it encodes but doesn't round-trip" do
+      assert_raise ArgumentError, ~r/does not round-trip/, fn ->
+        Cyclium.CheckpointSchema.assert_json_plain!(%{phase: "collecting"})
+      end
+    end
+
+    test "raises with a not-encodable message for tuples/structs" do
+      assert_raise ArgumentError, ~r/not JSON-encodable/, fn ->
+        Cyclium.CheckpointSchema.assert_json_plain!(%{"range" => {1, 2}})
+      end
+    end
+  end
+
   describe "resolve/2" do
     setup do
       on_exit(fn ->

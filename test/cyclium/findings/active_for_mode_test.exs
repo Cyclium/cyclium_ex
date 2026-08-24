@@ -4,10 +4,9 @@ defmodule Cyclium.Findings.ActiveForModeTest do
   alias Cyclium.Findings
 
   setup do
-    case Cyclium.FakeRepo.start_link() do
-      {:ok, _} -> :ok
-      {:error, {:already_started, _}} -> :ok
-    end
+    # FakeRepo.start_link/0 resets and returns {:ok, pid} whether or not the
+    # Agent was already started, so match the contract assertively.
+    {:ok, _} = Cyclium.FakeRepo.start_link()
 
     Application.put_env(:cyclium, :repo, Cyclium.FakeRepo)
     on_exit(fn -> Application.delete_env(:cyclium, :repo) end)

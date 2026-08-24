@@ -1085,9 +1085,26 @@ defmodule Cyclium.EpisodeRunner do
   # `llm` span for LLM observability: duration, input/output/total token usage,
   # the model, and the ids to correlate (episode + conversation/session).
   defp emit_synthesis(%Episode{} = episode, result, started_ms) do
-    usage = result[:usage] || result["usage"] || %{}
+    raw_usage = result[:usage] || result["usage"]
+    usage = raw_usage || %{}
     input = usage[:input_tokens] || usage["input_tokens"] || 0
     output = usage[:output_tokens] || usage["output_tokens"] || 0
+    model = result[:model] || result["model"]
+
+    # A missing `usage` key reads as zero tokens everywhere downstream (budget
+    # enforcement, telemetry-based cost accounting) and is indistinguishable
+    # from a genuinely free/non-API synthesis. When the result names a model it *was*
+    # an API call that should have reported usage — surface the omission rather
+    # than silently undercounting. `usage_reported` in the telemetry metadata
+    # lets consumers separate zero-because-missing from zero-because-free.
+    if is_nil(raw_usage) and not is_nil(model) do
+      Logger.warning(
+        "[Cyclium.EpisodeRunner] synthesis result for actor #{episode.actor_id} " <>
+          "(model #{inspect(model)}) omitted :usage — token cost recorded as zero, so " <>
+          "budgets and telemetry will undercount. Synthesizers should return a " <>
+          "usage map with :input_tokens/:output_tokens."
+      )
+    end
 
     :telemetry.execute(
       [:cyclium, :step, :synthesis],
@@ -1102,7 +1119,8 @@ defmodule Cyclium.EpisodeRunner do
         episode_id: episode.id,
         actor_id: episode.actor_id,
         conversation_id: episode.conversation_id,
-        model: result[:model] || result["model"]
+        model: model,
+        usage_reported: not is_nil(raw_usage)
       }
     )
   end
@@ -1200,6 +1218,23 @@ defmodule Cyclium.EpisodeRunner do
         "[Cyclium.EpisodeRunner] Failed to checkpoint episode #{episode.id} at phase " <>
           "#{inspect(phase_name)}: #{Exception.message(e)}. Continuing without a checkpoint — " <>
           "resume will re-init from the trigger."
+      )
+
+      # Make the dropped checkpoint observable, not just log-visible. A spike here
+      # means a strategy is stashing state that can't be persisted (commonly a
+      # value that doesn't survive a JSON round-trip — see
+      # `Cyclium.CheckpointSchema.json_plain?/1`), so resume silently falls back
+      # to a fresh init instead of restoring progress.
+      :telemetry.execute(
+        [:cyclium, :checkpoint, :save_failed],
+        %{count: 1},
+        %{
+          episode_id: episode.id,
+          actor_id: episode.actor_id,
+          expectation_id: episode.expectation_id,
+          phase: phase_name,
+          error_class: e.__struct__
+        }
       )
 
       :ok

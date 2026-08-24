@@ -123,6 +123,58 @@ defmodule Cyclium.CheckpointSchema do
   defp to_existing_atom(value) when is_atom(value), do: {:ok, value}
   defp to_existing_atom(value) when is_binary(value), do: Cyclium.AtomGuard.existing_atom(value)
 
+  @doc """
+  True when `state` survives a JSON round-trip unchanged — the constraint every
+  checkpoint state must satisfy.
+
+  `save_checkpoint` persists state into a `:map` (nvarchar(max)) column, so the
+  Ecto/TDS adapter `Jason.encode!`s it on write and the restore path
+  `Jason.decode!`s it on read. Values that encode but don't *round-trip* are the
+  quiet trap: atom keys and atom values become strings, tuples fail to encode at
+  all, and structs either crash or lose their identity. Because `init/2` is not
+  re-run on resume, a state that silently changed shape comes back subtly wrong.
+
+  Use this (or `assert_json_plain!/1`) in a strategy's checkpoint test to guard
+  the constraint at the source rather than discovering it after a resume.
+
+      test "checkpoint state stays JSON-plain" do
+        assert Cyclium.CheckpointSchema.json_plain?(MyStrategy.initial_state())
+      end
+  """
+  @spec json_plain?(term()) :: boolean()
+  def json_plain?(state) do
+    case Jason.encode(state) do
+      {:ok, json} -> Jason.decode(json) == {:ok, state}
+      {:error, _} -> false
+    end
+  end
+
+  @doc """
+  Raises `ArgumentError` unless `state` survives a JSON round-trip unchanged.
+  The bang companion to `json_plain?/1`, for use as a test assertion.
+  """
+  @spec assert_json_plain!(term()) :: :ok
+  def assert_json_plain!(state) do
+    case Jason.encode(state) do
+      {:ok, json} ->
+        case Jason.decode(json) do
+          {:ok, ^state} ->
+            :ok
+
+          {:ok, decoded} ->
+            raise ArgumentError,
+                  "checkpoint state encodes but does not round-trip — it changed shape " <>
+                    "through JSON (atom keys/values become strings, etc.).\n" <>
+                    "  before: #{inspect(state)}\n  after:  #{inspect(decoded)}"
+        end
+
+      {:error, e} ->
+        raise ArgumentError,
+              "checkpoint state is not JSON-encodable (tuples/structs are common culprits): " <>
+                Exception.message(e)
+    end
+  end
+
   @doc false
   def chain_migrate(_module, version, version, state), do: {:ok, state}
 

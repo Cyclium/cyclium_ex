@@ -6,6 +6,43 @@ All notable changes to Cyclium are recorded here. This project uses
 Entries are high-level, not exhaustive. Versions prior to `0.1.4` are
 reconstructed from git history and are summarized loosely.
 
+## [0.4.0] — 2026-08-24
+
+### Fixed
+- **`cyclium_conversations` JSON columns widened to `nvarchar(max)` (migration
+  `V26`).** `goal`, `origin`, `audience_target`, `result` and `collected_fields`
+  are all written as `Jason.encode!` output but `V15` created them as bare
+  `:string` — `nvarchar(255)` under TDS. Any real JSON payload (a filtered page
+  context is ~300 chars) overflows and SQL Server raises 8152, which surfaces as
+  a *raise* from `Repo.update` rather than a changeset error, killing the caller.
+  `V26` `modify`s the five columns to `size: :max`, matching the `nvarchar(max)`
+  the episode tables already use for JSON of unknown size. `principal` is
+  deliberately excluded — a host app may define PERSISTED computed columns over
+  it, and SQL Server refuses to alter a column a computed column references.
+- **`Cyclium.Conversations.update_collected_fields/2` honours its
+  `{:ok, _} | {:error, _}` contract for driver-level failures too**, not just
+  changeset ones. `Repo.update/1` raises on a raw adapter error (Ecto doesn't
+  wrap those), so a caller that only handled `{:error, _}` was still killed. The
+  update now rescues, logs loudly, and returns `{:error, exception}`.
+
+### Added
+- **`Cyclium.CheckpointSchema.json_plain?/1` and `assert_json_plain!/1`.** A
+  checkpoint's state is persisted through a JSON round-trip; values that *encode*
+  but don't *round-trip* (atom keys/values → strings, tuples/structs failing
+  outright) come back subtly wrong on resume because `init/2` is not re-run.
+  These helpers let a strategy's checkpoint test assert the JSON-plain constraint
+  at the source instead of discovering it after a bad resume.
+- **`[:cyclium, :checkpoint, :save_failed]` telemetry.** `save_checkpoint`
+  already logged loudly and continued when state couldn't be persisted; it now
+  also emits telemetry (with `actor_id`, `expectation_id`, `phase`,
+  `error_class`) so a dropped checkpoint is observable/alertable, not just
+  log-visible. A spike means resume is silently falling back to a fresh init.
+- **`usage_reported` in `[:cyclium, :step, :synthesis]` telemetry metadata**, and
+  a warning when a synthesis result that names a model omits its `usage` key. A
+  missing `usage` read as zero tokens everywhere downstream (budgets, cost
+  accounting), indistinguishable from a genuinely free synthesis; the omission is
+  now visible rather than silently undercounted.
+
 ## [0.3.7] — 2026-08-14
 
 ### Fixed

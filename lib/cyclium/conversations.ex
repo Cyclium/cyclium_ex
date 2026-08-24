@@ -247,8 +247,27 @@ defmodule Cyclium.Conversations do
 
         conv
         |> Conversation.changeset(%{collected_fields: encode_json(merged)})
-        |> Cyclium.repo().update()
+        |> update_conversation()
     end
+  end
+
+  # Honour the documented `{:ok, _} | {:error, _}` contract for *driver-level*
+  # failures too, not just changeset ones. `Repo.update/1` raises on a DB error
+  # (e.g. an adapter truncation before this column was widened, or a connection
+  # blip) — Ecto does not wrap raw driver exceptions, so a caller that only
+  # handles `{:error, _}` is still killed. Convert such a raise into an error
+  # tuple so the contract holds end to end, and log loudly so a genuine bug
+  # surfacing as an exception here is still visible rather than swallowed.
+  defp update_conversation(changeset) do
+    Cyclium.repo().update(changeset)
+  rescue
+    e ->
+      Logger.warning(
+        "[Cyclium.Conversations] update raised at the driver layer: " <>
+          "#{Exception.message(e)}. Returning {:error, _} to honour the update contract."
+      )
+
+      {:error, e}
   end
 
   # --- Increment turn ---
