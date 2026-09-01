@@ -200,8 +200,6 @@ defmodule Cyclium.Mode do
     end
   end
 
-  defp safe_to_atom(value) when is_atom(value), do: value
-
   defp safe_to_atom(value) when is_binary(value) do
     String.to_existing_atom(value)
   rescue

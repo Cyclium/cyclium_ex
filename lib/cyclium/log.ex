@@ -14,8 +14,6 @@ defmodule Cyclium.Log do
       # Metadata persists for all Logger calls in the process.
   """
 
-  require Logger
-
   @context_keys [
     :cyclium_actor_id,
     :cyclium_episode_id,

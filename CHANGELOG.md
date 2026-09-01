@@ -6,6 +6,26 @@ All notable changes to Cyclium are recorded here. This project uses
 Entries are high-level, not exhaustive. Versions prior to `0.1.4` are
 reconstructed from git history and are summarized loosely.
 
+## [0.4.1] — 2026-09-01
+
+### Changed
+- **Compiler warning cleanup — no behavioral change.** Removed dead clauses and
+  redundant code the Elixir 1.18 type checker flagged as unreachable, so the tree
+  compiles clean under `--warnings-as-errors`:
+  - `Cyclium.Intent.PlanValidator.validate_fields/2` — dropped the catch-all;
+    `validate_kind/1` already constrains `kind` to the handled set.
+  - `Cyclium.Log` — dropped the unused `require Logger` (only `Logger.metadata/1`,
+    a function, is called).
+  - `Cyclium.LogProjector` — dropped the unreachable `max_step_no([])` clause (its
+    caller is guarded by `if steps == []`) and the dead `else` on
+    `render_log_strategy_override/1`'s `with`.
+  - `Cyclium.Mode.safe_to_atom/1` — dropped the atom-clause; the sole caller
+    guards with `is_binary/1`.
+  - `Cyclium.EpisodeRunner.render_log?/1` — dropped the dead `else` and the
+    unreachable catch-all clause.
+  - `Cyclium.Strategy.Retry.step_key/1` — the map-without-`:kind` clause now
+    returns `:unknown` directly instead of a `Map.get/3` that always did.
+
 ## [0.4.0] — 2026-08-24
 
 ### Fixed

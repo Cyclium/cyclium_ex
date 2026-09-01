@@ -74,6 +74,4 @@ defmodule Cyclium.Intent.PlanValidator do
       {:error, ":workflow_trigger requires workflow_id"}
     end
   end
-
-  defp validate_fields(_, _), do: :ok
 end

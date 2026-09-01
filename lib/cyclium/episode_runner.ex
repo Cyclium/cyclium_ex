@@ -1551,12 +1551,8 @@ defmodule Cyclium.EpisodeRunner do
     with actor_key when is_atom(actor_key) <- existing_atom(actor_id),
          exp_key when is_atom(exp_key) <- existing_atom(exp_id) do
       :persistent_term.get({:cyclium_expectation_render_log, actor_key, exp_key}, true)
-    else
-      _ -> true
     end
   end
-
-  defp render_log?(_), do: true
 
   defp existing_atom(value) when is_atom(value), do: value
 

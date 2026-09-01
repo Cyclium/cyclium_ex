@@ -177,7 +177,6 @@ defmodule Cyclium.LogProjector do
     end
   end
 
-  defp max_step_no([]), do: 0
   defp max_step_no(steps), do: steps |> List.last() |> Map.get(:step_no, 0)
 
   defp upsert_log(episode_id, new_content, last_step_no) do
@@ -228,8 +227,6 @@ defmodule Cyclium.LogProjector do
     with actor_key when is_atom(actor_key) <- existing_atom(actor_id),
          exp_key when is_atom(exp_key) <- existing_atom(exp_id) do
       :persistent_term.get({:cyclium_expectation_render_log_strategy, actor_key, exp_key}, nil)
-    else
-      _ -> nil
     end
   end
 

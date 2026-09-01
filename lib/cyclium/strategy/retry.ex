@@ -78,5 +78,5 @@ defmodule Cyclium.Strategy.Retry do
   end
 
   defp step_key(%{kind: kind}), do: kind
-  defp step_key(step) when is_map(step), do: Map.get(step, :kind, :unknown)
+  defp step_key(step) when is_map(step), do: :unknown
 end
