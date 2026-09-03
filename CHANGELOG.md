@@ -6,6 +6,31 @@ All notable changes to Cyclium are recorded here. This project uses
 Entries are high-level, not exhaustive. Versions prior to `0.1.4` are
 reconstructed from git history and are summarized loosely.
 
+## [0.4.2] — 2026-09-03
+
+### Fixed
+- **A failed summarize-phase synthesis now fails the episode instead of being
+  recorded as a completed `no_action`.** In the shared agentic loop
+  (`Cyclium.Strategy.Template.Agentic.Loop`) the summarize-phase error clause had
+  no retry and no explanation — it set `phase: :done` and let `converge/2` fall
+  through to `no_action`, so an infrastructure failure (e.g. an `overloaded_error`
+  / HTTP 529 from the model) surfaced as a business outcome: the episode ended
+  `done`, `episode.failed` never fired, and monitoring could not tell it apart
+  from a genuine no-finding run. The clause now:
+  - retries the synthesis (3 attempts, 2s → 4s backoff — matching the interpret
+    phase, which already retried), then
+  - aborts with `{:synthesis_error, error_class, detail}` so
+    `EpisodeRunner.abort_episode/2` records error_class `synthesis_error:<class>`,
+    marks the episode `failed`, journals `episode_failed`, and broadcasts
+    `episode.failed`.
+  - The abort `detail` carries `completed_tool_steps`, so a trace reader sees the
+    tool data was gathered and only the interpretation call was lost.
+  `no_action` is preserved for its real meaning — the model concluded there was
+  nothing to do — and is no longer produced by a synthesis error.
+- **`Cyclium.Strategy.Retry.check/3`'s `:backoff_ms` accepts a 1-arity function**
+  of the upcoming (1-based) attempt number, so callers can escalate backoff per
+  attempt (e.g. `fn n -> 2_000 * n end`). A plain integer still works.
+
 ## [0.4.1] — 2026-09-01
 
 ### Changed

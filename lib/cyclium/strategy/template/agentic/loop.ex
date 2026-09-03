@@ -175,12 +175,49 @@ defmodule Cyclium.Strategy.Template.Agentic.Loop do
     end
   end
 
-  def handle_result(%{phase: :summarize} = state, _step, {:error, _}) do
-    # If summarization fails, fall back to technical summary
-    {:ok, %{state | phase: :done}}
+  def handle_result(
+        %{phase: :summarize} = state,
+        %{kind: :synthesis} = step,
+        {:error, {error_class, detail}}
+      ) do
+    # A synthesis failure here is infrastructure, not a business outcome. Retry a
+    # few times (as the interpret phase already does), and if it still fails,
+    # abort so the episode is recorded `failed` with error_class
+    # "synthesis_error:<class>" and `episode.failed` fires — rather than
+    # converging to a misleading `no_action`, which reads as "the run finished
+    # and found nothing to say". The tool results were already gathered; only the
+    # interpretation call was lost.
+    # Escalating backoff: 2s then 4s. Kept modest and provider-agnostic —
+    # overload/rate-limit specifics (Retry-After, jitter) belong at the HTTP
+    # layer, which callers already retry.
+    case Retry.check(state, step,
+           max_attempts: 3,
+           backoff_ms: fn attempt -> 2_000 * attempt end
+         ) do
+      {:retry, new_state} ->
+        {:retry, new_state}
+
+      {:give_up, _attempts, new_state} ->
+        {:abort, {:synthesis_error, error_class, synthesis_error_detail(new_state, detail)}}
+    end
+  end
+
+  def handle_result(%{phase: :summarize} = state, _step, {:error, reason}) do
+    # Any other summarize-phase failure is still infrastructure — abort rather
+    # than fall through to `no_action`.
+    {:abort, {:synthesis_error, :error, synthesis_error_detail(state, reason)}}
   end
 
   def handle_result(state, _step, _result), do: {:ok, state}
+
+  # Enrich the abort detail so a trace reader sees the data was gathered and only
+  # the interpretation call failed: carry the count of completed tool steps.
+  defp synthesis_error_detail(state, cause) do
+    %{
+      cause: cause,
+      completed_tool_steps: length(Map.get(state, :execution_results, []))
+    }
+  end
 
   defp handle_summarize_plan(state, plan, result) do
     case maybe_finish(plan) do

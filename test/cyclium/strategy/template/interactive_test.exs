@@ -449,16 +449,26 @@ defmodule Cyclium.Strategy.Template.InteractiveTest do
       assert new.explanation in [nil, ""]
     end
 
-    test "summarize error falls back to done" do
+    test "summarize error aborts as synthesis_error rather than falling back to done" do
+      # Pre-seed the retry counter at the give-up threshold so no backoff sleep runs.
       state =
         base_state(%{
           phase: :summarize,
           action_plan: tool_call_plan(),
-          execution_results: [{:ok, %{}}]
+          execution_results: [{:ok, %{}}],
+          __retries: %{synthesis: 2}
         })
 
-      {:ok, new} = Interactive.handle_result(state, %{}, {:error, :timeout})
-      assert new.phase == :done
+      # An infra failure during summarize must fail the episode, not converge to
+      # a misleading no_action / empty done.
+      assert {:abort, {:synthesis_error, :api_error, detail}} =
+               Interactive.handle_result(
+                 state,
+                 %{kind: :synthesis},
+                 {:error, {:api_error, :timeout}}
+               )
+
+      assert detail.completed_tool_steps == 1
     end
   end
 

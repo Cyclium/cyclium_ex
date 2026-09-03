@@ -40,7 +40,10 @@ defmodule Cyclium.Strategy.Retry do
   ## Options
 
     - `:max_attempts` — total attempts including the original (default `3`)
-    - `:backoff_ms` — milliseconds to sleep before retry, `0` for immediate (default `0`)
+    - `:backoff_ms` — milliseconds to sleep before retry, `0` for immediate
+      (default `0`). May also be a 1-arity function of the upcoming attempt
+      number (1-based) returning the ms to sleep, so callers can escalate
+      backoff per attempt (e.g. `fn n -> 2_000 * n end` for 2s then 4s).
     - `:step_key` — key for tracking this retry series (default `step.kind`)
   """
   def check(state, step, opts \\ []) do
@@ -52,7 +55,8 @@ defmodule Cyclium.Strategy.Retry do
     attempts = Map.get(retries, key, 0) + 1
 
     if attempts < max do
-      if backoff > 0, do: Process.sleep(backoff)
+      ms = resolve_backoff(backoff, attempts)
+      if ms > 0, do: Process.sleep(ms)
       new_retries = Map.put(retries, key, attempts)
       {:retry, Map.put(state, @retry_key, new_retries)}
     else
@@ -60,6 +64,11 @@ defmodule Cyclium.Strategy.Retry do
       {:give_up, attempts, Map.put(state, @retry_key, new_retries)}
     end
   end
+
+  # `backoff_ms` is either a fixed integer or a 1-arity function of the upcoming
+  # (1-based) attempt number, letting callers escalate backoff per attempt.
+  defp resolve_backoff(backoff, _attempt) when is_integer(backoff), do: backoff
+  defp resolve_backoff(backoff, attempt) when is_function(backoff, 1), do: backoff.(attempt)
 
   @doc """
   Resets retry tracking for a given key. Call on success to clear the counter

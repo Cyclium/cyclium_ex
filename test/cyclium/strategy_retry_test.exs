@@ -74,6 +74,22 @@ defmodule Cyclium.Strategy.RetryTest do
       assert {:give_up, 2, _state} = Retry.check(state, make_step(:tool_call), max_attempts: 2)
     end
 
+    test "backoff_ms accepts a per-attempt function, called with the attempt number" do
+      state = %{}
+      step = make_step(:synthesis)
+      # Return 0 to skip the sleep; record which attempt number was passed.
+      fun = fn attempt ->
+        Process.put(:last_backoff_attempt, attempt)
+        0
+      end
+
+      {:retry, state} = Retry.check(state, step, max_attempts: 3, backoff_ms: fun)
+      assert Process.get(:last_backoff_attempt) == 1
+
+      {:retry, _state} = Retry.check(state, step, max_attempts: 3, backoff_ms: fun)
+      assert Process.get(:last_backoff_attempt) == 2
+    end
+
     test "preserves existing state keys" do
       state = %{phase: :gathering, results: [1, 2, 3]}
       step = make_step(:synthesis)

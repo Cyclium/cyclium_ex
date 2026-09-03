@@ -253,6 +253,57 @@ defmodule Cyclium.Strategy.Template.AgenticTaskTest do
     end
   end
 
+  # --- summarize-phase synthesis failure ---
+
+  describe "summarize-phase synthesis failure" do
+    setup do
+      plan = %ActionPlan{
+        kind: :tool_call,
+        risk: :low,
+        why: "t",
+        tool: %ToolCallStep{tool: "data", action: "read", args: %{}}
+      }
+
+      {:ok, plan: plan}
+    end
+
+    test "retries before giving up", %{plan: plan} do
+      state =
+        base_state(%{phase: :summarize, action_plan: plan, execution_results: [{:ok, %{}}]})
+
+      # Non-overload class → 2s backoff (as ObserveSynthesizeConverge already does).
+      {:retry, new_state} =
+        AgenticTask.handle_result(state, %{kind: :synthesis}, {:error, {:api_error, "boom"}})
+
+      assert new_state.__retries[:synthesis] == 1
+      assert new_state.phase == :summarize
+    end
+
+    test "gives up after retries and aborts as synthesis_error, not no_action", %{plan: plan} do
+      # Pre-seed the counter at the give-up threshold so no real backoff sleep runs.
+      state =
+        base_state(%{
+          phase: :summarize,
+          action_plan: plan,
+          execution_results: [{:ok, %{}}, {:ok, %{}}],
+          __retries: %{synthesis: 2}
+        })
+
+      assert {:abort, {:synthesis_error, :api_error, detail}} =
+               AgenticTask.handle_result(
+                 state,
+                 %{kind: :synthesis},
+                 {:error, {:api_error, "overloaded_error (529)"}}
+               )
+
+      # An infra failure aborts to a `failed` episode — never converges to
+      # no_action. The detail records that the tools ran and only the
+      # interpretation call was lost (requested behaviour, point 4).
+      assert detail.completed_tool_steps == 2
+      assert detail.cause == "overloaded_error (529)"
+    end
+  end
+
   # --- converge ---
 
   describe "converge/2" do
