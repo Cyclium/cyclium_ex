@@ -65,7 +65,17 @@ defmodule Cyclium.WorkClaims.Heartbeat do
 
   @impl true
   def handle_info(:renew, state) do
-    case Cyclium.WorkClaims.gate_renew(state.dedupe_key, state.owner_node, state.lease_seconds) do
+    # The renewal is self-scheduled, so its UPDATE carries no caller context.
+    # Wrap it in a background-work span (see `Cyclium.Telemetry.span/3`) so a
+    # host can parent it. Note this fires once per lease/3 per running episode,
+    # so it is the highest-frequency of the wrapped workers.
+    renew =
+      Cyclium.Telemetry.span(:work_claims_heartbeat, %{node: state.owner_node}, fn ->
+        {Cyclium.WorkClaims.gate_renew(state.dedupe_key, state.owner_node, state.lease_seconds),
+         %{}}
+      end)
+
+    case renew do
       :ok ->
         schedule_renew(state.interval_ms)
         {:noreply, %{state | consecutive_failures: 0}}

@@ -52,17 +52,27 @@ defmodule Cyclium.Findings.FindingSweep do
         start = System.monotonic_time()
 
         try do
-          expired_count = sweep_expired(state.batch_size)
+          # The sweep is self-scheduled, so its queries carry no caller context.
+          # Wrap them in a background-work span (see `Cyclium.Telemetry.span/3`)
+          # so a host can hold one trace span across the tick; the point-in-time
+          # `:completed`/`:failed` events below still drive dashboards.
+          {expired_count, escalated_count} =
+            Cyclium.Telemetry.span(:finding_sweep, %{node: node_name()}, fn ->
+              expired = sweep_expired(state.batch_size)
 
-          if expired_count > 0 do
-            Logger.info("Finding sweep cleared #{expired_count} expired finding(s)")
-          end
+              if expired > 0 do
+                Logger.info("Finding sweep cleared #{expired} expired finding(s)")
+              end
 
-          escalated_count = sweep_escalations()
+              escalated = sweep_escalations()
 
-          if escalated_count > 0 do
-            Logger.info("Finding sweep escalated #{escalated_count} finding(s)")
-          end
+              if escalated > 0 do
+                Logger.info("Finding sweep escalated #{escalated} finding(s)")
+              end
+
+              {{expired, escalated},
+               %{result: %{expired_count: expired, escalated_count: escalated}}}
+            end)
 
           duration_ms =
             System.convert_time_unit(System.monotonic_time() - start, :native, :millisecond)

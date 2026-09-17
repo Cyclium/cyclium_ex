@@ -481,10 +481,27 @@ defmodule Cyclium.Actor.Server do
   end
 
   def handle_info({:bus, event_type, payload}, state) do
-    # Skip the high-frequency internal journaling churn (one per journaled step)
-    # — it drowned the real lifecycle signals multiplexed through this event and
-    # forced every consumer to filter it out by magic string.
-    unless event_type == "episode.step_journaled" do
+    # Is this a lifecycle transition of *this actor's own* episode? Only then does
+    # the actor act on it (free a slot, update the circuit breaker).
+    own_lifecycle_episode_id =
+      if event_type in ["episode.completed", "episode.failed", "episode.canceled"] and
+           (payload[:actor_id] || payload["actor_id"]) == to_string(state.actor_id) do
+        payload[:episode_id] || payload["episode_id"]
+      end
+
+    # Expectations that subscribe to this event.
+    matched_expectations =
+      Enum.filter(state.expectations, fn {_id, exp} ->
+        event_matches?(exp, event_type, payload)
+      end)
+
+    # Emit :event_received only when the event is relevant to this actor. Every
+    # actor is subscribed to the whole bus, so without this each actor emitted a
+    # receipt for every other actor's broadcast, fanning one lifecycle event out
+    # into N telemetry points (and N log lines). `episode.step_journaled` is
+    # internal journaling churn and never relevant here.
+    if event_type != "episode.step_journaled" and
+         (own_lifecycle_episode_id != nil or matched_expectations != []) do
       :telemetry.execute([:cyclium, :actor, :event_received], %{count: 1}, %{
         actor_id: state.actor_id,
         event_type: event_type
@@ -493,26 +510,17 @@ defmodule Cyclium.Actor.Server do
 
     # Handle episode lifecycle events — free up active_episodes slots
     state =
-      if event_type in ["episode.completed", "episode.failed", "episode.canceled"] do
-        episode_id = payload[:episode_id] || payload["episode_id"]
-        actor_id = payload[:actor_id] || payload["actor_id"]
-
-        if actor_id == to_string(state.actor_id) and episode_id do
-          # Update circuit breaker on episode outcome
-          maybe_update_circuit_breaker(state, event_type, payload)
-          handle_episode_done(state, episode_id)
-        else
-          state
-        end
+      if own_lifecycle_episode_id do
+        # Update circuit breaker on episode outcome
+        maybe_update_circuit_breaker(state, event_type, payload)
+        handle_episode_done(state, own_lifecycle_episode_id)
       else
         state
       end
 
-    # Match expectations that subscribe to this event
+    # Fire the matched expectations
     state =
-      state.expectations
-      |> Enum.filter(fn {_id, exp} -> event_matches?(exp, event_type, payload) end)
-      |> Enum.reduce(state, fn {_id, expectation}, acc ->
+      Enum.reduce(matched_expectations, state, fn {_id, expectation}, acc ->
         trigger_ref = %Cyclium.Trigger.Event{
           event_id: payload[:event_id] || Ecto.UUID.generate(),
           event_type: event_type,

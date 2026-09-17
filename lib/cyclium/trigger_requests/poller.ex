@@ -56,9 +56,27 @@ defmodule Cyclium.TriggerRequests.Poller do
     {:noreply, state}
   end
 
+  # The tick is self-scheduled, so its queries carry no caller context and are
+  # otherwise reported as separate root traces. Wrapping it in a background-work
+  # span lets a host hold one trace span open across the whole poll — see
+  # `Cyclium.Telemetry.span/3`.
   defp poll(state) do
     node_name = Cyclium.NodeIdentity.name()
 
+    scope = %{
+      node: node_name,
+      source_stack: state.source_stack,
+      source_env: state.source_env
+    }
+
+    Cyclium.Telemetry.span(:trigger_requests_poll, scope, fn ->
+      count = poll_once(state, node_name)
+      {:ok, %{result: %{request_count: count}}}
+    end)
+  end
+
+  # Returns the number of pending requests found, reported as the span's result.
+  defp poll_once(state, node_name) do
     # source_env is always passed (including nil → default env) so env scoping
     # is never silently dropped; source_stack stays opt-in (nil = any stack).
     fetch_opts =
@@ -75,6 +93,8 @@ defmodule Cyclium.TriggerRequests.Poller do
     # Periodically expire stale requests — scoped to this poller's env so it
     # never GCs another env's pending requests (mirrors fetch_pending).
     Cyclium.TriggerRequests.expire_stale(@stale_expiry_seconds, source_env: state.source_env)
+
+    length(requests)
   end
 
   defp dispatch(request, node_name) do

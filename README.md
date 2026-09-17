@@ -37,7 +37,7 @@ testability, and full visibility while still using AI where it adds value. See
 - **Backpressure Controls** — Per-actor concurrency limits with queue, drop, or shed-oldest overflow policies
 - **Debounce and Cooldown** — Temporal controls to coalesce rapid-fire events and enforce minimum gaps
 - **Log Projection** — Materialized human-readable logs at configurable verbosity (none → full_debug)
-- **Telemetry** — 36 structured telemetry events for observability
+- **Telemetry** — structured telemetry events for observability, plus span-shaped background-work events (`:start`/`:stop`/`:exception`) that let a host application nest each self-scheduled worker's queries under a single trace
 - **OTP-Native** — No Oban or external job queue required; episodes run as Tasks under DynamicSupervisor
 - **Distributed coordination** — DB-based dedup, lease-based work claims, crash recovery, and multi-stack/trigger-only deployment modes — no Redis or leader election
 - **Test Kit** — Assertion macros and fakes for validating actors, strategies, synthesizers, output adapters, workflows, and checkpoint migrations in host apps

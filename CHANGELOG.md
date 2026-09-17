@@ -6,6 +6,48 @@ All notable changes to Cyclium are recorded here. This project uses
 Entries are high-level, not exhaustive. Versions prior to `0.1.4` are
 reconstructed from git history and are summarized loosely.
 
+## [0.4.3] — 2026-09-17
+
+### Added
+- **Span-shaped telemetry around self-scheduled background work, so a host
+  application can nest a worker's queries under a single trace.** Several of
+  Cyclium's workers run on their own timer or as a detached startup task — the
+  trigger-request poller, the recovery sweep and workflow reconciliation, the
+  finding sweep, and the work-claims heartbeat. None run under a caller, so a
+  host that traces its database work (e.g. via `opentelemetry_ecto`, which
+  parents each query span to the calling process's context) has nothing to parent
+  their queries to: every query opens its own root trace, with nothing tying one
+  tick's queries together or recording how long the tick took. A point-in-time
+  telemetry count cannot hold a span open across the work that follows it, so
+  each worker now wraps its tick in `:telemetry.span/3` via the new
+  `Cyclium.Telemetry.span/3`, emitting a `:start`/`:stop` (or `:exception`) pair
+  under one shared event prefix:
+  - `[:cyclium, :background_work, :start | :stop | :exception]`, tagged with the
+    worker in `metadata.work` (`:trigger_requests_poll`, `:recovery_sweep`,
+    `:recovery_reconcile`, `:finding_sweep`, `:work_claims_heartbeat`). The scope
+    tags (`:node`, and `:source_stack`/`:source_env` where the worker is scoped)
+    ride on all three events, and `:stop` carries a small `:result` map of
+    low-cardinality counts summarising the tick.
+  - These are a different *kind* of event from the point-in-time signals, so they
+    are deliberately **not** in `events/0` (a logging consumer is unaffected) and
+    are listed separately by the new `Cyclium.Telemetry.span_events/0` (a tracing
+    consumer attaches to exactly these). The workers' existing point-in-time
+    events (e.g. `[:cyclium, :finding_sweep, :completed]`,
+    `[:cyclium, :recovery, :sweep]`) are unchanged.
+
+### Changed
+- **`[:cyclium, :actor, :event_received]` now fires only when the event is
+  relevant to the actor.** Every actor is subscribed to the whole bus, so a
+  single lifecycle broadcast (e.g. `episode.completed`) was delivered to — and
+  emitted a `:event_received` telemetry point from — *every* actor, fanning one
+  event out into N points (and, for any logging consumer, N log lines) even
+  though most actors immediately dropped it. The event now fires only when one of
+  the actor's expectations subscribes to it, or it is a lifecycle transition of
+  the actor's *own* episode (the cases where the actor actually acts on it).
+  `episode.step_journaled` remains filtered as before. No change to which
+  episodes fire or how lifecycle slots are freed — only to when the telemetry is
+  emitted.
+
 ## [0.4.2] — 2026-09-03
 
 ### Fixed

@@ -110,50 +110,62 @@ defmodule Cyclium.Recovery do
           &resolve_policy_from_registry(&1, actor_registry)
       end
 
-    # Shuffle so every node claims a different episode first. Without this, all
-    # nodes wake on the same timer, see the same (unordered) stale list, and the
-    # node with the lowest DB latency wins the optimistic claim for episode #1,
-    # then #2, then the whole list — concentrating recovery on one node. A
-    # per-node shuffle decorrelates the claim order so wins spread across the
-    # cluster (the optimistic claim still guarantees exactly-once recovery).
-    stale =
-      Episodes.list_stale_running(stale_after_ms,
-        source_stack: source_stack,
-        source_env: source_env
-      )
-      |> Enum.shuffle()
-
-    Logger.info(
-      "Recovery sweep found #{length(stale)} stale episode(s) " <>
-        "(stack=#{inspect(source_stack)} env=#{inspect(source_env)})"
-    )
-
-    results =
-      Enum.map(stale, fn episode ->
-        case claim_episode(episode) do
-          {:ok, claimed} ->
-            recover_episode(claimed, resolve_policy, actor_registry)
-
-          {:error, _} ->
-            :skipped
-        end
-      end)
-
-    counts = %{
-      restarted: Enum.count(results, &(&1 == :restarted)),
-      failed: Enum.count(results, &(&1 == :failed)),
-      skipped: Enum.count(results, &(&1 == :skipped))
+    # Runs as a detached startup task with no caller context, so its queries are
+    # otherwise reported as separate root traces. Wrap the sweep in a
+    # background-work span so a host can hold one trace span across it — see
+    # `Cyclium.Telemetry.span/3`.
+    scope = %{
+      node: Cyclium.NodeIdentity.name(),
+      source_stack: source_stack,
+      source_env: source_env
     }
 
-    :telemetry.execute(
-      [:cyclium, :recovery, :sweep],
-      counts,
-      %{stale_after_ms: stale_after_ms}
-    )
+    Cyclium.Telemetry.span(:recovery_sweep, scope, fn ->
+      # Shuffle so every node claims a different episode first. Without this, all
+      # nodes wake on the same timer, see the same (unordered) stale list, and the
+      # node with the lowest DB latency wins the optimistic claim for episode #1,
+      # then #2, then the whole list — concentrating recovery on one node. A
+      # per-node shuffle decorrelates the claim order so wins spread across the
+      # cluster (the optimistic claim still guarantees exactly-once recovery).
+      stale =
+        Episodes.list_stale_running(stale_after_ms,
+          source_stack: source_stack,
+          source_env: source_env
+        )
+        |> Enum.shuffle()
 
-    Logger.info("Recovery sweep complete: #{inspect(counts)}")
+      Logger.info(
+        "Recovery sweep found #{length(stale)} stale episode(s) " <>
+          "(stack=#{inspect(source_stack)} env=#{inspect(source_env)})"
+      )
 
-    {:ok, counts}
+      results =
+        Enum.map(stale, fn episode ->
+          case claim_episode(episode) do
+            {:ok, claimed} ->
+              recover_episode(claimed, resolve_policy, actor_registry)
+
+            {:error, _} ->
+              :skipped
+          end
+        end)
+
+      counts = %{
+        restarted: Enum.count(results, &(&1 == :restarted)),
+        failed: Enum.count(results, &(&1 == :failed)),
+        skipped: Enum.count(results, &(&1 == :skipped))
+      }
+
+      :telemetry.execute(
+        [:cyclium, :recovery, :sweep],
+        counts,
+        %{stale_after_ms: stale_after_ms}
+      )
+
+      Logger.info("Recovery sweep complete: #{inspect(counts)}")
+
+      {{:ok, counts}, %{result: counts}}
+    end)
   end
 
   defp recover_episode(episode, resolve_policy, actor_registry) do
@@ -374,27 +386,37 @@ defmodule Cyclium.Recovery do
     source_stack = Keyword.get(opts, :source_stack, Cyclium.StackSlug.current())
     source_env = Keyword.get(opts, :source_env, Cyclium.Env.current())
 
-    instances =
-      from(wi in WorkflowInstance, where: wi.status in [:running, :blocked])
-      |> filter_workflow_source_stack(source_stack)
-      |> filter_workflow_source_env(source_env)
-      |> repo.all()
-
-    results =
-      Enum.flat_map(instances, fn instance ->
-        reconcile_instance_steps(instance)
-      end)
-
-    counts = %{
-      replayed: Enum.count(results, &(&1 == :replayed)),
-      skipped: Enum.count(results, &(&1 == :skipped))
+    # Like `sweep/1`, this runs at startup with no caller context; wrap it in a
+    # background-work span so its queries nest under one trace.
+    scope = %{
+      node: Cyclium.NodeIdentity.name(),
+      source_stack: source_stack,
+      source_env: source_env
     }
 
-    if counts.replayed > 0 do
-      Logger.info("Workflow reconciliation replayed #{counts.replayed} stale step event(s)")
-    end
+    Cyclium.Telemetry.span(:recovery_reconcile, scope, fn ->
+      instances =
+        from(wi in WorkflowInstance, where: wi.status in [:running, :blocked])
+        |> filter_workflow_source_stack(source_stack)
+        |> filter_workflow_source_env(source_env)
+        |> repo.all()
 
-    {:ok, counts}
+      results =
+        Enum.flat_map(instances, fn instance ->
+          reconcile_instance_steps(instance)
+        end)
+
+      counts = %{
+        replayed: Enum.count(results, &(&1 == :replayed)),
+        skipped: Enum.count(results, &(&1 == :skipped))
+      }
+
+      if counts.replayed > 0 do
+        Logger.info("Workflow reconciliation replayed #{counts.replayed} stale step event(s)")
+      end
+
+      {{:ok, counts}, %{result: counts}}
+    end)
   rescue
     e ->
       Logger.warning("Workflow reconciliation failed: #{inspect(e)}")
