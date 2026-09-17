@@ -4,11 +4,27 @@ stages:
   - test
   - publish
 
+variables:
+  # Computed rather than read from a project CI/CD variable. $CI_REGISTRY_IMAGE
+  # is registry.gitlab.com/<project path>, so this needs no maintenance, cannot
+  # drift from the project it belongs to, and — unlike a *protected* project
+  # variable, which GitLab exposes only to protected branches — is available to
+  # branch pipelines. A project-level BASE_IMAGE still takes precedence over
+  # this, so delete that variable to leave one source of truth.
+  BASE_IMAGE: $CI_REGISTRY_IMAGE/base:latest
+
 build_base:
   stage: build_base
+  # Scoped to the default branch because the job pushes the shared
+  # `base:latest` tag that every other pipeline pulls — a feature branch
+  # building it would replace the base image for everyone. Note also that a
+  # `changes:` rule matches *every* file on a branch's first push, so without
+  # the branch condition this job fires on each new branch no matter what the
+  # branch touched.
   rules:
-    - if: $BUILD_BASE_IMAGE == "true"
-    - changes:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH && $BUILD_BASE_IMAGE == "true"
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+      changes:
         paths:
           - Dockerfile.base
           - .tool-versions
