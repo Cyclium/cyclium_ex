@@ -149,7 +149,7 @@ defmodule Cyclium.EpisodeTask do
       # episode, so we must not mark its row failed. Skip too when the run was
       # interrupted by a graceful shutdown: `:running` is the intended state
       # there, and marking it failed would undo the hand-off to recovery.
-      unless Process.get(:cyclium_claim_lost) or Process.get(:cyclium_interrupted) do
+      unless Process.get(:cyclium_claim_lost) || Process.get(:cyclium_interrupted) do
         ensure_episode_not_running(episode_id)
       end
 
