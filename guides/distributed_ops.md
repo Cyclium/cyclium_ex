@@ -19,6 +19,33 @@ When a node shuts down (deploy, crash, scaling event), in-flight episodes are
 killed and left as `:running` in the database. Without recovery, these episodes
 stay orphaned forever.
 
+Two shutdowns look different in the database:
+
+* **Hard stop** (crash, OOM kill, `kill -9`): the task never runs its exit path.
+  The row stays `:running` with no marker, and the sweep finds it once its step
+  journal has been silent for `stale_after_ms`.
+* **Graceful stop** (a deploy's SIGTERM, a supervisor shutdown): the episode task
+  traps the exit and, at the next step boundary, leaves the row `:running` with
+  `phase: "interrupted"`, releases its work claim, and broadcasts
+  `episode.interrupted`. The sweep treats that phase as stale at once, so the
+  restart does not wait out the recency window. If the shutdown timeout
+  (`config :cyclium, :episode_shutdown_ms`, default 5 seconds) expires before
+  the step finishes, the task is killed instead and the hard-stop path applies.
+
+Either way the outcome is the expectation's `recovery_policy`. Before 0.4.4 a
+graceful stop recorded the episode as `:failed` (`process_terminated`), which put
+it out of the sweep's reach — `:restart` never applied to a deploy.
+
+The graceful hand-off is done once per node, not once per task:
+`Cyclium.EpisodeDrainer` is stopped before the episode tasks are and marks every
+running episode in three statements (phase, claims, one journal marker each),
+then tells the tasks to stop without writing. Tasks still mid-step when the
+shutdown timeout expires are killed, but were already stamped, so they too are
+restarted at once rather than found stale later. The markers are
+`:observation` steps with `result_ref["event"]` of `"interrupted"` and, written
+by the recovering node, `"resumed"` — render them in a step feed and a reader
+sees "interrupted, will resume shortly" followed by the restart.
+
 ### Distributed episode claiming
 
 In a multi-node cluster, all nodes run the same actors and receive the same Bus
@@ -95,11 +122,16 @@ needed.
 
 `Cyclium.Recovery.sweep/1` finds stale `:running` episodes and recovers them:
 
-1. Query episodes where the most recent step journal entry is older than
-   `stale_after_ms` (default: 2 minutes)
+1. Query `:running` episodes where the most recent step journal entry is older
+   than `stale_after_ms` (default: 2 minutes), plus any whose `phase` is
+   `"interrupted"`
 2. Attempt optimistic claim on each stale episode
 3. If claimed, apply the expectation's `recovery_policy`:
-   - `:restart` — enqueue fresh (re-runs `strategy.init/2`)
+   - `:restart` — enqueue with `resume: true` (latest checkpoint, else
+     `strategy.init/2`), unless the claim took `attempts` past the episode's
+     `max_attempts` (default 3), in which case it is failed as `orphaned` with an
+     "attempts exhausted" reason — the cap on an episode bouncing between nodes
+     across a rolling deploy
    - `:fail` (default) — mark `:failed` with `error_class: "orphaned"`
 4. Emit `[:cyclium, :recovery, :sweep]` telemetry with counts
 
@@ -175,6 +207,20 @@ end
 Use `:restart` for idempotent strategies that re-query data from the DB. Use
 `:fail` (default) for strategies with non-idempotent side effects where automatic
 recovery could cause harm.
+
+### Shutdown timeout
+
+A step is typically one LLM call, so the `Task` default of 5 seconds rarely lets
+the current step finish before the supervisor kills the task. Raise it where the
+deploy target allows (ECS `stopTimeout`, Kubernetes `terminationGracePeriodSeconds`
+must be longer still):
+
+```elixir
+config :cyclium, :episode_shutdown_ms, :timer.seconds(30)
+```
+
+A step that lands inside the window takes the graceful path above; one that does
+not is killed and recovered as a hard stop.
 
 ### Wiring up recovery in your app
 

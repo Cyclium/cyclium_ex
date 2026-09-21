@@ -6,6 +6,22 @@ defmodule Cyclium.EpisodeTask do
 
   use Task, restart: :transient
 
+  # How long the supervisor waits for a running episode to reach a step boundary
+  # on shutdown before killing it. The default is `Task`'s 5 seconds. A step is
+  # typically one LLM call, so 5s rarely lets the step finish: the task is then
+  # killed mid-step, the row stays `:running` with no phase stamp, and recovery
+  # only sees it once it is stale (`stale_after_ms`). A longer window lets the
+  # step land and the loop take the graceful path (`phase: "interrupted"`, claim
+  # released, recoverable at once) — at the cost of holding the node's shutdown
+  # open that long. `config :cyclium, :episode_shutdown_ms, :timer.seconds(30)`.
+  def child_spec(arg) do
+    shutdown = Application.get_env(:cyclium, :episode_shutdown_ms, 5_000)
+
+    arg
+    |> super()
+    |> Map.put(:shutdown, shutdown)
+  end
+
   def start_link(opts) do
     Task.start_link(fn -> run(opts[:episode_id], opts[:opts] || []) end)
   end
@@ -35,6 +51,9 @@ defmodule Cyclium.EpisodeTask do
         {:ok, claim} -> claim.fence
         {:error, :busy} -> exit(:normal)
       end
+
+    # Visible to `Cyclium.EpisodeDrainer` for the shutdown hand-off.
+    Cyclium.EpisodeDrainer.register(episode)
 
     # Start heartbeat for lease renewal if claiming is active
     heartbeat_pid = maybe_start_heartbeat(episode, lease_seconds)
@@ -75,6 +94,12 @@ defmodule Cyclium.EpisodeTask do
             "[Cyclium.EpisodeTask] Episode #{episode_id} lost its work claim mid-run — " <>
               "abandoning to the new owner"
           )
+
+        {:error, :interrupted} ->
+          # Graceful shutdown between steps. The runner already released the
+          # claim and left the row `:running` with phase "interrupted" for the
+          # recovery sweep; there is nothing to complete here.
+          :ok
 
         _ ->
           # Release the claim. (Failures already set episode status in the runner.)
@@ -121,8 +146,10 @@ defmodule Cyclium.EpisodeTask do
       # :running episodes are recovered by `Cyclium.Recovery.sweep/1` instead.
       #
       # Skip when the claim was lost mid-run: the new owner is driving the
-      # episode, so we must not mark its row failed.
-      unless Process.get(:cyclium_claim_lost) do
+      # episode, so we must not mark its row failed. Skip too when the run was
+      # interrupted by a graceful shutdown: `:running` is the intended state
+      # there, and marking it failed would undo the hand-off to recovery.
+      unless Process.get(:cyclium_claim_lost) or Process.get(:cyclium_interrupted) do
         ensure_episode_not_running(episode_id)
       end
 

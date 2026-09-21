@@ -295,6 +295,10 @@ defmodule Cyclium.Episodes do
       node's work and vice-versa). Pass `nil` to scope to the unset/default env
       (includes legacy `NULL` rows). When omitted, env is not filtered.
 
+  A running episode whose `phase` is `"interrupted"` is returned regardless of
+  recency: a graceful shutdown stamped it on the way out (see
+  `Cyclium.EpisodeRunner`), which is a stronger signal than silence.
+
   Used by `Cyclium.Recovery.sweep/1` to find orphaned episodes after deploys.
   """
   def list_stale_running(stale_after_ms, opts \\ []) do
@@ -306,8 +310,14 @@ defmodule Cyclium.Episodes do
         where: e.status == :running and is_nil(e.archived_at),
         left_join: s in EpisodeStep,
         on: s.episode_id == e.id,
-        group_by: [e.id, e.started_at],
-        having: max(s.created_at) < ^cutoff or (count(s.id) == 0 and e.started_at < ^cutoff),
+        group_by: [e.id, e.started_at, e.phase],
+        # An episode a graceful shutdown handed back (`phase: "interrupted"`, see
+        # `EpisodeRunner`) is stale the moment it is listed: its node has already
+        # said it is not coming back to it, so the recency window would only
+        # delay the restart.
+        having:
+          e.phase == "interrupted" or
+            max(s.created_at) < ^cutoff or (count(s.id) == 0 and e.started_at < ^cutoff),
         select: e.id
       )
 
@@ -337,6 +347,57 @@ defmodule Cyclium.Episodes do
 
   defp filter_source_env(query, env),
     do: from(e in query, where: e.source_env == ^to_string(env))
+
+  @doc """
+  Append one lifecycle step to an episode's journal from outside the running
+  loop and broadcast `episode.step_journaled` for it, so a step feed can show
+  what happened to the run between two owners: recovery's `"resumed"` marker,
+  or the `:episode_failed` line when recovery fails an orphan. Best-effort: a
+  failed write is logged and returns `:error` rather than raising into the
+  caller.
+
+  `opts`: `:kind` (default `:observation`), `:error_class`, `:error_detail`.
+  """
+  @spec journal_marker(Episode.t(), map(), keyword()) :: {:ok, EpisodeStep.t()} | :error
+  def journal_marker(%Episode{} = episode, result_ref, opts \\ []) when is_map(result_ref) do
+    step_no = next_step_no(episode.id)
+    kind = Keyword.get(opts, :kind, :observation)
+    error_class = Keyword.get(opts, :error_class)
+
+    step =
+      repo().insert!(%EpisodeStep{
+        episode_id: episode.id,
+        step_no: step_no,
+        kind: kind,
+        result_ref: result_ref,
+        error_class: error_class,
+        error_detail: Keyword.get(opts, :error_detail),
+        created_at: DateTime.utc_now()
+      })
+
+    Cyclium.Bus.broadcast("episode.step_journaled", %{
+      episode_id: episode.id,
+      actor_id: episode.actor_id,
+      conversation_id: episode.conversation_id,
+      step_no: step_no,
+      kind: kind,
+      tool_name: nil,
+      error_class: error_class,
+      cost_tokens: nil
+    })
+
+    {:ok, step}
+  rescue
+    e ->
+      require Logger
+
+      Logger.error("cyclium: journal marker write failed",
+        episode_id: episode.id,
+        error: inspect(e.__struct__)
+      )
+
+      :error
+  end
 
   @doc """
   Attempt to claim a stale episode for recovery via optimistic update.

@@ -25,8 +25,14 @@ defmodule Cyclium.Supervisor do
         # dynamic actors both register here from `Actor.Server.init_state_from_config/3`.
         {Registry, keys: :unique, name: Cyclium.ActorProcessRegistry},
         {DynamicSupervisor, name: Cyclium.ActorSupervisor, strategy: :one_for_one},
+        # Running episode tasks, keyed by episode id, for the drainer below.
+        {Registry, keys: :unique, name: Cyclium.EpisodeProcessRegistry},
         {DynamicSupervisor, name: Cyclium.EpisodeSupervisor, strategy: :one_for_one},
-        {Task.Supervisor, name: Cyclium.TaskSupervisor}
+        {Task.Supervisor, name: Cyclium.TaskSupervisor},
+        # AFTER EpisodeSupervisor on purpose: children stop in reverse start
+        # order, so on shutdown the drainer hands every running episode to
+        # recovery in one pass while the tasks are still alive to be told.
+        Cyclium.EpisodeDrainer
       ] ++ optional_children()
 
     Supervisor.init(children, strategy: :one_for_one)

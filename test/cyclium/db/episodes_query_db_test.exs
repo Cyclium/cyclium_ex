@@ -130,6 +130,18 @@ defmodule Cyclium.EpisodesQueryDbTest do
       assert stale_ep.id in ids
     end
 
+    test "returns a running episode marked interrupted regardless of recency" do
+      interrupted =
+        insert_episode(%{started_at: DateTime.utc_now(), status: :running, phase: "interrupted"})
+
+      insert_step(%{episode_id: interrupted.id, step_no: 1, created_at: DateTime.utc_now()})
+
+      results = Episodes.list_stale_running(:timer.hours(1))
+      ids = Enum.map(results, & &1.id)
+
+      assert interrupted.id in ids
+    end
+
     test "excludes non-running episodes regardless of age" do
       old_start = DateTime.add(DateTime.utc_now(), -10, :second)
       insert_episode(%{started_at: old_start, status: :done})

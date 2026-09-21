@@ -6,6 +6,57 @@ All notable changes to Cyclium are recorded here. This project uses
 Entries are high-level, not exhaustive. Versions prior to `0.1.4` are
 reconstructed from git history and are summarized loosely.
 
+## [0.4.4] — 2026-09-21
+
+### Changed
+- **A graceful shutdown no longer fails the episode it interrupts.** A `:shutdown`
+  (or `{:shutdown, _}`) EXIT reaching the runner between steps used to journal
+  `episode_failed` and set the row `:failed` with `error_class: "process_terminated"`.
+  That put the episode out of `Cyclium.Recovery.sweep/1`'s reach — the sweep lists
+  `:running` rows only — so an expectation's `recovery_policy: :restart` never
+  applied to the most common way a run is cut off: a deploy. The runner now leaves
+  the row `:running`, sets `phase: "interrupted"`, releases the work claim
+  (`gate_fail`, so the recovering node can re-acquire it at once) and broadcasts a
+  new `episode.interrupted` Bus event. `Cyclium.EpisodeTask` skips its
+  "still running at exit → failed" safety net for that case. Other abnormal EXITs
+  still fail the episode as before.
+- **`Episodes.list_stale_running/2` returns interrupted episodes regardless of
+  recency.** The node that had the episode has already said it is not coming back
+  to it, so the staleness window only delayed the restart.
+- **Recovery restarts are bounded by the episode's `max_attempts`.** Every
+  recovery claim increments `attempts`; once it exceeds `max_attempts` (default 3)
+  a `:restart` policy fails the episode as `orphaned` with an "attempts exhausted"
+  reason instead of restarting it. Without the cap a rolling deploy could bounce an
+  episode between nodes indefinitely — a node still up sweeps and restarts it, is
+  drained itself and hands it back interrupted, and the next survivor repeats.
+
+### Added
+- **`Cyclium.EpisodeDrainer` hands a node's running episodes to recovery in bulk on
+  shutdown.** It sits after `Cyclium.EpisodeSupervisor` in `Cyclium.Supervisor`, so
+  it is stopped first, and its `terminate/2` reads the running tasks off the new
+  `Cyclium.EpisodeProcessRegistry` (each `EpisodeTask` registers once it holds its
+  claim) and issues three statements for all of them — the `interrupted` phase
+  stamp, the claim release, and one `:observation` journal marker per episode
+  (`%{"event" => "interrupted"}`) — then broadcasts `episode.step_journaled` /
+  `episode.interrupted` per episode and sends each task `:cyclium_drained`, which
+  the runner takes at its next step boundary as "stop, write nothing". Tasks
+  killed mid-step were already stamped. A shutdown with a dozen episodes in
+  flight is three writes, not thirty-six contending for a draining pool, and each
+  statement is best-effort so a failed marker insert cannot cost the phase stamp.
+  The runner's own shutdown path now goes through `EpisodeDrainer.interrupt/1`
+  for the single-episode case.
+- **`Cyclium.Episodes.journal_marker/3`** appends a lifecycle step from outside
+  the loop. Recovery uses it twice: an `:observation` `%{"event" => "resumed",
+  "attempt" => n, "node" => ...}` on a restart, so a step feed reads
+  interrupted → resumed → fresh start rather than a run that silently began
+  again; and an `:episode_failed` step (`error_class: "orphaned"`) when it fails
+  an orphan, so a `:fail`-policy run's journal ends on the verdict rather than on
+  the drainer's "interrupted" marker.
+- **`config :cyclium, :episode_shutdown_ms`** — the supervisor shutdown timeout
+  for `Cyclium.EpisodeTask` (default unchanged at `Task`'s 5 seconds). A step is
+  typically one LLM call, so a longer window lets it finish and take the graceful
+  path above instead of being killed mid-step and recovered only once stale.
+
 ## [0.4.3] — 2026-09-17
 
 ### Added

@@ -168,10 +168,34 @@ defmodule Cyclium.Recovery do
     end)
   end
 
+  # `attempts` counts recovery claims (`Episodes.claim_for_recovery/1` increments
+  # it before this runs), so after the claim it is the number of times recovery
+  # has restarted this episode, this one included. `max_attempts` (default 3)
+  # bounds it.
+  @default_max_attempts 3
+
   defp recover_episode(episode, resolve_policy, actor_registry) do
     policy = resolve_policy.(episode)
+    max_attempts = episode.max_attempts || @default_max_attempts
 
     case policy do
+      # A restart that would be one too many. Without this cap an episode can
+      # bounce indefinitely across a rolling deploy: a node still up sweeps,
+      # restarts it, is then drained itself and hands it back interrupted, and
+      # the next survivor repeats — each hop a fresh run from the objective when
+      # the strategy has no checkpoint, spending the budget again and delivering
+      # nothing.
+      :restart when episode.attempts > max_attempts ->
+        exhausted = "attempts exhausted (#{episode.attempts} of #{max_attempts})"
+
+        Logger.warning("Failing orphaned episode — recovery #{exhausted}",
+          cyclium_episode_id: episode.id,
+          cyclium_actor_id: episode.actor_id,
+          cyclium_expectation_id: episode.expectation_id
+        )
+
+        fail_orphan(episode, %{"reason" => "Server restart recovery — #{exhausted}"})
+
       :restart ->
         Logger.info("Restarting episode",
           cyclium_episode_id: episode.id,
@@ -181,6 +205,15 @@ defmodule Cyclium.Recovery do
 
         # Reset status to :running (clear the "recovering" phase)
         Episodes.update_status(episode.id, :running, phase: nil)
+
+        # The line a step feed shows between the interruption and the fresh
+        # start, so a reader can tell a restart from a run that hung.
+        Episodes.journal_marker(episode, %{
+          "event" => "resumed",
+          "attempt" => episode.attempts,
+          "node" => node_name()
+        })
+
         restart_enqueue(episode, actor_registry)
         :restarted
 
@@ -191,26 +224,38 @@ defmodule Cyclium.Recovery do
           cyclium_expectation_id: episode.expectation_id
         )
 
-        error_detail = %{"reason" => "Server restart recovery — policy: fail"}
-
-        Episodes.update_status(episode.id, :failed,
-          error_class: "orphaned",
-          error_detail: error_detail
-        )
-
-        Cyclium.Bus.broadcast("episode.failed", %{
-          episode_id: episode.id,
-          actor_id: episode.actor_id,
-          conversation_id: episode.conversation_id,
-          status: :failed,
-          error_class: "orphaned",
-          error_detail: error_detail,
-          workflow_instance_id: episode.workflow_instance_id,
-          workflow_step_id: episode.workflow_step_id
-        })
-
-        :failed
+        fail_orphan(episode, %{"reason" => "Server restart recovery — policy: fail"})
     end
+  end
+
+  defp fail_orphan(episode, error_detail) do
+    # The journal's last line would otherwise be the drainer's "interrupted"
+    # marker — which reads as "will resume" on a run that never will. Close the
+    # timeline the way the runner's own failures do, so a step feed shows the
+    # interruption and then the verdict on it.
+    Episodes.journal_marker(episode, %{},
+      kind: :episode_failed,
+      error_class: "orphaned",
+      error_detail: error_detail
+    )
+
+    Episodes.update_status(episode.id, :failed,
+      error_class: "orphaned",
+      error_detail: error_detail
+    )
+
+    Cyclium.Bus.broadcast("episode.failed", %{
+      episode_id: episode.id,
+      actor_id: episode.actor_id,
+      conversation_id: episode.conversation_id,
+      status: :failed,
+      error_class: "orphaned",
+      error_detail: error_detail,
+      workflow_instance_id: episode.workflow_instance_id,
+      workflow_step_id: episode.workflow_step_id
+    })
+
+    :failed
   end
 
   # Hand a recovered :restart episode to its live actor process so it runs under

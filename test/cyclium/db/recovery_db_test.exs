@@ -60,6 +60,97 @@ defmodule Cyclium.RecoveryDbTest do
       # Restarted via the direct runner path (no live actor process) — must
       # resume from the latest checkpoint, not re-init from the trigger.
       assert {episode.id, [resume: true]} in Cyclium.FakeRunner.enqueued_calls()
+
+      # And the feed can say so: a "resumed" marker, numbered as the next step.
+      assert [
+               %{
+                 step_no: 1,
+                 kind: :observation,
+                 result_ref: %{"event" => "resumed", "attempt" => 1}
+               }
+             ] =
+               Cyclium.Episodes.list_steps(episode.id)
+    end
+
+    # A graceful shutdown hands the episode back with `phase: "interrupted"` (see
+    # `EpisodeRunner`). The sweep must not wait out the staleness window for it:
+    # the node that had it has already said it is not coming back.
+    test "restarts an interrupted episode without waiting for it to go stale" do
+      episode =
+        insert_episode(%{
+          actor_id: "restart_actor",
+          expectation_id: "restartable_work",
+          status: :running,
+          phase: "interrupted",
+          started_at: DateTime.utc_now()
+        })
+
+      registry = %{"restart_actor" => RestartActor}
+
+      assert {:ok, counts} =
+               Recovery.sweep(actor_registry: registry, stale_after_ms: :timer.hours(1))
+
+      assert counts.restarted == 1
+      assert {episode.id, [resume: true]} in Cyclium.FakeRunner.enqueued_calls()
+
+      # The restart clears the phase, so a second sweep does not see it again.
+      assert Repo.get!(Cyclium.Schemas.Episode, episode.id).phase == nil
+    end
+
+    # Each recovery claim increments `attempts`; a rolling deploy can otherwise
+    # bounce a restartable episode from node to node indefinitely, each hop a
+    # fresh run. `max_attempts` (default 3) is the cap.
+    test "fails a restartable episode once its recovery attempts are exhausted" do
+      episode =
+        insert_episode(%{
+          actor_id: "restart_actor",
+          expectation_id: "restartable_work",
+          status: :running,
+          attempts: 3,
+          max_attempts: 3,
+          started_at: DateTime.add(DateTime.utc_now(), -300, :second)
+        })
+
+      registry = %{"restart_actor" => RestartActor}
+
+      assert {:ok, counts} = Recovery.sweep(actor_registry: registry, stale_after_ms: 1)
+      assert counts.restarted == 0
+      assert counts.failed == 1
+      refute {episode.id, [resume: true]} in Cyclium.FakeRunner.enqueued_calls()
+
+      failed = Repo.get!(Cyclium.Schemas.Episode, episode.id)
+      assert failed.status == :failed
+      assert failed.error_class == "orphaned"
+      assert failed.error_detail["reason"] =~ "attempts exhausted (4 of 3)"
+
+      # The journal closes with the failure, not with whatever the run last wrote.
+      assert [
+               %{
+                 kind: :episode_failed,
+                 error_class: "orphaned",
+                 error_detail: %{"reason" => reason}
+               }
+             ] =
+               Cyclium.Episodes.list_steps(episode.id)
+
+      assert reason =~ "attempts exhausted"
+    end
+
+    test "restarts while attempts remain, counting this one" do
+      episode =
+        insert_episode(%{
+          actor_id: "restart_actor",
+          expectation_id: "restartable_work",
+          status: :running,
+          attempts: 2,
+          max_attempts: 3,
+          started_at: DateTime.add(DateTime.utc_now(), -300, :second)
+        })
+
+      registry = %{"restart_actor" => RestartActor}
+
+      assert {:ok, %{restarted: 1}} = Recovery.sweep(actor_registry: registry, stale_after_ms: 1)
+      assert Repo.get!(Cyclium.Schemas.Episode, episode.id).attempts == 3
     end
 
     test "fails episode when actor has no recovery_policy (default :fail)" do

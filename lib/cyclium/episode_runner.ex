@@ -110,10 +110,35 @@ defmodule Cyclium.EpisodeRunner do
         Cyclium.Episodes.cancel(episode.id, reason)
         {:error, :canceled}
 
+      # `Cyclium.EpisodeDrainer` has already handed this episode to recovery
+      # (phase stamped, claim released, marker journaled) as part of the node
+      # shutting down. Stop here and write nothing — the shutdown EXIT that
+      # follows in the mailbox is never reached.
+      :cyclium_drained ->
+        Logger.info("Episode handed to recovery by the node drain — stopping",
+          cyclium_episode_id: episode.id
+        )
+
+        Process.put(:cyclium_interrupted, true)
+        {:error, :interrupted}
+
       {:EXIT, _from, :normal} ->
         # Normal exits (e.g. ports closing after System.cmd or HTTP requests)
         # are harmless — just drain them and continue.
         :ok
+
+      # The supervisor is shutting this task down — a deploy, a `mix phx.server`
+      # restart, a node draining. That is not a failure of the episode, and it
+      # used to be recorded as one (`process_terminated`), which put it out of
+      # reach of `Cyclium.Recovery.sweep/1` — the sweep lists `:running` rows
+      # only — so an expectation's `recovery_policy: :restart` never applied to
+      # the most common way a run gets cut off. Leave the row `:running`, stamp
+      # the phase so the sweep can pick it up without waiting for the staleness
+      # window, and release the claim so the recovering node can take it at
+      # once. The strategy resumes from its latest checkpoint on the next node.
+      {:EXIT, from, reason}
+      when reason == :shutdown or (is_tuple(reason) and elem(reason, 0) == :shutdown) ->
+        interrupt_episode(episode, from, reason)
 
       {:EXIT, from, reason} ->
         Logger.warning(
@@ -148,6 +173,26 @@ defmodule Cyclium.EpisodeRunner do
     after
       0 -> :ok
     end
+  end
+
+  # A graceful stop mid-run with no node drain ahead of it (a host running the
+  # runner outside `Cyclium.Supervisor`). Nothing about the episode's status
+  # changes — it is still `:running`, because it still has work to do — but
+  # the hand-off `Cyclium.EpisodeDrainer.interrupt/1` writes (phase, claim,
+  # marker) lets the recovery sweep restart it immediately under the
+  # expectation's `recovery_policy`. `:cyclium_interrupted` tells the task's
+  # `after` block not to mark the row failed on the way out.
+  defp interrupt_episode(episode, from, reason) do
+    Logger.info(
+      "Episode task received shutdown from #{inspect(from)} (#{inspect(reason)}) — " <>
+        "leaving the episode running for recovery",
+      cyclium_episode_id: episode.id
+    )
+
+    Process.put(:cyclium_interrupted, true)
+    {:ok, 1} = Cyclium.EpisodeDrainer.interrupt([Cyclium.EpisodeDrainer.entry(episode)])
+
+    {:error, :interrupted}
   end
 
   # Mark the episode failed for wall-time budget exhaustion. Shared by the
