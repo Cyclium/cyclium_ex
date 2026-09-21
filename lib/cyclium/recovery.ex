@@ -214,6 +214,18 @@ defmodule Cyclium.Recovery do
           "node" => node_name()
         })
 
+        # Hand the claim back before handing the episode on. The sweep holds
+        # a "recovery" lease on this dedupe_key from `claim_episode/1`, and
+        # `EctoClaims.acquire/3` is not re-entrant — an active lease is busy to
+        # everyone, its own owner included — so the EpisodeTask we are about to
+        # start would get `{:error, :busy}`, `exit(:normal)`, and never run. The
+        # episode would then sit `:running` with nothing journaled until the
+        # next sweep found it stale and did the same thing again, burning an
+        # attempt each time. Completing the lease leaves a `:done` slot the
+        # task re-acquires at once. No other node can slip in between: the
+        # "resumed" step just journaled means the episode is no longer stale.
+        Cyclium.WorkClaims.gate_complete(episode.dedupe_key, node_name())
+
         restart_enqueue(episode, actor_registry)
         :restarted
 
@@ -229,6 +241,10 @@ defmodule Cyclium.Recovery do
   end
 
   defp fail_orphan(episode, error_detail) do
+    # Close the recovery lease too, so the slot does not sit `:claimed` until
+    # it expires on an episode that is finished.
+    Cyclium.WorkClaims.gate_fail(episode.dedupe_key, node_name(), error_detail)
+
     # The journal's last line would otherwise be the drainer's "interrupted"
     # marker — which reads as "will resume" on a run that never will. Close the
     # timeline the way the runner's own failures do, so a step feed shows the

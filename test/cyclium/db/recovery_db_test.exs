@@ -41,6 +41,71 @@ defmodule Cyclium.RecoveryDbTest do
     :ok
   end
 
+  # With work claims configured, the sweep's own recovery lease used to block the
+  # restart it triggered: the EpisodeTask's acquire on the same key saw an active
+  # lease (its own node's) and exited without running, so a `:restart` episode
+  # never actually restarted — it just accrued attempts sweep after sweep.
+  describe "sweep with work claims configured" do
+    alias Cyclium.Schemas.WorkClaim
+    alias Cyclium.WorkClaims.EctoClaims
+
+    setup do
+      Application.put_env(:cyclium, :work_claims, EctoClaims)
+      Application.put_env(:cyclium, :node_identity, "sweeping_node")
+
+      on_exit(fn ->
+        Application.delete_env(:cyclium, :work_claims)
+        Application.delete_env(:cyclium, :node_identity)
+      end)
+
+      :ok
+    end
+
+    test "releases its recovery lease so the restarted task can claim the episode" do
+      key = "interactive:restart_actor:conv-1:#{System.unique_integer([:positive])}"
+
+      episode =
+        insert_episode(%{
+          actor_id: "restart_actor",
+          expectation_id: "restartable_work",
+          status: :running,
+          dedupe_key: key,
+          phase: "interrupted"
+        })
+
+      # What the drainer leaves behind on the node that shut down.
+      {:ok, _} = EctoClaims.acquire(key, "dead_node", work_type: "episode")
+      :ok = EctoClaims.fail(key, "dead_node", %{"reason" => "interrupted"})
+
+      registry = %{"restart_actor" => RestartActor}
+      assert {:ok, %{restarted: 1}} = Recovery.sweep(actor_registry: registry, stale_after_ms: 1)
+      assert {episode.id, [resume: true]} in Cyclium.FakeRunner.enqueued_calls()
+
+      # The lease is closed, not held: the task's own acquire — same node, same
+      # key — succeeds instead of returning busy.
+      assert %WorkClaim{state: :done} = Repo.get_by!(WorkClaim, dedupe_key: key)
+
+      assert {:ok, %WorkClaim{state: :claimed, owner_node: "sweeping_node"}} =
+               EctoClaims.acquire(key, "sweeping_node", work_type: "episode")
+    end
+
+    test "closes the lease on an orphan it fails" do
+      key = "interactive:restart_actor:conv-2:#{System.unique_integer([:positive])}"
+
+      insert_episode(%{
+        actor_id: "restart_actor",
+        expectation_id: "not_restartable",
+        status: :running,
+        dedupe_key: key,
+        started_at: DateTime.add(DateTime.utc_now(), -300, :second)
+      })
+
+      registry = %{"restart_actor" => RestartActor}
+      assert {:ok, %{failed: 1}} = Recovery.sweep(actor_registry: registry, stale_after_ms: 1)
+      assert %WorkClaim{state: :failed} = Repo.get_by!(WorkClaim, dedupe_key: key)
+    end
+  end
+
   describe "sweep with compiled actor registry" do
     test "restarts episode when actor has recovery_policy: :restart" do
       episode =

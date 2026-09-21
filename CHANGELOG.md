@@ -30,6 +30,19 @@ reconstructed from git history and are summarized loosely.
   episode between nodes indefinitely — a node still up sweeps and restarts it, is
   drained itself and hands it back interrupted, and the next survivor repeats.
 
+### Fixed
+- **A `:restart` recovery never actually restarted a claimed episode.** The sweep
+  holds a "recovery" work-claim lease on the episode's `dedupe_key` from its
+  optimistic claim, and `EctoClaims.acquire/3` treats an active lease as busy for
+  every caller including its own owner — so the `EpisodeTask` the sweep enqueued
+  got `{:error, :busy}`, exited normally, and never ran. The episode sat
+  `:running` with nothing journaled until the next sweep found it stale and did
+  the same thing again, burning an attempt each time until it failed as
+  exhausted. Every interactive episode has a dedupe key, so every chat reply a
+  restart interrupted was lost this way. The sweep now completes its recovery
+  lease before enqueueing (the task re-acquires the `:done` slot at once) and
+  fails it when it fails the orphan.
+
 ### Added
 - **`Cyclium.EpisodeDrainer` hands a node's running episodes to recovery in bulk on
   shutdown.** It sits after `Cyclium.EpisodeSupervisor` in `Cyclium.Supervisor`, so
