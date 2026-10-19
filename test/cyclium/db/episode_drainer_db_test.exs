@@ -100,4 +100,24 @@ defmodule Cyclium.EpisodeDrainerDbTest do
     assert [%{kind: :observation, result_ref: %{"event" => "interrupted"}}] = steps(ep.id)
     assert Repo.aggregate(EpisodeStep, :count) == 1
   end
+
+  test "episode.interrupted names the run's subject" do
+    trigger_ref = %{"payload" => %{"thing_id" => "t-1"}}
+
+    ep =
+      insert_episode(%{
+        actor_id: "drain_actor",
+        expectation_id: "appraise",
+        trigger_ref: trigger_ref,
+        status: :running
+      })
+
+    assert {:ok, 1} = EpisodeDrainer.interrupt([EpisodeDrainer.entry(ep)])
+
+    assert_receive {:bus, "episode.interrupted", payload}
+    assert payload.episode_id == ep.id
+    assert payload.expectation_id == "appraise"
+    assert payload.trigger_ref == trigger_ref
+    assert Cyclium.Bus.subject(payload, "thing_id") == "t-1"
+  end
 end

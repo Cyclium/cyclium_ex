@@ -19,6 +19,7 @@ defmodule Cyclium.EpisodesCancelTest do
       actor_id: "test_actor",
       expectation_id: "test_exp",
       trigger_type: :schedule,
+      trigger_ref: %{"payload" => %{"thing_id" => "t-1"}},
       status: :running,
       budget: %{"max_turns" => 10},
       turns_used: 0,
@@ -62,6 +63,9 @@ defmodule Cyclium.EpisodesCancelTest do
 
       assert_receive {:bus, "episode.canceled", payload}
       assert payload.episode_id == episode.id
+      # Names the run's subject so a subscriber can match the cancel to a row.
+      assert payload.expectation_id == "test_exp"
+      assert payload.trigger_ref == %{"payload" => %{"thing_id" => "t-1"}}
     end
   end
 

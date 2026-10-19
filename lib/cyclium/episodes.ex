@@ -494,6 +494,8 @@ defmodule Cyclium.Episodes do
       episode_id: episode_id,
       actor_id: episode.actor_id,
       conversation_id: episode.conversation_id,
+      expectation_id: episode.expectation_id,
+      trigger_ref: episode.trigger_ref,
       reason: reason,
       workflow_instance_id: episode.workflow_instance_id,
       workflow_step_id: episode.workflow_step_id

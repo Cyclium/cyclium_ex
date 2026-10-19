@@ -6,6 +6,23 @@ All notable changes to Cyclium are recorded here. This project uses
 Entries are high-level, not exhaustive. Versions prior to `0.1.4` are
 reconstructed from git history and are summarized loosely.
 
+## [0.5.0] — 2026-10-19
+
+### Changed
+- **Run-ending Bus events now name the run's subject.** `episode.completed`,
+  `episode.failed`, `episode.canceled` and `episode.interrupted` carry
+  `expectation_id` and `trigger_ref` — the same subject fields `episode.started`
+  already sends — so a subscriber can tell which run finished without its own
+  `episode_id` bookkeeping or a DB read. `episode.queued` gains `trigger_ref`
+  too, so a page can show a run as waiting before it starts. The episode is
+  already in hand at each broadcast site, so the fields are additive and cost no
+  extra read.
+
+### Added
+- **`Cyclium.Bus.subject/2`** reads `trigger_ref["payload"][key]` from an event
+  payload, so subscribers stop hand-rolling the nested access. Returns `nil`
+  when any level is missing.
+
 ## [0.4.4] — 2026-09-21
 
 ### Changed

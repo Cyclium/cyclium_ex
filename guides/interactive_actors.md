@@ -340,7 +340,7 @@ Cyclium.Bus.subscribe()
 
 1. **Bus events**, in order:
    - `"expectation.triggered"` — emitted synchronously by dispatch (`%{actor_id, expectation_id, episode_id, conversation_id}`)
-   - `"episode.completed"` — emitted when the episode converges (`%{episode_id, actor_id, status: :done, summary, classification, confidence}`)
+   - `"episode.completed"` — emitted when the episode converges (`%{episode_id, actor_id, expectation_id, trigger_ref, status: :done, summary, classification, confidence}`)
 
    In `iex` you can drain them with `flush()` after a moment.
 

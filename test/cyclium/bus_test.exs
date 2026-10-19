@@ -52,4 +52,18 @@ defmodule Cyclium.BusTest do
     assert "episode.queued" in events
     assert "episode.started" in events
   end
+
+  describe "subject/2" do
+    test "reads trigger_ref[\"payload\"][key] from an event payload" do
+      payload = %{episode_id: "e-1", trigger_ref: %{"payload" => %{"thing_id" => "t-1"}}}
+      assert Cyclium.Bus.subject(payload, "thing_id") == "t-1"
+    end
+
+    test "is nil when the key, the payload, or the trigger_ref is missing" do
+      assert Cyclium.Bus.subject(%{trigger_ref: %{"payload" => %{}}}, "thing_id") == nil
+      assert Cyclium.Bus.subject(%{trigger_ref: %{}}, "thing_id") == nil
+      assert Cyclium.Bus.subject(%{trigger_ref: nil}, "thing_id") == nil
+      assert Cyclium.Bus.subject(%{}, "thing_id") == nil
+    end
+  end
 end

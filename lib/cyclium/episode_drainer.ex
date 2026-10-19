@@ -64,6 +64,8 @@ defmodule Cyclium.EpisodeDrainer do
           id: String.t(),
           dedupe_key: String.t() | nil,
           actor_id: String.t(),
+          expectation_id: String.t() | nil,
+          trigger_ref: map() | nil,
           conversation_id: String.t() | nil,
           workflow_instance_id: String.t() | nil,
           workflow_step_id: String.t() | nil
@@ -125,6 +127,8 @@ defmodule Cyclium.EpisodeDrainer do
       id: episode.id,
       dedupe_key: episode.dedupe_key,
       actor_id: episode.actor_id,
+      expectation_id: episode.expectation_id,
+      trigger_ref: episode.trigger_ref,
       conversation_id: episode.conversation_id,
       workflow_instance_id: episode.workflow_instance_id,
       workflow_step_id: episode.workflow_step_id
@@ -263,6 +267,8 @@ defmodule Cyclium.EpisodeDrainer do
       episode_id: entry.id,
       actor_id: entry.actor_id,
       conversation_id: entry.conversation_id,
+      expectation_id: entry.expectation_id,
+      trigger_ref: entry.trigger_ref,
       status: :running,
       phase: "interrupted",
       workflow_instance_id: entry.workflow_instance_id,

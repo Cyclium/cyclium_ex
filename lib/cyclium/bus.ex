@@ -86,6 +86,31 @@ defmodule Cyclium.Bus do
     end
   end
 
+  @doc """
+  Read a value from an episode event's trigger subject.
+
+  Every episode lifecycle event — `episode.queued`, `episode.started`,
+  `episode.completed`, `episode.failed`, `episode.canceled` and
+  `episode.interrupted` — carries the run's `trigger_ref`, the subject the run
+  is about. This reads `trigger_ref["payload"][key]` so a subscriber can tell
+  which subject an event names without hand-rolling the nested access or a DB
+  read. Returns `nil` when the payload has no `trigger_ref`, no `"payload"`, or
+  no such `key`.
+
+      def handle_info({:bus, "episode.completed", payload}, socket) do
+        case Cyclium.Bus.subject(payload, "thing_id") do
+          nil -> {:noreply, socket}
+          thing_id -> {:noreply, refresh_row(socket, thing_id)}
+        end
+      end
+  """
+  def subject(payload, key) when is_map(payload) do
+    case payload[:trigger_ref] || payload["trigger_ref"] do
+      %{"payload" => inner} when is_map(inner) -> inner[key]
+      _ -> nil
+    end
+  end
+
   @cancel_topic_prefix "cyclium:episode_cancel:"
 
   @doc """

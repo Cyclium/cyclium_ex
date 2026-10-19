@@ -82,11 +82,14 @@ defmodule Cyclium.BusPayloadDbTest do
     :ok
   end
 
+  @trigger_ref %{"payload" => %{"thing_id" => "t-1"}}
+
   defp run_episode(strategy) do
     episode =
       insert_episode(%{
         actor_id: "bus_payload_actor",
         expectation_id: "do_work",
+        trigger_ref: @trigger_ref,
         budget: %{"max_turns" => 5, "max_tokens" => 1_000, "max_wall_ms" => 10_000},
         log_strategy: "full_debug"
       })
@@ -114,6 +117,10 @@ defmodule Cyclium.BusPayloadDbTest do
     assert payload.episode_id == episode.id
     assert payload.summary == "all good"
     assert payload.classification == %{"primary" => "ok"}
+    # Run-ending events name the run's subject (expectation_id + trigger_ref).
+    assert payload.expectation_id == "do_work"
+    assert payload.trigger_ref == @trigger_ref
+    assert Cyclium.Bus.subject(payload, "thing_id") == "t-1"
   end
 
   test "episode.failed payload includes error_class and error_detail on abort" do
@@ -126,6 +133,8 @@ defmodule Cyclium.BusPayloadDbTest do
     assert payload.episode_id == episode.id
     assert payload.error_class == "custom_failure"
     assert is_map(payload.error_detail)
+    assert payload.expectation_id == "do_work"
+    assert payload.trigger_ref == @trigger_ref
   end
 
   test "lifecycle Bus events carry conversation_id" do

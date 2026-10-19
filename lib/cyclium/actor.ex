@@ -1199,6 +1199,7 @@ defmodule Cyclium.Actor.Server do
           episode_id: episode.id,
           actor_id: state.actor_id,
           expectation_id: params.expectation_id,
+          trigger_ref: episode.trigger_ref,
           conversation_id: episode.conversation_id
         })
 
