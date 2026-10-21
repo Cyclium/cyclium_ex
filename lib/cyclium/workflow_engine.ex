@@ -581,10 +581,32 @@ defmodule Cyclium.WorkflowEngine do
               step_state["episode_id"] != event_episode_id ->
             state
 
+          # A Bus payload can name any ids. When the episode row exists it must
+          # itself claim this instance and step before the workflow advances.
+          not episode_claims_step?(event_episode_id, instance.id, step_id) ->
+            Logger.warning(
+              "[Cyclium.WorkflowEngine] ignoring #{event_type} for episode #{inspect(event_episode_id)}: " <>
+                "the episode row does not belong to instance #{instance.id} step #{step_id}"
+            )
+
+            state
+
           true ->
             dispatch_terminal(instance, step_id, event_type, payload, state)
         end
     end
+  end
+
+  defp episode_claims_step?(nil, _instance_id, _step_id), do: true
+
+  defp episode_claims_step?(episode_id, instance_id, step_id) do
+    case Cyclium.Episodes.get(episode_id) do
+      nil -> true
+      %{workflow_instance_id: ^instance_id, workflow_step_id: ^step_id} -> true
+      _ -> false
+    end
+  rescue
+    _ -> true
   end
 
   defp dispatch_terminal(instance, step_id, event_type, payload, state) do

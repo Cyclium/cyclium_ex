@@ -32,7 +32,13 @@ defmodule Cyclium.Strategy.Template.Interactive do
 
   @impl true
   def init(episode, %Cyclium.Trigger.Interactive{} = trigger) do
-    strategy_config = Loop.load_strategy_config(episode.actor_id, episode.expectation_id)
+    # A human is present by definition in a conversation, so write and
+    # external-effect plans preview for approval unless the expectation opts
+    # out with `require_preview_for_side_effects: false`.
+    strategy_config =
+      Loop.load_strategy_config(episode.actor_id, episode.expectation_id)
+      |> Map.put_new("require_preview_for_side_effects", true)
+
     conversation = load_conversation(episode.conversation_id)
     goal = if conversation, do: Cyclium.Schemas.Conversation.decode_goal(conversation)
 

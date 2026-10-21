@@ -200,8 +200,11 @@ defmodule Cyclium.EpisodeRunnerFencingDbTest do
     test "a tool call that blocks past max_wall_ms is killed and the episode fails" do
       Application.put_env(:cyclium, :capability_registry, %{slow: SlowTool})
 
+      # Its own actor id: another test's actor declares `capabilities [...]`
+      # under the default "test_actor" id, and ToolExec would refuse :slow for it.
       episode =
         insert_episode(%{
+          actor_id: "fencing_wall_clock_actor",
           dedupe_key: "k6",
           budget: %{"max_wall_ms" => 50, "max_turns" => 5, "max_tokens" => 1_000}
         })

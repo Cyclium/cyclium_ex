@@ -38,14 +38,22 @@ defmodule Cyclium.Conversations.LiveHelpers do
 
   @doc """
   Load or create a conversation based on params and live_action.
-  Returns `{conversation, messages}`.
+
+  Returns `{conversation, messages}`. Loading by `"id"` checks that the
+  conversation belongs to `principal` (`Cyclium.Conversations.get_for_principal/3`)
+  and returns `{:error, :forbidden}` or `{:error, :not_found}` otherwise — a
+  conversation id in a URL is not proof of ownership. Pass
+  `skip_principal_check: true` in `opts` only for an operator view.
   """
-  def load_or_create_conversation(params, live_action, actor_id, principal) do
+  @spec load_or_create_conversation(map(), atom(), binary() | atom(), map() | nil, keyword()) ::
+          {Cyclium.Schemas.Conversation.t(), [map()]} | {:error, :forbidden | :not_found}
+  def load_or_create_conversation(params, live_action, actor_id, principal, opts \\ []) do
     case {params, live_action} do
       {%{"id" => id}, _} ->
-        conversation = Conversations.get!(id)
-        messages = load_messages_from_episodes(conversation.id)
-        {conversation, messages}
+        case Conversations.get_for_principal(id, principal, opts) do
+          {:ok, conversation} -> {conversation, load_messages_from_episodes(conversation.id)}
+          {:error, _} = err -> err
+        end
 
       {_, :new} ->
         start_new_conversation(actor_id, principal)

@@ -102,7 +102,7 @@ episode restarts from scratch.
 
 Most strategies don't need checkpoints — `recovery_policy: :restart` on the
 expectation handles recovery by re-running the episode from scratch. See the
-[Distributed Ops](distributed_ops.md) guide.
+[Cluster Operations](cluster_operations.md) guide.
 
 ## Circuit breaker
 
@@ -700,4 +700,4 @@ assert_migration_idempotent(MyCheckpoint, iterations: 100)
 ---
 
 **Related guides:** [Actors & Strategies](actors_and_strategies.md) ·
-[Workflows](workflows.md) · [Distributed Ops](distributed_ops.md)
+[Workflows](workflows.md) · [Cluster Operations](cluster_operations.md)

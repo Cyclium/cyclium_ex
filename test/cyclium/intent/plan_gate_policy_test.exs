@@ -37,9 +37,10 @@ defmodule Cyclium.Intent.PlanGatePolicyTest do
   defp strategy_cfg(policy_mod) do
     cfg = %{
       "allowed_tool_signatures" => [
-        %{"name" => "lookup_user", "side_effect" => "read"},
-        %{"name" => "dangerous_tool", "side_effect" => "write"}
-      ]
+        %{"name" => "lookup_user", "side_effect" => "read", "actions" => [%{"name" => "go"}]},
+        %{"name" => "dangerous_tool", "side_effect" => "write", "actions" => [%{"name" => "go"}]}
+      ],
+      "allowed_output_types" => ["sms", "email"]
     }
 
     if policy_mod, do: Map.put(cfg, "plan_policy", policy_mod), else: cfg
@@ -90,14 +91,35 @@ defmodule Cyclium.Intent.PlanGatePolicyTest do
       assert :ok = PlanGate.evaluate(p, %{}, strategy_cfg(nil))
     end
 
-    test "policy module as string" do
-      p = plan(%{risk: :high})
-      mod_string = to_string(TestPolicy)
-      # Remove "Elixir." prefix that to_string adds
-      mod_string = String.replace_prefix(mod_string, "Elixir.", "")
+    test "a policy named as a string is never resolved to a module and denies the plan" do
+      p = plan(%{risk: :low})
+      mod_string = to_string(TestPolicy) |> String.replace_prefix("Elixir.", "")
 
-      assert {:deny, "high risk plans not allowed"} =
-               PlanGate.evaluate(p, %{}, strategy_cfg(mod_string))
+      assert {:deny, msg} = PlanGate.evaluate(p, %{}, strategy_cfg(mod_string))
+      assert msg =~ "must be a module"
+    end
+
+    test "a module that is not a PlanPolicy denies the plan rather than failing open" do
+      p = plan(%{risk: :low})
+      assert {:deny, msg} = PlanGate.evaluate(p, %{}, strategy_cfg(Enum))
+      assert msg =~ "not a loaded Cyclium.Intent.PlanPolicy"
+    end
+
+    defmodule RaisingPolicy do
+      @behaviour Cyclium.Intent.PlanPolicy
+      @impl true
+      def validate_plan(_ctx, _plan, _cfg), do: raise("boom")
+      @impl true
+      def validate_tool_args(_ctx, _tool, _args, _sig), do: :ok
+      @impl true
+      def validate_output(_ctx, _output), do: :ok
+    end
+
+    test "a policy that raises denies the plan" do
+      p = plan(%{risk: :low})
+
+      assert {:deny, "plan policy failed"} =
+               PlanGate.evaluate(p, %{}, strategy_cfg(RaisingPolicy))
     end
   end
 end

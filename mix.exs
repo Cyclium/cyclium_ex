@@ -6,7 +6,7 @@ defmodule Cyclium.MixProject do
   def project do
     [
       app: :cyclium,
-      version: "0.5.1",
+      version: "0.5.2",
       elixir: "~> 1.18",
       elixirc_paths: elixirc_paths(Mix.env()),
       start_permanent: Mix.env() == :prod,
@@ -39,7 +39,7 @@ defmodule Cyclium.MixProject do
       {:jason, "~> 1.2"},
       {:phoenix_pubsub, "~> 2.1"},
       {:ecto_sqlite3, ">= 0.0.0", only: :test},
-      {:stream_data, "~> 1.0"},
+      {:stream_data, "~> 1.0", only: :test},
       {:dialyxir, "~> 1.4", only: [:dev, :test], runtime: false},
       {:ex_doc, ">= 0.40.3", only: :dev, runtime: false}
     ]
@@ -69,7 +69,7 @@ defmodule Cyclium.MixProject do
         "guides/workflows.md",
         "guides/dynamic_actors.md",
         "guides/observability.md",
-        "guides/distributed_ops.md",
+        "guides/cluster_operations.md",
         "guides/advanced.md",
         "guides/interactive_actors.md",
         "guides/conversation_ui.md"

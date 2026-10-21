@@ -28,7 +28,7 @@ defmodule Cyclium.OutputProposal do
   """
 
   @type t :: %__MODULE__{
-          type: atom(),
+          type: atom() | binary(),
           dedupe_key: binary() | nil,
           key: binary() | nil,
           payload: map(),

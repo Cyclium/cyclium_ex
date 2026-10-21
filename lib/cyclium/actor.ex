@@ -274,6 +274,17 @@ defmodule Cyclium.Actor.Server do
       end)
     end
 
+    # The `capabilities [...]` list the actor declares bounds which capabilities
+    # ToolExec will dispatch for it (see Cyclium.ToolExec). Unset or empty means
+    # no restriction beyond what the actor's own `tools` map resolves.
+    case config[:capabilities] do
+      caps when is_list(caps) and caps != [] ->
+        :persistent_term.put({:cyclium_actor_capabilities, config.actor_id}, caps)
+
+      _ ->
+        :ok
+    end
+
     # Register per-expectation strategy and service level configs so EpisodeTask
     # can resolve them without a manually maintained strategy registry.
     Enum.each(expectations, fn {_id, exp} ->
@@ -336,6 +347,16 @@ defmodule Cyclium.Actor.Server do
         :persistent_term.put(
           {:cyclium_strategy_config, config.actor_id, exp.id},
           normalize_strategy_config(exp.strategy_config)
+        )
+      end
+
+      # The conversation goal evaluator an interactive expectation declares
+      # (`goal_evaluator: MyModule`). Resolved by Cyclium.Intent.GoalEvaluator;
+      # a module name inside a goal's JSON is never resolved, only this is.
+      if exp.goal_evaluator do
+        :persistent_term.put(
+          {:cyclium_expectation_goal_evaluator, config.actor_id, exp.id},
+          exp.goal_evaluator
         )
       end
 
@@ -699,7 +720,8 @@ defmodule Cyclium.Actor.Server do
       finding_enrichment: Keyword.get(opts, :finding_enrichment),
       escalation_rules: Keyword.get(opts, :escalation_rules),
       finding_ttl_seconds: Keyword.get(opts, :finding_ttl_seconds),
-      loop_detection: Keyword.get(opts, :loop_detection, true)
+      loop_detection: Keyword.get(opts, :loop_detection, true),
+      goal_evaluator: Keyword.get(opts, :goal_evaluator)
     }
   end
 
@@ -1199,7 +1221,7 @@ defmodule Cyclium.Actor.Server do
           episode_id: episode.id,
           actor_id: state.actor_id,
           expectation_id: params.expectation_id,
-          trigger_ref: episode.trigger_ref,
+          trigger_ref: Cyclium.Bus.public_trigger_ref(episode.trigger_ref),
           conversation_id: episode.conversation_id
         })
 
@@ -1251,7 +1273,7 @@ defmodule Cyclium.Actor.Server do
               actor_id: state.actor_id,
               conversation_id: shed.conversation_id,
               expectation_id: shed.expectation_id,
-              trigger_ref: shed.trigger_ref,
+              trigger_ref: Cyclium.Bus.public_trigger_ref(shed.trigger_ref),
               status: :canceled,
               reason: :shed_oldest
             })

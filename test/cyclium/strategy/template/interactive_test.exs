@@ -5,6 +5,11 @@ defmodule Cyclium.Strategy.Template.InteractiveTest do
   alias Cyclium.Intent.{ActionPlan, ToolCallStep}
   alias Cyclium.ConvergeResult
 
+  # The loop dispatches a validated call through existing atoms only (a tool
+  # name with no atom has no registered capability). These are the tool and
+  # action names the plans below use, as compile-time atoms.
+  def __tool_atoms__, do: [:lookup_user, :update_user, :get, :step1, :step2, :step3]
+
   # --- State factory ---
 
   defp base_state(overrides) do
@@ -13,9 +18,23 @@ defmodule Cyclium.Strategy.Template.InteractiveTest do
         phase: :context_assembly,
         strategy_config: %{
           "allowed_tool_signatures" => [
-            %{"name" => "lookup_user", "side_effect" => "read"},
-            %{"name" => "update_user", "side_effect" => "write"}
-          ]
+            %{
+              "name" => "lookup_user",
+              "side_effect" => "read",
+              "actions" => [
+                %{"name" => "get"},
+                %{"name" => "step1"},
+                %{"name" => "step2"},
+                %{"name" => "step3"}
+              ]
+            },
+            %{
+              "name" => "update_user",
+              "side_effect" => "write",
+              "actions" => [%{"name" => "get"}]
+            }
+          ],
+          "allowed_output_types" => ["email"]
         },
         message: "hello",
         principal: %{"id" => "user_1"},
@@ -95,7 +114,11 @@ defmodule Cyclium.Strategy.Template.InteractiveTest do
           action_plan: plan,
           strategy_config: %{
             "allowed_tool_signatures" => [
-              %{"name" => "update_user", "side_effect" => "write"}
+              %{
+                "name" => "update_user",
+                "side_effect" => "write",
+                "actions" => [%{"name" => "get"}]
+              }
             ],
             "require_preview_for_side_effects" => true
           }
@@ -103,6 +126,103 @@ defmodule Cyclium.Strategy.Template.InteractiveTest do
 
       assert {:observe, %{validated: true, next_phase: :preview}} =
                Interactive.next_step(state, %{})
+    end
+
+    test "validate denies an action the signature does not list, even on an allowed tool" do
+      plan = %ActionPlan{
+        kind: :tool_call,
+        risk: :low,
+        why: "test",
+        tool: %ToolCallStep{tool: "lookup_user", action: "delete", args: %{}}
+      }
+
+      state = base_state(%{phase: :validate, action_plan: plan})
+
+      assert {:observe, %{denied: true, reason: reason}} = Interactive.next_step(state, %{})
+      assert reason =~ ~s(action "delete" of tool "lookup_user")
+    end
+
+    test "validate previews a per-action write on a read tool" do
+      plan = %ActionPlan{
+        kind: :tool_call,
+        risk: :low,
+        why: "test",
+        tool: %ToolCallStep{tool: "lookup_user", action: "update", args: %{}}
+      }
+
+      state =
+        base_state(%{
+          phase: :validate,
+          action_plan: plan,
+          strategy_config: %{
+            "allowed_tool_signatures" => [
+              %{
+                "name" => "lookup_user",
+                "side_effect" => "read",
+                "actions" => [%{"name" => "get"}, %{"name" => "update", "side_effect" => "write"}]
+              }
+            ],
+            "require_preview_for_side_effects" => true
+          }
+        })
+
+      assert {:observe, %{validated: true, next_phase: :preview}} =
+               Interactive.next_step(state, %{})
+    end
+
+    test "validate skips preview but still gates a plan approved from the journal" do
+      allowed = tool_call_plan("update_user")
+      denied = tool_call_plan("nuke_everything")
+
+      preview_cfg =
+        Map.put(base_state(%{}).strategy_config, "require_preview_for_side_effects", true)
+
+      state =
+        base_state(%{
+          phase: :validate,
+          action_plan: allowed,
+          approved_from_journal: true,
+          strategy_config: preview_cfg
+        })
+
+      assert {:observe, %{validated: true, next_phase: :execute}} =
+               Interactive.next_step(state, %{})
+
+      state = %{state | action_plan: denied}
+      assert {:observe, %{denied: true}} = Interactive.next_step(state, %{})
+    end
+
+    test "validate denies an output type outside allowed_output_types" do
+      output = %Cyclium.OutputProposal{type: "sms", dedupe_key: "dk", payload: %{}}
+      plan = %ActionPlan{kind: :output_proposal, risk: :low, why: "test", output: output}
+      state = base_state(%{phase: :validate, action_plan: plan})
+
+      assert {:observe, %{denied: true, reason: reason}} = Interactive.next_step(state, %{})
+      assert reason =~ "allowed_output_types"
+    end
+
+    test "validate previews an output proposal that requires approval" do
+      output = %Cyclium.OutputProposal{
+        type: "email",
+        dedupe_key: "dk",
+        payload: %{},
+        requires_approval: true
+      }
+
+      plan = %ActionPlan{kind: :output_proposal, risk: :low, why: "test", output: output}
+      state = base_state(%{phase: :validate, action_plan: plan})
+
+      assert {:observe, %{validated: true, next_phase: :preview}} =
+               Interactive.next_step(state, %{})
+    end
+
+    test "validate denies a workflow trigger outside allowed_workflows" do
+      wf = %Cyclium.Intent.WorkflowTrigger{workflow_id: "wf_1", input: %{}}
+      plan = %ActionPlan{kind: :workflow_trigger, risk: :low, why: "test", workflow: wf}
+      state = base_state(%{phase: :validate, action_plan: plan})
+
+      assert {:observe, %{denied: true, reason: reason}} = Interactive.next_step(state, %{})
+      assert reason =~ "allowed_workflows"
     end
 
     test "preview emits :approval with plan_hash" do
@@ -160,7 +280,18 @@ defmodule Cyclium.Strategy.Template.InteractiveTest do
 
       state = base_state(%{phase: :execute, action_plan: plan})
 
-      assert {:approval, %{description: "delete account"}} = Interactive.next_step(state, %{})
+      # The model's request is nested and tagged so it can never be mistaken
+      # for a gated plan the preview phase journaled.
+      assert {:approval,
+              %{"source" => "request_approval", "request" => %{description: "delete account"}}} =
+               Interactive.next_step(state, %{})
+    end
+
+    test "preview journals its plan with source: preview" do
+      state = base_state(%{phase: :preview, action_plan: tool_call_plan(), plan_hash: "h1"})
+
+      assert {:approval, %{source: "preview", plan_hash: "h1", plan: _}} =
+               Interactive.next_step(state, %{})
     end
 
     test "summarize emits :synthesize" do
@@ -586,8 +717,20 @@ defmodule Cyclium.Strategy.Template.InteractiveTest do
         explanation: "found issue",
         meta: %{
           "findings" => [
-            %{"action" => "raise", "class" => "anomaly", "summary" => "unusual"},
-            %{"action" => "clear", "key" => "old_finding", "reason" => "resolved"}
+            %{
+              "action" => "raise",
+              "finding_key" => "anomaly:1",
+              "class" => "anomaly",
+              "summary" => "unusual",
+              "severity" => "HIGH",
+              # identity/lifecycle fields the model may not set
+              "actor_id" => "someone_else",
+              "env" => "prod",
+              "status" => "cleared"
+            },
+            %{"action" => "clear", "key" => "old_finding", "reason" => "resolved"},
+            # no finding_key → dropped
+            %{"action" => "raise", "class" => "anomaly", "summary" => "no key"}
           ]
         }
       }
@@ -596,7 +739,14 @@ defmodule Cyclium.Strategy.Template.InteractiveTest do
 
       {:ok, result} = Interactive.converge(state, %{})
       assert length(result.findings) == 2
-      assert {:raise, _} = hd(result.findings)
+
+      assert {:raise, params} = hd(result.findings)
+      assert params.finding_key == "anomaly:1"
+      assert params.severity == :high
+      refute Map.has_key?(params, :actor_id)
+      refute Map.has_key?(params, :env)
+      refute Map.has_key?(params, :status)
+      assert {:clear, "old_finding", "resolved"} = Enum.at(result.findings, 1)
     end
 
     test "no plan produces no_action classification" do

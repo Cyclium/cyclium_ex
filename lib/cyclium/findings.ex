@@ -411,6 +411,7 @@ defmodule Cyclium.Findings do
               params
               |> Map.put(:raised_by_episode_id, episode.id)
               |> Map.put(:expectation_id, episode.expectation_id)
+              |> Map.put_new(:actor_id, to_string(episode.actor_id))
               |> Map.put_new(:raised_at, now)
               |> Map.put_new(:status, :active)
               |> Map.put(:updated_at, now)

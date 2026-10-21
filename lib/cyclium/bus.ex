@@ -120,6 +120,26 @@ defmodule Cyclium.Bus do
     end
   end
 
+  @private_trigger_keys ~w(principal message history)
+
+  @doc """
+  The part of an episode's `trigger_ref` that lifecycle broadcasts carry.
+
+  Every `Cyclium.Bus.subscribe/0` subscriber in the cluster receives every
+  lifecycle event, so the conversation turn's `message`, the `principal` map and
+  any `history` are dropped before broadcast; the subject `payload` and the
+  correlation ids stay, so `subject/2` keeps working. Read the full
+  `trigger_ref` from the episode row when a consumer needs it.
+  """
+  @spec public_trigger_ref(map() | nil) :: map() | nil
+  def public_trigger_ref(nil), do: nil
+
+  def public_trigger_ref(ref) when is_map(ref) do
+    Map.drop(ref, @private_trigger_keys ++ Enum.map(@private_trigger_keys, &String.to_atom/1))
+  end
+
+  def public_trigger_ref(other), do: other
+
   @cancel_topic_prefix "cyclium:episode_cancel:"
 
   @doc """

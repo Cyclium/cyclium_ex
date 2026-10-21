@@ -222,16 +222,35 @@ defmodule Cyclium.Test.StrategyCase do
   def validate_next_step_shape!(action) do
     valid =
       case action do
-        :done -> true
-        :converge -> true
-        {:tool_call, cap, act, args} when is_atom(cap) and is_atom(act) and is_map(args) -> true
-        {:synthesize, ctx} when is_map(ctx) -> true
-        {:observe, data} when is_map(data) -> true
-        {:output, type, payload} when is_atom(type) and is_map(payload) -> true
-        {:checkpoint, phase} when is_binary(phase) -> true
-        {:approval, req} when is_map(req) -> true
-        {:wait, ref} when is_map(ref) -> true
-        _ -> false
+        :done ->
+          true
+
+        :converge ->
+          true
+
+        {:tool_call, cap, act, args} when is_atom(cap) and is_atom(act) and is_map(args) ->
+          true
+
+        {:synthesize, ctx} when is_map(ctx) ->
+          true
+
+        {:observe, data} when is_map(data) ->
+          true
+
+        {:output, type, payload} when (is_atom(type) or is_binary(type)) and is_map(payload) ->
+          true
+
+        {:checkpoint, phase} when is_binary(phase) ->
+          true
+
+        {:approval, req} when is_map(req) ->
+          true
+
+        {:wait, ref} when is_map(ref) ->
+          true
+
+        _ ->
+          false
       end
 
     unless valid do

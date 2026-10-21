@@ -83,27 +83,53 @@ defmodule Cyclium.Schemas.Conversation do
 
   def statuses, do: @statuses
 
-  # JSON field helpers
+  # JSON field helpers. A malformed column value decodes to the field's empty
+  # value with a warning, rather than raising into whichever LiveView, hook or
+  # loader touched the row.
 
   def decode_goal(%__MODULE__{goal: nil}), do: nil
-  def decode_goal(%__MODULE__{goal: json}) when is_binary(json), do: Jason.decode!(json)
+
+  def decode_goal(%__MODULE__{goal: json} = c) when is_binary(json),
+    do: decode(c, :goal, json, nil)
 
   def decode_origin(%__MODULE__{origin: nil}), do: nil
-  def decode_origin(%__MODULE__{origin: json}) when is_binary(json), do: Jason.decode!(json)
+
+  def decode_origin(%__MODULE__{origin: json} = c) when is_binary(json),
+    do: decode(c, :origin, json, nil)
 
   def decode_audience_target(%__MODULE__{audience_target: nil}), do: nil
 
-  def decode_audience_target(%__MODULE__{audience_target: json}) when is_binary(json),
-    do: Jason.decode!(json)
+  def decode_audience_target(%__MODULE__{audience_target: json} = c) when is_binary(json),
+    do: decode(c, :audience_target, json, nil)
 
   def decode_principal(%__MODULE__{principal: nil}), do: nil
-  def decode_principal(%__MODULE__{principal: json}) when is_binary(json), do: Jason.decode!(json)
+
+  def decode_principal(%__MODULE__{principal: json} = c) when is_binary(json),
+    do: decode(c, :principal, json, nil)
 
   def decode_result(%__MODULE__{result: nil}), do: nil
-  def decode_result(%__MODULE__{result: json}) when is_binary(json), do: Jason.decode!(json)
+
+  def decode_result(%__MODULE__{result: json} = c) when is_binary(json),
+    do: decode(c, :result, json, nil)
 
   def decode_collected_fields(%__MODULE__{collected_fields: nil}), do: %{}
 
-  def decode_collected_fields(%__MODULE__{collected_fields: json}) when is_binary(json),
-    do: Jason.decode!(json)
+  def decode_collected_fields(%__MODULE__{collected_fields: json} = c) when is_binary(json),
+    do: decode(c, :collected_fields, json, %{})
+
+  defp decode(conversation, field, json, default) do
+    case Jason.decode(json) do
+      {:ok, value} ->
+        value
+
+      {:error, _} ->
+        require Logger
+
+        Logger.warning(
+          "[Cyclium.Schemas.Conversation] #{field} on conversation #{conversation.id} is not valid JSON; using #{inspect(default)}"
+        )
+
+        default
+    end
+  end
 end

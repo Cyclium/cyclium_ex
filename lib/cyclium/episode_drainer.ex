@@ -128,7 +128,7 @@ defmodule Cyclium.EpisodeDrainer do
       dedupe_key: episode.dedupe_key,
       actor_id: episode.actor_id,
       expectation_id: episode.expectation_id,
-      trigger_ref: episode.trigger_ref,
+      trigger_ref: Cyclium.Bus.public_trigger_ref(episode.trigger_ref),
       conversation_id: episode.conversation_id,
       workflow_instance_id: episode.workflow_instance_id,
       workflow_step_id: episode.workflow_step_id
@@ -268,7 +268,7 @@ defmodule Cyclium.EpisodeDrainer do
       actor_id: entry.actor_id,
       conversation_id: entry.conversation_id,
       expectation_id: entry.expectation_id,
-      trigger_ref: entry.trigger_ref,
+      trigger_ref: Cyclium.Bus.public_trigger_ref(entry.trigger_ref),
       status: :running,
       phase: "interrupted",
       workflow_instance_id: entry.workflow_instance_id,

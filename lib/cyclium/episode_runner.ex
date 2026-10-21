@@ -40,7 +40,7 @@ defmodule Cyclium.EpisodeRunner do
       conversation_id: episode.conversation_id,
       expectation_id: episode.expectation_id,
       trigger_type: episode.trigger_type,
-      trigger_ref: episode.trigger_ref,
+      trigger_ref: Cyclium.Bus.public_trigger_ref(episode.trigger_ref),
       workflow_instance_id: episode.workflow_instance_id,
       workflow_step_id: episode.workflow_step_id
     })
@@ -163,7 +163,7 @@ defmodule Cyclium.EpisodeRunner do
           actor_id: episode.actor_id,
           conversation_id: episode.conversation_id,
           expectation_id: episode.expectation_id,
-          trigger_ref: episode.trigger_ref,
+          trigger_ref: Cyclium.Bus.public_trigger_ref(episode.trigger_ref),
           status: :failed,
           error_class: "process_terminated",
           error_detail: detail,
@@ -220,7 +220,7 @@ defmodule Cyclium.EpisodeRunner do
       actor_id: episode.actor_id,
       conversation_id: episode.conversation_id,
       expectation_id: episode.expectation_id,
-      trigger_ref: episode.trigger_ref,
+      trigger_ref: Cyclium.Bus.public_trigger_ref(episode.trigger_ref),
       status: :failed,
       error_class: "budget_exceeded",
       error_detail: error_detail,
@@ -277,7 +277,7 @@ defmodule Cyclium.EpisodeRunner do
       actor_id: episode.actor_id,
       conversation_id: episode.conversation_id,
       expectation_id: episode.expectation_id,
-      trigger_ref: episode.trigger_ref,
+      trigger_ref: Cyclium.Bus.public_trigger_ref(episode.trigger_ref),
       status: :failed,
       error_class: "budget_exceeded",
       error_detail: error_detail,
@@ -391,11 +391,15 @@ defmodule Cyclium.EpisodeRunner do
                   fail_wall_budget(episode, started_at)
 
                 {:completed, {:ok, result, cost, redacted}} ->
+                  # The tool's own redact/1 and redact_result/1 ran first;
+                  # Cyclium.Redaction is the floor beneath them (credentials under
+                  # obvious keys never reach the journal even for a tool that
+                  # keeps the identity defaults).
                   step =
                     journal_step!(episode, :tool_call, %{
                       tool_name: tool_name,
-                      args_redacted: redacted.args_redacted,
-                      result_ref: redacted.result_redacted,
+                      args_redacted: Cyclium.Redaction.redact_sensitive(redacted.args_redacted),
+                      result_ref: Cyclium.Redaction.redact_sensitive(redacted.result_redacted),
                       cost_tokens: cost,
                       cost_ms: System.monotonic_time(:millisecond) - tool_started
                     })
@@ -415,7 +419,8 @@ defmodule Cyclium.EpisodeRunner do
                   step =
                     journal_step!(episode, :tool_call, %{
                       tool_name: tool_name,
-                      args_redacted: drop_internal_keys(args),
+                      args_redacted:
+                        args |> drop_internal_keys() |> Cyclium.Redaction.redact_sensitive(),
                       error_class: "tool_error",
                       error_detail: %{reason: format_error_reason(reason)},
                       cost_ms: System.monotonic_time(:millisecond) - tool_started
@@ -611,7 +616,7 @@ defmodule Cyclium.EpisodeRunner do
           actor_id: episode.actor_id,
           conversation_id: episode.conversation_id,
           expectation_id: episode.expectation_id,
-          trigger_ref: episode.trigger_ref,
+          trigger_ref: Cyclium.Bus.public_trigger_ref(episode.trigger_ref),
           status: :failed,
           error_class: "loop_detected",
           error_detail: error_detail,
@@ -744,7 +749,7 @@ defmodule Cyclium.EpisodeRunner do
       actor_id: episode.actor_id,
       conversation_id: episode.conversation_id,
       expectation_id: episode.expectation_id,
-      trigger_ref: episode.trigger_ref,
+      trigger_ref: Cyclium.Bus.public_trigger_ref(episode.trigger_ref),
       status: final_status,
       summary: converge_result.summary,
       classification: converge_result.classification,
@@ -816,7 +821,7 @@ defmodule Cyclium.EpisodeRunner do
   # the episode as cleanly :done).
   defp persist_findings(episode, findings) do
     Enum.reduce(findings, 0, fn action, failed ->
-      case Cyclium.Findings.persist_finding(action, episode) do
+      case safe_persist_finding(action, episode) do
         {:ok, finding} ->
           bus_event = finding_bus_event(action)
 
@@ -843,6 +848,15 @@ defmodule Cyclium.EpisodeRunner do
           failed + 1
       end
     end)
+  end
+
+  # One malformed finding (a strategy or model-authored map missing a required
+  # field) must not crash the post-converge of an episode whose tool side
+  # effects already ran; it counts as a failed persist instead.
+  defp safe_persist_finding(action, episode) do
+    Cyclium.Findings.persist_finding(action, episode)
+  rescue
+    e -> {:error, e}
   end
 
   defp compute_episode_status(output_results, findings_failed) do
@@ -917,7 +931,7 @@ defmodule Cyclium.EpisodeRunner do
       actor_id: episode.actor_id,
       conversation_id: episode.conversation_id,
       expectation_id: episode.expectation_id,
-      trigger_ref: episode.trigger_ref,
+      trigger_ref: Cyclium.Bus.public_trigger_ref(episode.trigger_ref),
       status: :failed,
       error_class: error_class,
       error_detail: error_detail,
@@ -1030,15 +1044,24 @@ defmodule Cyclium.EpisodeRunner do
   defp check_budget(%Episode{} = episode) do
     episode = Cyclium.Episodes.get!(episode.id)
     budget = episode.budget || %{}
-    max_turns = budget["max_turns"] || 50
-    max_tokens = budget["max_tokens"] || 100_000
+    max_turns = budget_limit(budget["max_turns"], 50)
+    max_tokens = budget_limit(budget["max_tokens"], 100_000)
 
     cond do
-      max_turns > 0 and episode.turns_used >= max_turns -> {:error, :budget_exceeded}
-      max_tokens > 0 and episode.tokens_used >= max_tokens -> {:error, :budget_exceeded}
+      episode.turns_used >= max_turns -> {:error, :budget_exceeded}
+      episode.tokens_used >= max_tokens -> {:error, :budget_exceeded}
       true -> :ok
     end
   end
+
+  # An absent limit takes the default. A limit of zero (or negative) is
+  # exhausted before the first turn — never "unlimited": `0` is truthy in
+  # Elixir, so `budget["max_turns"] || 50` used to accept it and the old
+  # `max_turns > 0 and ...` guard then switched the check off entirely.
+  defp budget_limit(nil, default), do: default
+  defp budget_limit(limit, _default) when is_integer(limit) and limit > 0, do: limit
+  defp budget_limit(limit, _default) when is_integer(limit), do: 0
+  defp budget_limit(_other, default), do: default
 
   # Detect repeating cycles of any length (1, 2, 3, ...) in the step history.
   # e.g. [A, B, A, B] is a 2-step cycle repeated twice → loop.

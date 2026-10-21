@@ -17,9 +17,46 @@ defmodule Cyclium.ToolExec do
     end
   end
 
-  defp check_capability(_ctx, _capability, _action) do
-    :ok
+  # An actor that declares `capabilities [...]` in its DSL may only dispatch
+  # those capabilities, whichever registry would resolve the tool. An actor
+  # that declares none is bounded only by what resolves (its own `tools` map,
+  # then the app registry).
+  defp check_capability(%{episode: episode}, capability, action) do
+    case declared_capabilities(episode.actor_id) do
+      nil ->
+        :ok
+
+      caps ->
+        if capability in caps or to_string(capability) in Enum.map(caps, &to_string/1) do
+          :ok
+        else
+          Logger.warning(
+            "[ToolExec] capability=#{inspect(capability)} action=#{inspect(action)} is not in " <>
+              "the capabilities declared by actor=#{inspect(episode.actor_id)}"
+          )
+
+          {:error, :capability_not_allowed}
+        end
+    end
   end
+
+  defp declared_capabilities(actor_id) do
+    case actor_key(actor_id) do
+      nil -> nil
+      key -> :persistent_term.get({:cyclium_actor_capabilities, key}, nil)
+    end
+  end
+
+  defp actor_key(actor_id) when is_atom(actor_id), do: actor_id
+
+  defp actor_key(actor_id) when is_binary(actor_id) do
+    case Cyclium.AtomGuard.existing_atom(actor_id) do
+      {:ok, atom} -> atom
+      :error -> nil
+    end
+  end
+
+  defp actor_key(_), do: nil
 
   defp execute(capability, action, args, ctx) do
     case resolve_tool(capability, ctx) do
@@ -74,20 +111,7 @@ defmodule Cyclium.ToolExec do
 
   defp resolve_tool(capability, ctx) do
     # 1. Actor-registered tool (from persistent_term, set by Actor DSL `tools` macro)
-    actor_id = ctx.episode.actor_id
-
-    actor_key =
-      case actor_id do
-        a when is_atom(a) ->
-          a
-
-        s when is_binary(s) ->
-          try do
-            String.to_existing_atom(s)
-          rescue
-            _ -> nil
-          end
-      end
+    actor_key = actor_key(ctx.episode.actor_id)
 
     from_actor =
       if actor_key do

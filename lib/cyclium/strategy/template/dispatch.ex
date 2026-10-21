@@ -28,7 +28,7 @@ defmodule Cyclium.Strategy.Template.Dispatch do
 
   @impl true
   def init(episode, trigger) do
-    config = load_strategy_config(episode.actor_id)
+    config = Cyclium.StrategyConfig.load(episode.actor_id, episode.expectation_id)
     trigger_payload = extract_trigger_payload(trigger)
 
     entities = gather_entities(config, trigger_payload)
@@ -116,23 +116,6 @@ defmodule Cyclium.Strategy.Template.Dispatch do
     entity
     |> Map.take(payload_fields)
     |> Map.new(fn {k, v} -> {to_string(k), v} end)
-  end
-
-  defp load_strategy_config(actor_id) do
-    import Ecto.Query
-
-    case Cyclium.repo().one(
-           from(d in Cyclium.Schemas.AgentDefinition,
-             where: d.actor_id == ^to_string(actor_id),
-             select: d.strategy_config
-           )
-         ) do
-      nil -> %{}
-      json when is_binary(json) -> Jason.decode!(json)
-      config when is_map(config) -> config
-    end
-  rescue
-    _ -> %{}
   end
 
   defp extract_trigger_payload(%Cyclium.Trigger.Event{payload: payload}) when is_map(payload) do

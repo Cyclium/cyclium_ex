@@ -279,4 +279,4 @@ name registration ensures only one instance runs per actor across the cluster.
 ---
 
 **Related guides:** [Actors & Strategies](actors_and_strategies.md) ·
-[Workflows](workflows.md) · [Distributed Ops](distributed_ops.md)
+[Workflows](workflows.md) · [Cluster Operations](cluster_operations.md)

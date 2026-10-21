@@ -30,7 +30,12 @@ defmodule Cyclium.Conversations.Dispatch do
   `actor_id` — no hardcoded expectation IDs needed.
 
   ## Options
-    - `:principal` — map with user info (e.g. `%{"type" => "user", "id" => "user_123"}`)
+    - `:principal` — map with user info (e.g. `%{"type" => "user", "id" => "user_123"}`).
+      When given, it must be the conversation's principal
+      (`Cyclium.Conversations.principal_matches?/2`), otherwise `{:error, :forbidden}`.
+      A conversation that has no principal yet is claimed for this one.
+    - `:system` — `true` for a trusted, non-user caller (a workflow, a job); skips
+      the principal check. Say so explicitly rather than omitting `:principal`.
     - `:budget` — override budget (default: resolved from actor's expectation)
     - `:log_strategy` — override log strategy (default: resolved from actor's expectation)
     - `:expectation_id` — explicitly select the interactive expectation to use.
@@ -46,29 +51,61 @@ defmodule Cyclium.Conversations.Dispatch do
     conversation = Conversations.get!(conversation_id)
     actor_id = conversation.actor_id
 
-    # Priority: explicit opt > expectation pinned on the conversation > auto-resolve.
-    resolution =
-      case Keyword.get(opts, :expectation_id) || conversation.expectation_id do
-        nil -> resolve_interactive_expectation(actor_id)
-        chosen -> resolve_named_expectation(actor_id, chosen)
+    with :ok <- authorize(conversation, opts) do
+      # Priority: explicit opt > expectation pinned on the conversation > auto-resolve.
+      resolution =
+        case Keyword.get(opts, :expectation_id) || conversation.expectation_id do
+          nil -> resolve_interactive_expectation(actor_id)
+          chosen -> resolve_named_expectation(actor_id, chosen)
+        end
+
+      case resolution do
+        {:ok, expectation_id, budget, log_strategy} ->
+          create_and_enqueue(
+            conversation_id,
+            message,
+            actor_id,
+            expectation_id,
+            Keyword.get(opts, :budget, budget),
+            Keyword.get(opts, :log_strategy, log_strategy),
+            Keyword.get(opts, :principal)
+          )
+
+        {:error, reason} ->
+          Logger.error(
+            "No interactive expectation found for actor #{actor_id}: #{inspect(reason)}"
+          )
+
+          {:error, reason}
       end
+    end
+  end
 
-    case resolution do
-      {:ok, expectation_id, budget, log_strategy} ->
-        create_and_enqueue(
-          conversation_id,
-          message,
-          actor_id,
-          expectation_id,
-          Keyword.get(opts, :budget, budget),
-          Keyword.get(opts, :log_strategy, log_strategy),
-          Keyword.get(opts, :principal)
-        )
+  # A supplied principal must own the conversation; an unowned conversation is
+  # claimed for it. No principal and no `system: true` is still accepted (the
+  # host may authorize upstream), but a caller that has a principal should pass
+  # it so the check applies.
+  defp authorize(conversation, opts) do
+    principal = Keyword.get(opts, :principal)
 
-      {:error, reason} ->
-        Logger.error("No interactive expectation found for actor #{actor_id}: #{inspect(reason)}")
+    cond do
+      Keyword.get(opts, :system, false) ->
+        :ok
 
-        {:error, reason}
+      is_nil(principal) ->
+        :ok
+
+      Conversations.principal_matches?(conversation, principal) ->
+        :ok
+
+      is_nil(conversation.principal_id) ->
+        case Conversations.claim(conversation.id, principal) do
+          {:ok, _} -> :ok
+          {:error, _} -> {:error, :forbidden}
+        end
+
+      true ->
+        {:error, :forbidden}
     end
   end
 
@@ -232,6 +269,15 @@ defmodule Cyclium.Conversations.Dispatch do
     Map.new(budget, fn {k, v} -> {to_string(k), v} end)
   end
 
+  # An actor id with no atom was never registered on this node, so no
+  # expectation can be found for it: the lookups below miss and report that,
+  # rather than raising out of the caller.
   defp safe_to_atom(val) when is_atom(val), do: val
-  defp safe_to_atom(val) when is_binary(val), do: String.to_existing_atom(val)
+
+  defp safe_to_atom(val) when is_binary(val) do
+    case Cyclium.AtomGuard.existing_atom(val) do
+      {:ok, atom} -> atom
+      :error -> nil
+    end
+  end
 end

@@ -175,21 +175,28 @@ defmodule MyAppWeb.ConversationLive.Show do
 
   import MyAppWeb.ConversationComponents
 
-  @principal %{"type" => "user", "id" => "demo_user", "label" => "Demo User"}
+  # The principal is the signed-in user, derived from the session — never a
+  # constant. Loading a conversation by id checks it belongs to this principal.
+  defp principal(session), do: %{"type" => "user", "id" => session["user_id"]}
 
   @impl true
-  def mount(params, _session, socket) do
+  def mount(params, session, socket) do
     if connected?(socket), do: Cyclium.Bus.subscribe()
+    principal = principal(session)
 
-    {conversation, messages} =
-      load_or_create_conversation(params, socket.assigns.live_action, @__actor_id, @principal)
+    case load_or_create_conversation(params, socket.assigns.live_action, @__actor_id, principal) do
+      {conversation, messages} ->
+        {:ok,
+         socket
+         |> assign(:principal, principal)
+         |> assign(:conversation, conversation)
+         |> assign(:messages, messages)
+         |> assign(:sending, false)
+         |> assign(:page_title, "Chat: #{conversation.name}")}
 
-    {:ok,
-     socket
-     |> assign(:conversation, conversation)
-     |> assign(:messages, messages)
-     |> assign(:sending, false)
-     |> assign(:page_title, "Chat: #{conversation.name}")}
+      {:error, _forbidden_or_not_found} ->
+        {:ok, socket |> put_flash(:error, "Conversation not found") |> redirect(to: ~p"/chat/new")}
+    end
   end
 
   @impl true
@@ -209,7 +216,7 @@ defmodule MyAppWeb.ConversationLive.Show do
              message,
              socket.assigns.messages,
              @__dispatch,
-             principal: @principal
+             principal: socket.assigns.principal
            ) do
         {:ok, messages} ->
           {:noreply, assign(socket, messages: messages, sending: true)}

@@ -27,13 +27,14 @@ defmodule Cyclium.Output.Router do
   def route(%OutputProposal{} = proposal, episode, _episode_ctx) do
     now = DateTime.utc_now() |> DateTime.truncate(:second)
     dedupe_key = effective_dedupe_key(proposal, episode)
+    adapter = Cyclium.Output.Adapter.resolve(proposal.type)
 
     attrs = %{
       episode_id: episode.id,
       type: to_string(proposal.type),
       dedupe_key: dedupe_key,
       status: :proposed,
-      payload_redacted: proposal.payload,
+      payload_redacted: redact_payload(adapter, proposal.payload),
       created_at: now
     }
 
@@ -41,7 +42,7 @@ defmodule Cyclium.Output.Router do
 
     case repo().insert(changeset) do
       {:ok, output} ->
-        deliver_via_adapter(output, proposal, episode)
+        deliver_via_adapter(output, proposal, episode, adapter)
 
       {:error, %Ecto.Changeset{} = cs} ->
         if has_unique_error?(cs, :dedupe_key) do
@@ -75,9 +76,21 @@ defmodule Cyclium.Output.Router do
   # Neither given — no deduplication (matches prior behavior for a missing key).
   defp effective_dedupe_key(%OutputProposal{dedupe_key: dk}, _episode), do: dk
 
-  defp deliver_via_adapter(output, proposal, episode) do
-    adapter = Cyclium.Output.Adapter.resolve(proposal.type)
+  # What the row stores: the adapter's own `redact/1` when it has one, then the
+  # key-based floor from Cyclium.Redaction. The adapter still receives the full
+  # payload for delivery.
+  defp redact_payload(adapter, payload) do
+    adapted =
+      if adapter && Code.ensure_loaded?(adapter) && function_exported?(adapter, :redact, 1) do
+        adapter.redact(payload)
+      else
+        payload
+      end
 
+    Cyclium.Redaction.redact_sensitive(adapted)
+  end
+
+  defp deliver_via_adapter(output, proposal, episode, adapter) do
     if is_nil(adapter) do
       mark_failed(output, "no_adapter", %{type: to_string(proposal.type)})
       journal_output_step!(episode, :output_failed, output, "no_adapter")

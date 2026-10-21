@@ -15,8 +15,13 @@ defmodule Cyclium.DynamicActor.LoaderTest do
   end
 
   describe "process_name/1" do
-    test "returns atom with cyclium_dynamic_ prefix" do
-      assert Loader.process_name("my_actor") == :cyclium_dynamic_my_actor
+    test "returns a tuple keyed by the actor id string, minting no atom" do
+      before = :erlang.system_info(:atom_count)
+      fresh = "loader_actor_#{System.unique_integer([:positive])}"
+
+      assert Loader.process_name(fresh) == {:cyclium_dynamic, fresh}
+      assert Loader.process_name(:my_actor) == {:cyclium_dynamic, "my_actor"}
+      assert :erlang.system_info(:atom_count) == before
     end
   end
 

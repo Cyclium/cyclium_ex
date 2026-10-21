@@ -312,7 +312,12 @@ defmodule Cyclium.Strategy.Template.AgenticTaskTest do
         "summary" => "Resource is over limit",
         "confidence" => 0.92,
         "findings" => [
-          %{"action" => "raise", "class" => "over_limit", "summary" => "R-1 over limit"}
+          %{
+            "action" => "raise",
+            "finding_key" => "over_limit:R-1",
+            "class" => "over_limit",
+            "summary" => "R-1 over limit"
+          }
         ],
         "outputs" => [
           %{"type" => "slack", "dedupe_key" => "dk1", "payload" => %{"text" => "alert"}}
@@ -326,8 +331,9 @@ defmodule Cyclium.Strategy.Template.AgenticTaskTest do
       assert res.classification["primary"] == "task_complete"
       assert res.classification["terminal"] == "finish"
       assert res.confidence == 0.92
-      assert [{:raise, _}] = res.findings
-      assert [%Cyclium.OutputProposal{type: :slack}] = res.outputs
+      assert [{:raise, %{finding_key: "over_limit:R-1", class: "over_limit"}}] = res.findings
+      # Output types stay strings: no atom is minted from model text.
+      assert [%Cyclium.OutputProposal{type: "slack"}] = res.outputs
     end
 
     test "plain explanation (no finish) → task_complete/explanation" do

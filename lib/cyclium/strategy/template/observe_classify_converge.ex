@@ -43,7 +43,7 @@ defmodule Cyclium.Strategy.Template.ObserveClassifyConverge do
 
   @impl true
   def init(episode, trigger) do
-    strategy_config = load_strategy_config(episode.actor_id)
+    strategy_config = Cyclium.StrategyConfig.load(episode.actor_id, episode.expectation_id)
     trigger_payload = extract_trigger_payload(trigger)
 
     {:ok,
@@ -200,12 +200,7 @@ defmodule Cyclium.Strategy.Template.ObserveClassifyConverge do
 
       finding_key = build_finding_key(finding_config, subject_id, episode_ctx)
 
-      severity =
-        case classification["severity"] do
-          s when is_atom(s) -> s
-          s when is_binary(s) -> Cyclium.AtomGuard.intern!(s)
-          _ -> :low
-        end
+      severity = severity_atom(classification["severity"])
 
       [
         {:raise,
@@ -237,6 +232,17 @@ defmodule Cyclium.Strategy.Template.ObserveClassifyConverge do
 
   defp atom_key_lookup(_map, _key), do: nil
 
+  # Severity comes from a definition row's rules; map it onto the finding enum
+  # without minting — anything else is :low.
+  @severities [:low, :medium, :high, :critical]
+
+  defp severity_atom(s) when s in @severities, do: s
+
+  defp severity_atom(s) when is_binary(s),
+    do: Enum.find(@severities, :low, &(Atom.to_string(&1) == String.downcase(s)))
+
+  defp severity_atom(_), do: :low
+
   defp build_finding_key(finding_config, subject_id, episode_ctx) do
     case finding_config["finding_key_template"] do
       nil ->
@@ -251,23 +257,6 @@ defmodule Cyclium.Strategy.Template.ObserveClassifyConverge do
   end
 
   # --- Shared helpers ---
-
-  defp load_strategy_config(actor_id) do
-    import Ecto.Query
-
-    case Cyclium.repo().one(
-           from(d in Cyclium.Schemas.AgentDefinition,
-             where: d.actor_id == ^to_string(actor_id),
-             select: d.strategy_config
-           )
-         ) do
-      nil -> %{}
-      json when is_binary(json) -> Jason.decode!(json)
-      config when is_map(config) -> config
-    end
-  rescue
-    _ -> %{}
-  end
 
   defp extract_trigger_payload(%Cyclium.Trigger.Event{payload: payload}) when is_map(payload) do
     Map.new(payload, fn {k, v} -> {to_string(k), v} end)

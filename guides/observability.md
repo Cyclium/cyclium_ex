@@ -140,7 +140,7 @@ Key events:
 | `[:cyclium, :workflow, :step_reused]` | workflow_id, instance_id, step_id, reused_episode_id |
 
 Full list: `Cyclium.Telemetry.events/0`. Work-claim telemetry is documented in the
-[Distributed Ops](distributed_ops.md) guide.
+[Cluster Operations](cluster_operations.md) guide.
 
 ## Step journal
 
@@ -243,4 +243,4 @@ budgets. Use the recommendations to tune your expectation configs over time.
 
 **Related guides:** [Actors & Strategies](actors_and_strategies.md) ·
 [Findings & Outputs](findings_and_outputs.md) ·
-[Distributed Ops](distributed_ops.md)
+[Cluster Operations](cluster_operations.md)

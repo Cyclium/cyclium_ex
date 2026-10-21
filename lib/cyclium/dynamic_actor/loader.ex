@@ -64,6 +64,7 @@ defmodule Cyclium.DynamicActor.Loader do
 
       pid ->
         DynamicSupervisor.terminate_child(Cyclium.ActorSupervisor, pid)
+        Cyclium.StrategyConfig.unmark_dynamic(actor_id)
         :ok
     end
   end
@@ -101,40 +102,56 @@ defmodule Cyclium.DynamicActor.Loader do
   end
 
   @doc """
-  Returns the process name for a dynamic actor.
+  Returns the `:global` name of a dynamic actor: a tuple keyed by the actor id
+  string, so looking one up never mints an atom per id.
   """
-  def process_name(actor_id), do: :"cyclium_dynamic_#{actor_id}"
+  @spec process_name(atom() | binary()) :: {:cyclium_dynamic, binary()}
+  def process_name(actor_id), do: {:cyclium_dynamic, to_string(actor_id)}
 
   # --- Private ---
 
   defp start_from_definition(%AgentDefinition{} = defn) do
     strategy_module = resolve_strategy_module(defn)
     config = deserialize_config(defn)
-    expectations = deserialize_expectations(defn, strategy_module)
-    name = process_name(defn.actor_id)
 
-    validate_strategy_outputs(defn)
+    case deserialize_expectations(defn, strategy_module) do
+      {:ok, expectations} ->
+        name = process_name(defn.actor_id)
 
-    case DynamicSupervisor.start_child(Cyclium.ActorSupervisor, {
-           Cyclium.DynamicActor,
-           name: name, config: config, expectations: expectations
-         }) do
-      {:ok, pid} ->
-        Logger.info("Started dynamic actor (#{inspect(pid)})",
-          cyclium_actor_id: defn.actor_id
-        )
+        validate_strategy_outputs(defn)
 
-        {:ok, pid}
+        # Lets Cyclium.StrategyConfig read this actor's strategy_config from its
+        # definition row; compiled actors never take that path.
+        Cyclium.StrategyConfig.mark_dynamic(defn.actor_id)
 
-      {:error, {:already_started, pid}} ->
-        Logger.debug("Dynamic actor already running",
-          cyclium_actor_id: defn.actor_id
-        )
+        case DynamicSupervisor.start_child(Cyclium.ActorSupervisor, {
+               Cyclium.DynamicActor,
+               name: name, config: config, expectations: expectations
+             }) do
+          {:ok, pid} ->
+            Logger.info("Started dynamic actor (#{inspect(pid)})",
+              cyclium_actor_id: defn.actor_id
+            )
 
-        {:ok, pid}
+            {:ok, pid}
+
+          {:error, {:already_started, pid}} ->
+            Logger.debug("Dynamic actor already running",
+              cyclium_actor_id: defn.actor_id
+            )
+
+            {:ok, pid}
+
+          {:error, reason} = err ->
+            Logger.error("Failed to start dynamic actor: #{inspect(reason)}",
+              cyclium_actor_id: defn.actor_id
+            )
+
+            err
+        end
 
       {:error, reason} = err ->
-        Logger.error("Failed to start dynamic actor: #{inspect(reason)}",
+        Logger.error("Refusing to start dynamic actor: #{inspect(reason)}",
           cyclium_actor_id: defn.actor_id
         )
 
@@ -149,11 +166,16 @@ defmodule Cyclium.DynamicActor.Loader do
 
   defp resolve_strategy_module(_), do: nil
 
+  # Definition JSON is decoded with `AtomGuard.key/1`: a key the framework reads
+  # already exists as an atom and comes back as one; any other key stays a
+  # string and is ignored, so a definition cannot grow the atom table by key.
+  defp decode_json(json), do: Jason.decode!(json, keys: &Cyclium.AtomGuard.key/1)
+
   defp deserialize_config(%AgentDefinition{} = defn) do
     base =
       case defn.config do
         nil -> %{}
-        json when is_binary(json) -> Jason.decode!(json, keys: &Cyclium.AtomGuard.intern!/1)
+        json when is_binary(json) -> decode_json(json)
         map when is_map(map) -> map
       end
 
@@ -173,54 +195,83 @@ defmodule Cyclium.DynamicActor.Loader do
     raw =
       case defn.expectations do
         nil -> []
-        json when is_binary(json) -> Jason.decode!(json, keys: &Cyclium.AtomGuard.intern!/1)
+        json when is_binary(json) -> decode_json(json)
         list when is_list(list) -> list
       end
 
-    Enum.map(raw, fn exp ->
+    raw
+    |> Enum.reduce_while({:ok, []}, fn exp, {:ok, acc} ->
       id = Cyclium.AtomGuard.intern!(to_string(exp[:id] || exp["id"]))
-      opts = expectation_to_opts(exp, default_strategy)
-      {id, opts}
+
+      case expectation_to_opts(exp, default_strategy) do
+        {:ok, opts} -> {:cont, {:ok, [{id, opts} | acc]}}
+        {:error, reason} -> {:halt, {:error, {reason, id}}}
+      end
     end)
+    |> case do
+      {:ok, list} -> {:ok, Enum.reverse(list)}
+      err -> err
+    end
   end
 
   defp expectation_to_opts(exp, default_strategy) do
-    opts = []
+    with {:ok, strategy} <- resolve_expectation_strategy(exp, default_strategy) do
+      opts = if strategy, do: [strategy: strategy], else: []
 
-    # Per-expectation strategy key overrides the actor-level template
-    strategy =
-      case exp[:strategy] || exp["strategy"] do
-        nil -> default_strategy
-        s when is_atom(s) -> s
-        s when is_binary(s) -> String.to_existing_atom(s)
-      end
+      opts =
+        case normalize_trigger(exp[:trigger] || exp["trigger"]) do
+          nil -> opts
+          trigger -> [{:trigger, trigger} | opts]
+        end
 
-    opts = if strategy, do: [{:strategy, strategy} | opts], else: opts
+      opts = if exp[:budget], do: [{:budget, exp[:budget]} | opts], else: opts
 
-    opts =
-      case normalize_trigger(exp[:trigger] || exp["trigger"]) do
-        nil -> opts
-        trigger -> [{:trigger, trigger} | opts]
-      end
+      opts =
+        if exp[:log_strategy],
+          do: [{:log_strategy, known_atom(exp[:log_strategy])} | opts],
+          else: opts
 
-    opts = if exp[:budget], do: [{:budget, exp[:budget]} | opts], else: opts
+      opts =
+        if exp[:recovery_policy],
+          do: [{:recovery_policy, known_atom(exp[:recovery_policy])} | opts],
+          else: opts
 
-    opts =
-      if exp[:log_strategy], do: [{:log_strategy, to_atom(exp[:log_strategy])} | opts], else: opts
+      opts =
+        if exp[:subject_key], do: [{:subject_key, to_atom(exp[:subject_key])} | opts], else: opts
 
-    opts =
-      if exp[:recovery_policy],
-        do: [{:recovery_policy, to_atom(exp[:recovery_policy])} | opts],
-        else: opts
-
-    opts =
-      if exp[:subject_key], do: [{:subject_key, to_atom(exp[:subject_key])} | opts], else: opts
-
-    opts = if exp[:debounce_ms], do: [{:debounce_ms, exp[:debounce_ms]} | opts], else: opts
-    opts = if exp[:cooldown_ms], do: [{:cooldown_ms, exp[:cooldown_ms]} | opts], else: opts
-    opts
+      opts = if exp[:debounce_ms], do: [{:debounce_ms, exp[:debounce_ms]} | opts], else: opts
+      opts = if exp[:cooldown_ms], do: [{:cooldown_ms, exp[:cooldown_ms]} | opts], else: opts
+      {:ok, opts}
+    end
   end
 
+  # A per-expectation strategy names a registered template
+  # (`Cyclium.Strategy.TemplateRegistry`), never an arbitrary module: a
+  # definition row could otherwise point an expectation at any loaded module.
+  # An in-process caller may still hand over a module directly.
+  defp resolve_expectation_strategy(exp, default_strategy) do
+    case exp[:strategy] || exp["strategy"] do
+      nil ->
+        {:ok, default_strategy}
+
+      mod when is_atom(mod) ->
+        {:ok, mod}
+
+      template when is_binary(template) ->
+        case Cyclium.Strategy.TemplateRegistry.resolve(template) do
+          nil -> {:error, {:unknown_strategy_template, template}}
+          mod -> {:ok, mod}
+        end
+    end
+  end
+
+  # log_strategy / recovery_policy take one of a few compile-time atoms; an
+  # unknown value stays a string (and falls back to the default downstream)
+  # rather than minting an atom.
+  defp known_atom(val) when is_atom(val), do: val
+  defp known_atom(val) when is_binary(val), do: Cyclium.AtomGuard.key(val)
+
+  # subject_key must be an atom (the actor matches on it); one per expectation.
   defp to_atom(val) when is_atom(val), do: val
   defp to_atom(val) when is_binary(val), do: Cyclium.AtomGuard.intern!(val)
 

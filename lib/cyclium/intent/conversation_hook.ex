@@ -72,7 +72,9 @@ defmodule Cyclium.Intent.ConversationHook do
         tokens_used: conversation.tokens_used || 0
       }
 
-      case GoalEvaluator.evaluate(goal, conversation_state, result) do
+      evaluator = GoalEvaluator.declared_for(conversation.actor_id, conversation.expectation_id)
+
+      case GoalEvaluator.evaluate(goal, conversation_state, result, evaluator: evaluator) do
         :continue ->
           :ok
 

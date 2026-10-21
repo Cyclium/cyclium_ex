@@ -44,7 +44,30 @@ defmodule Cyclium.Reconciler do
   Trigger reconciliation for an actor module. Can be called programmatically
   or via the Bus event.
   """
-  def reconcile_actor(module, _payload \\ %{}) do
+  def reconcile_actor(module, payload \\ %{})
+
+  # The module comes from a Bus payload any process in the cluster can publish;
+  # only a compiled actor module is acted on.
+  def reconcile_actor(module, _payload)
+      when not is_atom(module) or is_nil(module) do
+    Logger.warning("[Cyclium.Reconciler] ignoring spec.updated for #{inspect(module)}")
+    :ok
+  end
+
+  def reconcile_actor(module, _payload) do
+    if Code.ensure_loaded?(module) and function_exported?(module, :__cyclium_config__, 0) and
+         function_exported?(module, :__cyclium_expectations__, 0) do
+      do_reconcile_actor(module)
+    else
+      Logger.warning(
+        "[Cyclium.Reconciler] #{inspect(module)} is not a Cyclium actor module, ignoring spec.updated"
+      )
+
+      :ok
+    end
+  end
+
+  defp do_reconcile_actor(module) do
     new_config = module.__cyclium_config__()
     new_expectations = module.__cyclium_expectations__()
 

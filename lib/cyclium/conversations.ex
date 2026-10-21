@@ -297,6 +297,57 @@ defmodule Cyclium.Conversations do
   @spec get(binary()) :: Conversation.t() | nil
   def get(id), do: Cyclium.repo().get(Conversation, id)
 
+  @doc """
+  Fetch a conversation on behalf of a principal.
+
+  Returns `{:ok, conversation}` when the row exists and its principal matches
+  (`principal_matches?/2`), `{:error, :not_found}` when it does not exist (an
+  unparseable id counts as not found), and `{:error, :forbidden}` otherwise.
+  Pass `skip_principal_check: true` for an operator view that may read any
+  conversation.
+  """
+  @spec get_for_principal(binary(), map() | nil, keyword()) ::
+          {:ok, Conversation.t()} | {:error, :not_found | :forbidden}
+  def get_for_principal(id, principal, opts \\ []) do
+    case safe_get(id) do
+      nil ->
+        {:error, :not_found}
+
+      conv ->
+        cond do
+          Keyword.get(opts, :skip_principal_check, false) -> {:ok, conv}
+          principal_matches?(conv, principal) -> {:ok, conv}
+          true -> {:error, :forbidden}
+        end
+    end
+  end
+
+  @doc """
+  Whether `principal` (a map with `"type"`/`"id"`, string or atom keys) is the
+  principal this conversation belongs to. The id must match; the type must
+  match when both sides carry one. A conversation with no principal yet
+  (`awaiting_participant`, or never claimed) matches nobody.
+  """
+  @spec principal_matches?(Conversation.t(), map() | nil) :: boolean()
+  def principal_matches?(%Conversation{principal_id: pid, principal_type: ptype}, principal)
+      when is_map(principal) and not is_nil(pid) do
+    id = principal["id"] || principal[:id]
+    type = principal["type"] || principal[:type]
+
+    not is_nil(id) and to_string(id) == to_string(pid) and
+      (is_nil(type) or is_nil(ptype) or to_string(type) == to_string(ptype))
+  end
+
+  def principal_matches?(_conversation, _principal), do: false
+
+  defp safe_get(id) when is_binary(id) do
+    get(id)
+  rescue
+    Ecto.Query.CastError -> nil
+  end
+
+  defp safe_get(_id), do: nil
+
   @spec get!(binary()) :: Conversation.t()
   def get!(id), do: Cyclium.repo().get!(Conversation, id)
 

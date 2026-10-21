@@ -221,7 +221,7 @@ defmodule Cyclium.Episodes do
     offset = Keyword.get(opts, :offset, 0)
     order = Keyword.get(opts, :order, :desc)
     statuses = Keyword.get(opts, :statuses)
-    str_key = to_string(subject_key)
+    str_key = subject_key |> to_string() |> validate_json_key!()
     str_val = to_string(subject_value)
 
     base =
@@ -262,6 +262,18 @@ defmodule Cyclium.Episodes do
           fragment("JSON_VALUE(?, ?)", e.trigger_ref, ^event_path) == ^val or
             fragment("JSON_VALUE(?, ?)", e.trigger_ref, ^workflow_path) == ^val
         )
+    end
+  end
+
+  # The SQL Server branch interpolates the key into a JSON path string that is
+  # then bound as a parameter: no SQL injection, but a quote or bracket makes
+  # JSON_VALUE raise. Keys are identifiers; refuse anything else up front.
+  defp validate_json_key!(key) do
+    if Regex.match?(~r/\A[A-Za-z_][A-Za-z0-9_]*\z/, key) do
+      key
+    else
+      raise ArgumentError,
+            "Cyclium.Episodes: subject key #{inspect(key)} must be an identifier ([A-Za-z_][A-Za-z0-9_]*)"
     end
   end
 
@@ -495,7 +507,7 @@ defmodule Cyclium.Episodes do
       actor_id: episode.actor_id,
       conversation_id: episode.conversation_id,
       expectation_id: episode.expectation_id,
-      trigger_ref: episode.trigger_ref,
+      trigger_ref: Cyclium.Bus.public_trigger_ref(episode.trigger_ref),
       reason: reason,
       workflow_instance_id: episode.workflow_instance_id,
       workflow_step_id: episode.workflow_step_id
@@ -578,59 +590,94 @@ defmodule Cyclium.Episodes do
 
   @doc """
   Resolve an approval on a blocked interactive episode.
-  Verifies the plan_hash matches the approval_requested step.
+
+  Verifies the submitted `plan_hash` against the `approval_requested` step. A
+  step with no stored hash (the expectation journals with `log_strategy`
+  `none`/`summary_only`, which strips step args) cannot be approved:
+  `{:error, :no_plan_hash}`. Approval needs a journaling log strategy.
+
+  ## Options
+
+    * `:principal` — the approver's principal map (`%{"type" => ..., "id" => ...}`).
+      When given and the episode belongs to a conversation, the conversation's
+      principal must match, otherwise `{:error, :forbidden}`.
   """
-  def resolve_approval(episode_id, plan_hash, approved? \\ true) do
+  def resolve_approval(episode_id, plan_hash, approved? \\ true, opts \\ []) do
     episode = get!(episode_id)
 
-    unless episode.status == :blocked do
-      {:error, :not_blocked}
-    else
-      # Find the approval_requested step and verify plan_hash
-      approval_step =
-        from(s in EpisodeStep,
-          where: s.episode_id == ^episode_id and s.kind == :approval_requested,
-          order_by: [desc: s.step_no],
-          limit: 1
-        )
-        |> repo().one()
+    cond do
+      episode.status != :blocked ->
+        {:error, :not_blocked}
 
-      stored_hash =
-        case approval_step do
-          %{args_redacted: %{"plan_hash" => h}} -> h
-          _ -> nil
-        end
+      not approver_allowed?(episode, Keyword.get(opts, :principal)) ->
+        {:error, :forbidden}
 
-      cond do
-        is_nil(approval_step) ->
-          {:error, :no_pending_approval}
+      true ->
+        do_resolve_approval(episode, plan_hash, approved?)
+    end
+  end
 
-        stored_hash != nil and stored_hash != plan_hash ->
-          {:error, :plan_hash_mismatch}
+  defp approver_allowed?(_episode, nil), do: true
 
-        true ->
-          now = DateTime.utc_now()
+  defp approver_allowed?(%Episode{conversation_id: nil}, _principal), do: true
 
-          repo().insert!(%EpisodeStep{
-            episode_id: episode_id,
-            step_no: next_step_no(episode_id),
-            kind: :approval_resolved,
-            result_ref: %{
-              "approved" => approved?,
-              "plan_hash" => plan_hash
-            },
-            created_at: now
-          })
+  defp approver_allowed?(%Episode{conversation_id: conv_id}, principal) do
+    case Cyclium.Conversations.get(conv_id) do
+      nil -> false
+      conv -> Cyclium.Conversations.principal_matches?(conv, principal)
+    end
+  end
 
-          if approved? do
-            update_status(episode_id, :running)
-            Cyclium.Mode.runner_for(episode.actor_id).enqueue(episode_id, resume: true)
-            {:ok, :resumed}
-          else
-            update_status(episode_id, :canceled)
-            {:ok, :denied}
-          end
+  defp do_resolve_approval(%Episode{id: episode_id} = episode, plan_hash, approved?) do
+    # Find the approval_requested step and verify plan_hash
+    approval_step =
+      from(s in EpisodeStep,
+        where: s.episode_id == ^episode_id and s.kind == :approval_requested,
+        order_by: [desc: s.step_no],
+        limit: 1
+      )
+      |> repo().one()
+
+    stored_hash =
+      case approval_step do
+        %{args_redacted: %{"plan_hash" => h}} -> h
+        _ -> nil
       end
+
+    {_, _} = {episode, approved?}
+
+    cond do
+      is_nil(approval_step) ->
+        {:error, :no_pending_approval}
+
+      is_nil(stored_hash) ->
+        {:error, :no_plan_hash}
+
+      stored_hash != plan_hash ->
+        {:error, :plan_hash_mismatch}
+
+      true ->
+        now = DateTime.utc_now()
+
+        repo().insert!(%EpisodeStep{
+          episode_id: episode_id,
+          step_no: next_step_no(episode_id),
+          kind: :approval_resolved,
+          result_ref: %{
+            "approved" => approved?,
+            "plan_hash" => plan_hash
+          },
+          created_at: now
+        })
+
+        if approved? do
+          update_status(episode_id, :running)
+          Cyclium.Mode.runner_for(episode.actor_id).enqueue(episode_id, resume: true)
+          {:ok, :resumed}
+        else
+          update_status(episode_id, :canceled)
+          {:ok, :denied}
+        end
     end
   end
 

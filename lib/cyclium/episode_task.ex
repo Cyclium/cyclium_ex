@@ -131,7 +131,7 @@ defmodule Cyclium.EpisodeTask do
           actor_id: episode.actor_id,
           conversation_id: episode.conversation_id,
           expectation_id: episode.expectation_id,
-          trigger_ref: episode.trigger_ref,
+          trigger_ref: Cyclium.Bus.public_trigger_ref(episode.trigger_ref),
           status: :failed,
           error_class: "crash",
           error_detail: error_detail
@@ -181,7 +181,7 @@ defmodule Cyclium.EpisodeTask do
         actor_id: current.actor_id,
         conversation_id: current.conversation_id,
         expectation_id: current.expectation_id,
-        trigger_ref: current.trigger_ref,
+        trigger_ref: Cyclium.Bus.public_trigger_ref(current.trigger_ref),
         status: :failed,
         error_class: "process_terminated",
         error_detail: error_detail

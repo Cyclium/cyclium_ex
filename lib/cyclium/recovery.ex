@@ -265,7 +265,7 @@ defmodule Cyclium.Recovery do
       actor_id: episode.actor_id,
       conversation_id: episode.conversation_id,
       expectation_id: episode.expectation_id,
-      trigger_ref: episode.trigger_ref,
+      trigger_ref: Cyclium.Bus.public_trigger_ref(episode.trigger_ref),
       status: :failed,
       error_class: "orphaned",
       error_detail: error_detail,
@@ -329,7 +329,7 @@ defmodule Cyclium.Recovery do
   defp compiled_actor_pid(_), do: nil
 
   defp dynamic_actor_pid(actor_id) do
-    case :global.whereis_name(:"cyclium_dynamic_#{actor_id}") do
+    case :global.whereis_name(Cyclium.DynamicActor.Loader.process_name(actor_id)) do
       :undefined -> nil
       pid -> pid
     end
@@ -547,7 +547,7 @@ defmodule Cyclium.Recovery do
       actor_id: episode.actor_id,
       conversation_id: episode.conversation_id,
       expectation_id: episode.expectation_id,
-      trigger_ref: episode.trigger_ref,
+      trigger_ref: Cyclium.Bus.public_trigger_ref(episode.trigger_ref),
       status: episode.status,
       workflow_instance_id: instance.id,
       workflow_step_id: step_id

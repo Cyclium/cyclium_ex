@@ -241,8 +241,8 @@ defmodule Cyclium.Strategy.Template.ObserveSynthesizeConvergeTest do
 
       assert length(result.outputs) == 2
       types = Enum.map(result.outputs, & &1.type)
-      assert :email in types
-      assert :slack in types
+      assert "email" in types
+      assert "slack" in types
     end
 
     test "finding_key_template substitution" do

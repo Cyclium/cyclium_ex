@@ -33,7 +33,7 @@ defmodule Cyclium.Strategy.Template.ObserveSynthesizeConverge do
 
   @impl true
   def init(episode, trigger) do
-    strategy_config = load_strategy_config(episode.actor_id)
+    strategy_config = Cyclium.StrategyConfig.load(episode.actor_id, episode.expectation_id)
     trigger_payload = extract_trigger_payload(trigger)
 
     validate_output_adapters(strategy_config, episode.actor_id)
@@ -201,31 +201,6 @@ defmodule Cyclium.Strategy.Template.ObserveSynthesizeConverge do
 
   # --- Private ---
 
-  defp load_strategy_config(actor_id) do
-    import Ecto.Query
-
-    case Cyclium.repo().one(
-           from(d in Cyclium.Schemas.AgentDefinition,
-             where: d.actor_id == ^to_string(actor_id),
-             select: d.strategy_config
-           )
-         ) do
-      nil ->
-        %{}
-
-      json when is_binary(json) ->
-        case Jason.decode(json) do
-          {:ok, config} -> config
-          _ -> %{}
-        end
-
-      config when is_map(config) ->
-        config
-    end
-  rescue
-    _ -> %{}
-  end
-
   defp extract_trigger_payload(%Cyclium.Trigger.Event{payload: payload}) when is_map(payload) do
     stringify_keys(payload)
   end
@@ -272,12 +247,7 @@ defmodule Cyclium.Strategy.Template.ObserveSynthesizeConverge do
 
       finding_key = build_finding_key(finding_config, subject_id, episode_ctx)
 
-      severity =
-        case result[severity_field] do
-          s when is_atom(s) -> s
-          s when is_binary(s) -> Cyclium.AtomGuard.intern!(s)
-          _ -> :low
-        end
+      severity = severity_atom(result[severity_field])
 
       [
         {:raise,
@@ -311,6 +281,17 @@ defmodule Cyclium.Strategy.Template.ObserveSynthesizeConverge do
 
   defp atom_key_lookup(_map, _key), do: nil
 
+  # The model (or a definition row) names the severity; map it onto the
+  # finding enum without minting — anything else is :low.
+  @severities [:low, :medium, :high, :critical]
+
+  defp severity_atom(s) when s in @severities, do: s
+
+  defp severity_atom(s) when is_binary(s),
+    do: Enum.find(@severities, :low, &(Atom.to_string(&1) == String.downcase(s)))
+
+  defp severity_atom(_), do: :low
+
   defp build_finding_key(finding_config, subject_id, episode_ctx) do
     case finding_config["finding_key_template"] do
       nil ->
@@ -328,7 +309,7 @@ defmodule Cyclium.Strategy.Template.ObserveSynthesizeConverge do
        when is_list(output_types) do
     Enum.map(output_types, fn type ->
       %OutputProposal{
-        type: Cyclium.AtomGuard.intern!(type),
+        type: to_string(type),
         dedupe_key: "dynamic:#{episode_ctx.actor_id}:#{episode_ctx.episode_id}:#{type}",
         payload: %{episode_id: episode_ctx.episode_id, actor_id: episode_ctx.actor_id}
       }

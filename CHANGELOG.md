@@ -6,6 +6,71 @@ All notable changes to Cyclium are recorded here. This project uses
 Entries are high-level, not exhaustive. Versions prior to `0.1.4` are
 reconstructed from git history and are summarized loosely.
 
+## [0.5.2] — 2026-10-21
+
+### Security
+- **The plan gate checks the action, not just the tool.** `allowed_tool_signatures`
+  entries now carry their `actions`, and `Cyclium.Intent.SignatureMatcher` denies
+  a step whose action the signature does not list. A signature with no actions
+  allows none; `"actions" => "*"` opts a tool into every action deliberately. An
+  action entry may declare its own `side_effect`, so a read tool with one write
+  action previews only the write. Previously a model could reach any `call/3`
+  clause of an allowed tool, including actions withheld from that actor.
+- **An approved plan is re-validated on resume.** `resume_from_block/2` re-enters
+  `:validate` (skipping only the second preview) instead of jumping to
+  `:execute`, and a `:request_approval` plan's journal entry is nested under
+  `"request"` with `source: "request_approval"`, so a model-authored approval
+  request can never be rebuilt into an executed plan. `Episodes.resolve_approval`
+  refuses a step with no stored `plan_hash` (`{:error, :no_plan_hash}`) and
+  accepts a `:principal` option that must match the conversation's principal.
+- **Outputs and workflow triggers are gated.** An `:output_proposal` must use a
+  type in `allowed_output_types` and a `:workflow_trigger` a workflow in
+  `allowed_workflows`; absent lists allow none. `OutputProposal.requires_approval`
+  now forces a preview. `Cyclium.Strategy.Template.Interactive` defaults
+  `require_preview_for_side_effects` to `true`.
+- **Model-authored findings are normalised.** `Loop.build_findings_list/1` keeps
+  only content fields under atom keys, maps `severity` onto the finding enum,
+  and drops identity/lifecycle fields (`actor_id`, `env`, `status`, …); a finding
+  always persists under the episode's actor and env. One malformed finding counts
+  as a failed persist instead of crashing post-converge.
+- **No atoms are minted from model output.** Output types stay strings, tool and
+  action names resolve through existing atoms only (a name with no atom is
+  denied), severities map onto the enum, dynamic actors register under
+  `{:cyclium_dynamic, actor_id}` tuples, and definition JSON decodes with
+  `Cyclium.AtomGuard.key/1`. `AtomGuard.usage/0` and a
+  `[:cyclium, :atom_guard, :refused]` event expose table pressure.
+- **Modules come from code, not from strings.** `plan_policy` must be a module
+  atom in the expectation's `strategy_config` and must be a loaded
+  `Cyclium.Intent.PlanPolicy` (otherwise the plan is denied; a policy that raises
+  denies too). A custom goal evaluator is declared on the expectation with
+  `goal_evaluator: MyModule`; a module name in a goal's JSON is never resolved.
+  A dynamic expectation's `strategy` must name a registered template.
+  `Cyclium.StrategyConfig` only reads a definition row for actors the dynamic
+  loader started, so a row named after a compiled actor cannot supply its config.
+- **Conversations are checked against their principal.**
+  `Conversations.get_for_principal/3`, `principal_matches?/2`;
+  `LiveHelpers.load_or_create_conversation/5` returns `{:error, :forbidden}` for
+  another principal's conversation; `Dispatch.send_message/3` refuses a
+  mismatched `:principal` (claiming an unowned conversation for it) and takes
+  `system: true` for trusted callers.
+- Smaller hardening: a budget of `0` is exhausted, not unlimited; `capabilities`
+  declared in the Actor DSL are enforced by `ToolExec`; `Cyclium.Redaction`
+  strips credential-like keys from journaled tool args/results and output
+  payloads (adapters may add `redact/1`); lifecycle broadcasts carry
+  `Cyclium.Bus.public_trigger_ref/1` (no `message`, `principal` or `history`);
+  the Reconciler ignores a `spec.updated` whose module is not an actor; the
+  workflow engine checks that a terminal event's episode row belongs to the
+  instance and step it names; `PlanGate` reports structural errors as
+  `{:deny, _}`; conversation JSON columns decode tolerantly; subject keys for
+  JSON-path queries must be identifiers; `stream_data` is test-only.
+
+### Upgrade notes
+- Add `actions` to every `allowed_tool_signatures` entry (or `"actions" => "*"`).
+- Add `allowed_output_types` / `allowed_workflows` to actors that propose outputs
+  or start workflows.
+- Model-proposed `OutputProposal.type` is a string; `Loader.process_name/1` is a
+  tuple; `LiveHelpers.load_or_create_conversation` may return `{:error, _}`.
+
 ## [0.5.1] — 2026-10-21
 
 ### Fixed

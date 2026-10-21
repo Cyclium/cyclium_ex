@@ -173,7 +173,7 @@ EpisodeTask starts
 | [Workflows](guides/workflows.md) | Compiled and dynamic (DB-defined) workflows, data passing, failure policies |
 | [Dynamic Actors](guides/dynamic_actors.md) | DB-stored actor definitions, strategy templates, gatherers, lifecycle & draining |
 | [Observability](guides/observability.md) | Log strategies, synthesis storage pipeline, telemetry, step journal, sampling, service levels, adaptive budgets |
-| [Distributed Ops](guides/distributed_ops.md) | Crash recovery, work claims, node identity, multi-stack deployments, trigger-only mode |
+| [Cluster Operations](guides/cluster_operations.md) | Node identity, work claims, crash recovery, stack and env scoping, trigger-only mode |
 | [Advanced](guides/advanced.md) | Checkpointing, circuit breaker, step retry, reconciler, dry runs, batch & per-item processing, test kit |
 | [Interactive Actors](guides/interactive_actors.md) | Human-in-the-loop episodes (approvals, waits) |
 | [Conversation UI](guides/conversation_ui.md) | Building conversational front-ends over Cyclium |
@@ -185,7 +185,7 @@ EpisodeTask starts
 ```elixir
 # mix.exs
 def deps do
-  [{:cyclium, "~> 0.5.1"}]
+  [{:cyclium, "~> 0.5.2"}]
 end
 ```
 
@@ -246,10 +246,10 @@ config :cyclium, :repo, MyApp.Repo
 # config :cyclium, :strategy_registry, MyApp.StrategyRegistry
 
 # Optional: episode runner (default: Cyclium.Runner.OTP)
-# Use Cyclium.Runner.Deferred for trigger-only mode (see Distributed Ops guide)
+# Use Cyclium.Runner.Deferred for trigger-only mode (see Cluster Operations guide)
 config :cyclium, :runner, Cyclium.Runner.OTP
 
-# Optional: node identity override for shared-name environments (see Distributed Ops guide)
+# Optional: node identity override for shared-name environments (see Cluster Operations guide)
 # config :cyclium, :node_identity, "my-unique-node-name"
 
 # Optional: tool capabilities

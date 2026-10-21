@@ -11,8 +11,17 @@ defmodule Cyclium.Output.Adapter do
       }
   """
 
-  @callback deliver(type :: atom(), payload :: map(), ctx :: map()) ::
+  @callback deliver(type :: atom() | binary(), payload :: map(), ctx :: map()) ::
               {:ok, ref :: map()} | {:error, reason :: term()}
+
+  @doc """
+  Optional: the payload as it may be stored in `cyclium_outputs.payload_redacted`.
+  The router stores the full payload when an adapter does not implement this;
+  `Cyclium.Redaction` still strips values under credential-like keys either way.
+  """
+  @callback redact(payload :: map()) :: map()
+
+  @optional_callbacks redact: 1
 
   @doc """
   Resolve an output adapter module by type name.

@@ -113,21 +113,33 @@ defmodule Cyclium.Test.CheckpointMigration do
   Only callable at test time (requires StreamData).
   """
   def default_state_generator do
-    StreamData.map_of(
-      StreamData.string(:alphanumeric, min_length: 1, max_length: 20),
+    unless Code.ensure_loaded?(StreamData) do
+      raise ArgumentError,
+            "Cyclium.Test.CheckpointMigration.default_state_generator/0 needs " <>
+              "{:stream_data, \"~> 1.0\", only: :test} in the host's deps"
+    end
+
+    sd(:map_of, [
+      sd(:string, [:alphanumeric, [min_length: 1, max_length: 20]]),
       leaf_generator(),
-      max_length: 10
-    )
+      [max_length: 10]
+    ])
   end
 
   defp leaf_generator do
-    StreamData.one_of([
-      StreamData.string(:alphanumeric, max_length: 50),
-      StreamData.integer(),
-      StreamData.float(min: -1000.0, max: 1000.0),
-      StreamData.boolean(),
-      StreamData.constant(nil),
-      StreamData.list_of(StreamData.string(:alphanumeric, max_length: 20), max_length: 5)
+    sd(:one_of, [
+      [
+        sd(:string, [:alphanumeric, [max_length: 50]]),
+        sd(:integer, []),
+        sd(:float, [[min: -1000.0, max: 1000.0]]),
+        sd(:boolean, []),
+        sd(:constant, [nil]),
+        sd(:list_of, [sd(:string, [:alphanumeric, [max_length: 20]]), [max_length: 5]])
+      ]
     ])
   end
+
+  # StreamData is a test-only dependency of this library; call it dynamically
+  # so this module compiles in a release that does not carry it.
+  defp sd(fun, args), do: apply(StreamData, fun, args)
 end

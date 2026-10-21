@@ -38,7 +38,8 @@ defmodule Cyclium.Expectation do
           finding_enrichment: (map(), map() -> {:ok, map()} | :skip) | {module(), atom()} | nil,
           escalation_rules: map() | nil,
           finding_ttl_seconds: pos_integer() | nil,
-          loop_detection: boolean()
+          loop_detection: boolean(),
+          goal_evaluator: module() | nil
         }
 
   defstruct [
@@ -74,6 +75,7 @@ defmodule Cyclium.Expectation do
     finding_enrichment: nil,
     escalation_rules: nil,
     finding_ttl_seconds: nil,
-    loop_detection: true
+    loop_detection: true,
+    goal_evaluator: nil
   ]
 end

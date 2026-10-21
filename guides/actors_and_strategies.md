@@ -129,7 +129,7 @@ Key properties:
 - **UTC only.** No time-zone or DST handling — `"0 5 * * *"` is 05:00 UTC.
 - **At-most-once per tick, cluster-wide.** Every node computes the same occurrence
   and keys the episode dedupe on the exact tick, so concurrent fires collapse to
-  one episode per occurrence (per env — see [Distributed Ops](distributed_ops.md)).
+  one episode per occurrence (per env — see [Cluster Operations](cluster_operations.md)).
   No external scheduler or leader election needed.
 - **No catch-up.** Only the next future tick is scheduled; if the cluster is down
   across a tick, that occurrence is skipped (not replayed).

@@ -73,11 +73,38 @@ defmodule Cyclium.AtomGuard do
     ArgumentError -> :error
   end
 
-  defp ensure_headroom!(value) do
+  @doc """
+  Returns `key` as an existing atom when one exists, otherwise the string
+  unchanged. For JSON decoders (`Jason.decode!(json, keys: &AtomGuard.key/1)`):
+  the keys the framework reads are compile-time atoms, so they come back as
+  atoms, while unknown keys stay strings and never grow the atom table.
+  """
+  @spec key(binary()) :: atom() | binary()
+  def key(string) when is_binary(string) do
+    case existing_atom(string) do
+      {:ok, atom} -> atom
+      :error -> string
+    end
+  end
+
+  @doc "Current atom-table usage as `%{count: n, limit: n, usage: 0.0..1.0}`."
+  @spec usage() :: %{count: non_neg_integer(), limit: pos_integer(), usage: float()}
+  def usage do
     count = :erlang.system_info(:atom_count)
     limit = :erlang.system_info(:atom_limit)
+    %{count: count, limit: limit, usage: count / limit}
+  end
+
+  defp ensure_headroom!(value) do
+    %{count: count, limit: limit} = usage()
 
     if count / limit >= max_usage() do
+      :telemetry.execute(
+        [:cyclium, :atom_guard, :refused],
+        %{count: 1, atom_count: count, atom_limit: limit},
+        %{value: value}
+      )
+
       raise LimitError,
             "refused to intern #{inspect(value)}: atom table at #{count}/#{limit} " <>
               "(>= #{max_usage()} of limit). A dynamic definition or external input is " <>
