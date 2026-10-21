@@ -243,6 +243,7 @@ defmodule Cyclium.RecoveryDbTest do
         insert_episode(%{
           actor_id: "restart_actor",
           expectation_id: "not_restartable",
+          trigger_ref: %{"payload" => %{"thing_id" => "t-1"}},
           status: :running,
           started_at: DateTime.add(DateTime.utc_now(), -300, :second)
         })
@@ -260,6 +261,8 @@ defmodule Cyclium.RecoveryDbTest do
       assert payload.error_class == "orphaned"
       assert is_map(payload.error_detail)
       assert payload.error_detail["reason"] =~ "recovery"
+      assert payload.expectation_id == "not_restartable"
+      assert Cyclium.Bus.subject(payload, "thing_id") == "t-1"
     end
 
     test "fails episode when actor_id not in registry and not in DB" do
@@ -445,6 +448,7 @@ defmodule Cyclium.RecoveryDbTest do
         insert_episode(%{
           actor_id: "wf_actor",
           expectation_id: "wf_step",
+          trigger_ref: %{"payload" => %{"thing_id" => "t-1"}},
           status: :done,
           workflow_instance_id: wf_id = Ecto.UUID.generate(),
           workflow_step_id: "analyze",
@@ -474,8 +478,11 @@ defmodule Cyclium.RecoveryDbTest do
                       %{
                         episode_id: ^ep_id,
                         workflow_instance_id: ^wf_id,
-                        workflow_step_id: "analyze"
-                      }}
+                        workflow_step_id: "analyze",
+                        expectation_id: "wf_step"
+                      } = payload}
+
+      assert Cyclium.Bus.subject(payload, "thing_id") == "t-1"
     end
 
     test "replays episode.failed for failed episode with running step_state" do
@@ -485,6 +492,7 @@ defmodule Cyclium.RecoveryDbTest do
         insert_episode(%{
           actor_id: "wf_actor",
           expectation_id: "wf_step",
+          trigger_ref: %{"payload" => %{"thing_id" => "t-2"}},
           status: :failed,
           workflow_instance_id: wf_id = Ecto.UUID.generate(),
           workflow_step_id: "summarize",
@@ -513,8 +521,11 @@ defmodule Cyclium.RecoveryDbTest do
                       %{
                         episode_id: ^ep_id,
                         workflow_instance_id: ^wf_id,
-                        workflow_step_id: "summarize"
-                      }}
+                        workflow_step_id: "summarize",
+                        expectation_id: "wf_step"
+                      } = payload}
+
+      assert Cyclium.Bus.subject(payload, "thing_id") == "t-2"
     end
 
     test "skips steps whose episodes are still running" do

@@ -8,6 +8,12 @@ defmodule Cyclium.Bus do
 
   Built on Phoenix.PubSub. The consuming app provides the PubSub process
   via `Cyclium.Supervisor` opts.
+
+  Runtime event payloads are atom-keyed maps (`%{episode_id: ..., actor_id:
+  ...}`), and PubSub delivers the term unchanged, on any node — match
+  `payload[:actor_id]`, not `payload["actor_id"]`. The exception is what lies
+  inside `trigger_ref`: it is the episode's stored JSON map, so its keys are
+  strings. Read it with `subject/2`.
   """
 
   @topic "cyclium:events"
@@ -91,10 +97,13 @@ defmodule Cyclium.Bus do
 
   Every episode lifecycle event — `episode.queued`, `episode.started`,
   `episode.completed`, `episode.failed`, `episode.canceled` and
-  `episode.interrupted` — carries the run's `trigger_ref`, the subject the run
-  is about. This reads `trigger_ref["payload"][key]` so a subscriber can tell
-  which subject an event names without hand-rolling the nested access or a DB
-  read. Returns `nil` when the payload has no `trigger_ref`, no `"payload"`, or
+  `episode.interrupted` — carries the run's `expectation_id` and `trigger_ref`,
+  the subject the run is about, whichever path ends the run: the runner, a
+  crashed or exited task, a recovery sweep, a replayed workflow step, a cancel,
+  or a queued run shed at capacity. (`episode.dropped` names no episode — the
+  run was never created — so it carries `expectation_id` only.) This reads
+  `trigger_ref["payload"][key]` so a subscriber can tell which subject an event
+  names without hand-rolling the nested access or a DB read. Returns `nil` when the payload has no `trigger_ref`, no `"payload"`, or
   no such `key`.
 
       def handle_info({:bus, "episode.completed", payload}, socket) do

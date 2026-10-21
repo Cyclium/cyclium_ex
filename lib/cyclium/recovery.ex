@@ -264,6 +264,8 @@ defmodule Cyclium.Recovery do
       episode_id: episode.id,
       actor_id: episode.actor_id,
       conversation_id: episode.conversation_id,
+      expectation_id: episode.expectation_id,
+      trigger_ref: episode.trigger_ref,
       status: :failed,
       error_class: "orphaned",
       error_detail: error_detail,
@@ -543,6 +545,9 @@ defmodule Cyclium.Recovery do
     Cyclium.Bus.broadcast(event_type, %{
       episode_id: episode.id,
       actor_id: episode.actor_id,
+      conversation_id: episode.conversation_id,
+      expectation_id: episode.expectation_id,
+      trigger_ref: episode.trigger_ref,
       status: episode.status,
       workflow_instance_id: instance.id,
       workflow_step_id: step_id

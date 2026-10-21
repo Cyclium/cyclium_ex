@@ -6,6 +6,30 @@ All notable changes to Cyclium are recorded here. This project uses
 Entries are high-level, not exhaustive. Versions prior to `0.1.4` are
 reconstructed from git history and are summarized loosely.
 
+## [0.5.1] — 2026-10-21
+
+### Fixed
+- **Every run-ending Bus event now names the run's subject.** 0.5.0 added
+  `expectation_id` and `trigger_ref` to `episode.completed`, `episode.failed`
+  and `episode.canceled`, but only where the runner and `Episodes.cancel` send
+  them. Five other paths still sent neither, so `Cyclium.Bus.subject/2` read
+  `nil` and a subscriber matching on the subject missed the run's end:
+  `episode.failed` from `Cyclium.EpisodeTask` when the task crashes
+  (`error_class: "crash"`) or exits mid-run (`"process_terminated"`);
+  `episode.failed` from `Cyclium.Recovery` failing an orphan (`"orphaned"`);
+  the `episode.completed` / `failed` / `canceled` that `Recovery` replays for a
+  stale workflow step; and `episode.canceled` when an actor with
+  `episode_overflow(:shed_oldest)` sheds its oldest queued run. All five now
+  carry `expectation_id`, `trigger_ref` and `conversation_id`. The shed event
+  also gains `status: :canceled`, and is no longer sent when the cancel fails
+  to save.
+
+### Docs
+- **`Cyclium.Bus` says how payloads are keyed.** Runtime event payloads are
+  atom-keyed maps, delivered unchanged across nodes, so match
+  `payload[:actor_id]`; only the inside of `trigger_ref` (the episode's stored
+  JSON) is string-keyed, which `subject/2` reads.
+
 ## [0.5.0] — 2026-10-19
 
 ### Changed

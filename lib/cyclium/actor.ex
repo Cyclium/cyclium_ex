@@ -1244,13 +1244,21 @@ defmodule Cyclium.Actor.Server do
   defp shed_and_enqueue(state, params) do
     case :queue.out(state.queued_episodes) do
       {{:value, oldest_id}, rest} ->
-        Cyclium.Episodes.update_status(oldest_id, :canceled)
+        case Cyclium.Episodes.update_status(oldest_id, :canceled) do
+          {:ok, shed} ->
+            Bus.broadcast("episode.canceled", %{
+              episode_id: oldest_id,
+              actor_id: state.actor_id,
+              conversation_id: shed.conversation_id,
+              expectation_id: shed.expectation_id,
+              trigger_ref: shed.trigger_ref,
+              status: :canceled,
+              reason: :shed_oldest
+            })
 
-        Bus.broadcast("episode.canceled", %{
-          episode_id: oldest_id,
-          actor_id: state.actor_id,
-          reason: :shed_oldest
-        })
+          {:error, _} ->
+            :ok
+        end
 
         state = %{state | queued_episodes: rest}
         enqueue_episode(state, params)
