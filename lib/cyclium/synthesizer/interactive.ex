@@ -234,6 +234,48 @@ defmodule Cyclium.Synthesizer.Interactive do
     end)
   end
 
+  @native_tool_name ~r/^[a-zA-Z0-9_-]{1,64}$/
+  @native_arg_name ~r/^[a-zA-Z0-9_.-]{1,64}$/
+
+  @doc """
+  Check `allowed_tool_signatures` against the names providers accept for native
+  tools: each `"<tool>__<action>"` must match `^[a-zA-Z0-9_-]{1,64}$` and each
+  argument name `^[a-zA-Z0-9_.-]{1,64}$`. A provider rejects the whole request
+  for one bad name, so a bad name breaks every turn, not just its own tool.
+
+  Returns `:ok` or `{:error, problems}`, one message per bad name.
+  `Cyclium.Actor` calls this when an actor starts.
+  """
+  @spec validate_tool_signatures([map()]) :: :ok | {:error, [String.t()]}
+  def validate_tool_signatures(signatures) when is_list(signatures) do
+    problems =
+      signatures
+      |> Enum.map(fn sig ->
+        %{name: sig[:name] || sig["name"], actions: sig[:actions] || sig["actions"]}
+      end)
+      |> build_native_tools()
+      |> Enum.flat_map(fn tool ->
+        name_problem =
+          if Regex.match?(@native_tool_name, tool.name),
+            do: [],
+            else: [
+              "tool name #{inspect(tool.name)} must match #{Regex.source(@native_tool_name)}"
+            ]
+
+        arg_problems =
+          for arg <- Map.keys(tool.input_schema["properties"] || %{}),
+              not Regex.match?(@native_arg_name, arg),
+              do:
+                "argument #{inspect(arg)} of #{tool.name} must match #{Regex.source(@native_arg_name)}"
+
+        name_problem ++ arg_problems
+      end)
+
+    if problems == [], do: :ok, else: {:error, problems}
+  end
+
+  def validate_tool_signatures(_), do: :ok
+
   defp native_description(desc, nil), do: desc
   defp native_description(desc, side_effect), do: "#{desc} (side_effect: #{side_effect})"
 

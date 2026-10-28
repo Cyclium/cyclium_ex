@@ -475,4 +475,42 @@ defmodule Cyclium.ActorTest do
       assert state.actor_id == :my_stable_id
     end
   end
+
+  describe "tool names" do
+    defp start_with_signatures(sigs, extra \\ %{}) do
+      config = %{TestActor.__cyclium_config__() | actor_id: :tool_name_check_actor}
+
+      Cyclium.Actor.Server.init_state_from_config(config, [
+        {:chat,
+         [
+           trigger: {:event, "tool_name_check.never"},
+           strategy_config: Map.merge(%{allowed_tool_signatures: sigs}, extra)
+         ]}
+      ])
+    end
+
+    test "an actor whose tool name a provider rejects fails to start" do
+      error =
+        assert_raise ArgumentError, fn ->
+          start_with_signatures([%{name: "crm.v2", actions: [%{name: "get"}]}])
+        end
+
+      assert error.message =~ ~s("crm.v2__get")
+    end
+
+    test "an actor whose argument name a provider rejects fails to start" do
+      assert_raise ArgumentError, ~r/"deal id"/, fn ->
+        start_with_signatures([
+          %{name: "crm", actions: [%{name: "get", args: %{"deal id" => "x"}}]}
+        ])
+      end
+    end
+
+    test "tool_mode: :text skips the check" do
+      assert {:ok, _state} =
+               start_with_signatures([%{name: "crm.v2", actions: [%{name: "get"}]}], %{
+                 tool_mode: :text
+               })
+    end
+  end
 end

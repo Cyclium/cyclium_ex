@@ -380,6 +380,10 @@ defmodule Cyclium.Actor.Server do
     # Fail fast on a malformed cron spec rather than silently never firing.
     validate_cron_triggers!(expectations)
 
+    # Fail fast on a tool or argument name a provider would reject: one bad name
+    # fails every native-tool request the expectation makes.
+    validate_tool_names!(config.actor_id, expectations)
+
     # Register this process under its actor_id so recovery (and others) can find
     # the live actor regardless of the `name:` it was started under. Guarded: the
     # registry only exists when Cyclium.Supervisor is running (not in standalone
@@ -873,6 +877,24 @@ defmodule Cyclium.Actor.Server do
       case find_cron(expectation.trigger) do
         {:cron, spec} -> Cyclium.Cron.parse!(spec)
         nil -> :ok
+      end
+    end)
+  end
+
+  defp validate_tool_names!(actor_id, expectations) do
+    Enum.each(expectations, fn {id, expectation} ->
+      config = normalize_strategy_config(expectation.strategy_config || %{})
+
+      with false <- config["tool_mode"] in [:text, "text"],
+           {:error, problems} <-
+             Cyclium.Synthesizer.Interactive.validate_tool_signatures(
+               config["allowed_tool_signatures"] || []
+             ) do
+        raise ArgumentError,
+              "actor #{inspect(actor_id)} expectation #{inspect(id)} declares tool names " <>
+                "a provider rejects: " <>
+                Enum.join(problems, "; ") <>
+                " (set tool_mode: :text if this actor never uses native tools)"
       end
     end)
   end

@@ -191,6 +191,8 @@ The library-level `Cyclium.Synthesizer.Interactive` handles everything else:
 
 Implement `Cyclium.Tool` with action-based dispatch. The tool name (capability atom) is what the LLM references in ActionPlans.
 
+On the native tool path each tool and action is sent to the provider as one tool named `"<tool>__<action>"`, which must match `^[a-zA-Z0-9_-]{1,64}$`, and each argument name must match `^[a-zA-Z0-9_.-]{1,64}$`. A provider rejects the whole request for one bad name, so the actor checks these when it starts and raises `ArgumentError` naming each bad one. An expectation with `tool_mode: :text` is not checked.
+
 ```elixir
 defmodule MyApp.Tools.ResourceTool do
   use Cyclium.Tool
