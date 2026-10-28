@@ -108,7 +108,7 @@ and can be queried via `Cyclium.Episodes.get_log(episode_id)`.
 
 ## Telemetry
 
-Cyclium emits 36 structured telemetry events under the `[:cyclium, ...]` prefix.
+Cyclium emits 53 structured telemetry events under the `[:cyclium, ...]` prefix.
 Attach a handler for development:
 
 ```elixir

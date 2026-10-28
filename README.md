@@ -28,7 +28,7 @@ testability, and full visibility while still using AI where it adds value. See
 - **Episode Runner** — Budget-enforced execution loop with step journaling, checkpointing, and crash recovery
 - **Findings Lifecycle** — Persistent observations with raise/update/clear semantics, upsert-by-key, causality chains, TTL expiration, severity escalation, and post-raise enrichment hooks
 - **Output Router** — Deduplicated, adapter-based delivery (email, Slack, webhooks) with approval gates and adapter registry
-- **Event Bus** — Phoenix.PubSub-backed event system connecting actors without coupling
+- **Event Bus** — Phoenix.PubSub-backed event system connecting actors without coupling, with topics scoped to one run, conversation, actor or workflow for LiveViews
 - **Workflow Engine** — Multi-actor coordination with dependency graphs, failure policies, retry with backoff, cross-workflow episode dedup, and cancellation cascade
 - **Circuit Breaker** — Per-expectation circuit breaker with configurable thresholds, half-open recovery, and optional in-flight episode cancellation
 - **Episode Sampling** — Probabilistic firing control via `sample_rate` on expectations
@@ -36,8 +36,10 @@ testability, and full visibility while still using AI where it adds value. See
 - **Adaptive Budgets** — Advisory budget recommendations based on historical episode usage (p95 with headroom)
 - **Backpressure Controls** — Per-actor concurrency limits with queue, drop, or shed-oldest overflow policies
 - **Debounce and Cooldown** — Temporal controls to coalesce rapid-fire events and enforce minimum gaps
+- **Interactive Conversations** — One episode per turn, with the conversation's earlier turns (messages, replies, tools used) in every prompt, plan gating, and approval previews
+- **Tool-Result Cache** — Opt-in per tool: a read tool's results are reused within a conversation for a short TTL, and still journaled
 - **Log Projection** — Materialized human-readable logs at configurable verbosity (none → full_debug)
-- **Telemetry** — structured telemetry events for observability, plus span-shaped background-work events (`:start`/`:stop`/`:exception`) that let a host application nest each self-scheduled worker's queries under a single trace
+- **Telemetry** — structured telemetry events for observability, a Bus event as each LLM request or tool call goes out, plus span-shaped background-work events (`:start`/`:stop`/`:exception`) that let a host application nest each self-scheduled worker's queries under a single trace
 - **OTP-Native** — No Oban or external job queue required; episodes run as Tasks under DynamicSupervisor
 - **Distributed coordination** — DB-based dedup, lease-based work claims, crash recovery, and multi-stack/trigger-only deployment modes — no Redis or leader election
 - **Test Kit** — Assertion macros and fakes for validating actors, strategies, synthesizers, output adapters, workflows, and checkpoint migrations in host apps
@@ -185,7 +187,7 @@ EpisodeTask starts
 ```elixir
 # mix.exs
 def deps do
-  [{:cyclium, "~> 0.5.2"}]
+  [{:cyclium, "~> 0.6.0"}]
 end
 ```
 

@@ -6,6 +6,89 @@ All notable changes to Cyclium are recorded here. This project uses
 Entries are high-level, not exhaustive. Versions prior to `0.1.4` are
 reconstructed from git history and are summarized loosely.
 
+## [0.6.0] — 2026-10-28
+
+### Added
+- **Interactive turns carry the conversation's history.** The interactive
+  template loads the conversation's most recent finished turns — each user
+  `message`, its reply, and the names of the tools it called — and the
+  synthesizer renders them as alternating `User:` / `Assistant:` lines under
+  `## Conversation History`, in the interpret prompt and in the prompt after a
+  tool runs (text and native paths). `strategy_config` `history_turns` caps the
+  turns sent (default 20, newest kept; `0` sends none). The assembled context
+  carries them as `history` (`%{role, content}` entries); `prior_summaries` is
+  still assembled. A trigger that sets `Trigger.Interactive.history` supplies
+  the history instead.
+- **`episode.step_started`** is broadcast on the Bus as a tool call or LLM
+  request goes out, before the runner waits on it, with `episode_id`,
+  `actor_id`, `expectation_id`, `conversation_id`, `kind` (`:synthesis` or
+  `:tool_call`), `tool_name` and `started_at`.
+- **`[:cyclium, :step, :synthesis, :start]`** telemetry fires as an LLM request
+  goes out.
+- **Scoped Bus topics.** Every event also goes to a topic for each id its
+  payload names, so a view can subscribe to one run, conversation, actor or
+  workflow instance: `Cyclium.Bus.subscribe(episode: id)`,
+  `subscribe(conversation: id)`, `subscribe(actor: id)`,
+  `subscribe(workflow: id)`. Messages keep the `{:bus, event_type, payload}`
+  shape. `Cyclium.Bus.unsubscribe/1` takes an event type or a scope.
+- **Tool-result cache.** `ToolExec` now honours `Cyclium.Tool`'s `cache_ttl/0`
+  and `cache_scope/1`: a tool that declares a TTL (in seconds) has its
+  successful results reused within the conversation, or the episode outside a
+  conversation, for that long. Errors are never cached, nor is any tool whose
+  `side_effect?/0` is true. A reused result is still journaled as a tool call,
+  with `metadata: %{"cache_hit" => true}`. Entries are dropped when a
+  conversation resolves, is abandoned or times out, and swept once expired, by
+  the new `Cyclium.ToolCache` process under `Cyclium.Supervisor`. The cache is
+  per node. `[:cyclium, :tool_cache, :hit]` / `:miss` telemetry report lookups.
+- **`Cyclium.Synthesizer.Interactive.validate_tool_signatures/1`** checks native
+  tool names (`^[a-zA-Z0-9_-]{1,64}$` for `"<tool>__<action>"`) and argument
+  names (`^[a-zA-Z0-9_.-]{1,64}$`).
+
+### Changed
+- **A synthesis step records `cost_ms`**, the LLM call's duration, on success
+  and on error, as tool-call steps do. A step's start is `created_at − cost_ms`
+  for both kinds.
+- **The provider's token usage is recorded on every path.** The native path
+  keeps the `usage` that `chat_with_native_tools/4` returns, and `chat/3` may
+  now return `{:ok, %{text: text, usage: usage, model: model}}` (a bare
+  `{:ok, text}` still works). Cached input (`cache_creation_input_tokens`,
+  `cache_read_input_tokens`) counts toward an episode's `tokens_used`, a step's
+  `cost_tokens` and the synthesis event's `total_tokens`, which also gains the
+  two cache measurements.
+- **`estimate_tokens/1` counts what is sent**: the system prompt, the user
+  message as built (history, findings, collected fields, tool results) and the
+  tool schemas. It is only used when a provider reports no usage.
+- **An actor fails to start when a tool or argument name breaks the native
+  limits**, raising `ArgumentError` naming each bad one. Expectations with
+  `tool_mode: :text` are not checked.
+- **Actors subscribe to what they act on**, not the whole bus: the event types
+  their expectations listen for, plus `episode.completed`, `episode.failed` and
+  `episode.canceled`. A reconcile moves the subscriptions with the
+  expectations. Per-step events from other runs no longer reach every actor.
+- **`Cyclium.Bus.publish/2` delivers as `broadcast/2` does**: to the event
+  type's topic and the scoped topics as well as the global topic.
+- `episode.dropped` no longer carries a `conversation_id` key; it was always
+  `nil`, since conversation turns skip the capacity check.
+- `Cyclium.Tool`'s default `cache_scope/1` keys on the call's args (without
+  `_`-prefixed internal keys) instead of `""`.
+
+### Upgrade notes
+- Rename any tool, action or argument whose name breaks the limits above, or
+  set `tool_mode: :text` on that expectation.
+- Read `payload[:conversation_id]` rather than matching it on `episode.dropped`.
+- Send domain events with `Cyclium.Bus.publish/2` or `broadcast/2`. An event
+  sent with `Phoenix.PubSub` straight to the `"cyclium:events"` topic no longer
+  reaches actors, which listen on event-type topics.
+- A process subscribed to both the global topic and an event type's topic now
+  receives a `publish/2`ed event twice, as it already did for `broadcast/2`.
+- A LiveView can drop its `Cyclium.Bus.subscribe()` for
+  `subscribe(conversation: id)`, `subscribe(episode: id)` or
+  `subscribe(actor: id)`.
+- `total_tokens` in `[:cyclium, :step, :synthesis]` now includes cached input;
+  dashboards built on it will read higher for prompt-cached calls.
+- An interactive prompt grows with the conversation; lower `history_turns` for
+  actors with long turns or tight `max_tokens` budgets.
+
 ## [0.5.2] — 2026-10-21
 
 ### Security
