@@ -1167,8 +1167,10 @@ defmodule Cyclium.EpisodeRunner do
   defp emit_synthesis(%Episode{} = episode, result, started_ms) do
     raw_usage = result[:usage] || result["usage"]
     usage = raw_usage || %{}
-    input = usage[:input_tokens] || usage["input_tokens"] || 0
-    output = usage[:output_tokens] || usage["output_tokens"] || 0
+    input = usage_count(usage, :input_tokens)
+    output = usage_count(usage, :output_tokens)
+    cache_creation = usage_count(usage, :cache_creation_input_tokens)
+    cache_read = usage_count(usage, :cache_read_input_tokens)
     model = result[:model] || result["model"]
 
     # A missing `usage` key reads as zero tokens everywhere downstream (budget
@@ -1193,7 +1195,9 @@ defmodule Cyclium.EpisodeRunner do
         duration_ms: System.monotonic_time(:millisecond) - started_ms,
         input_tokens: input,
         output_tokens: output,
-        total_tokens: input + output
+        cache_creation_input_tokens: cache_creation,
+        cache_read_input_tokens: cache_read,
+        total_tokens: input + output + cache_creation + cache_read
       },
       %{
         episode_id: episode.id,
@@ -1249,13 +1253,25 @@ defmodule Cyclium.EpisodeRunner do
 
     case usage do
       %{} = u ->
-        input = u[:input_tokens] || u["input_tokens"] || 0
-        output = u[:output_tokens] || u["output_tokens"] || 0
-        total = input + output
+        total = usage_count(u, :input_tokens) + usage_count(u, :output_tokens) + cache_tokens(u)
         if total > 0, do: total, else: nil
 
       _ ->
         nil
+    end
+  end
+
+  # Providers that cache prompts (Anthropic) report cached input apart from
+  # `input_tokens`; it is still input the call sent, so it counts.
+  defp cache_tokens(usage) do
+    usage_count(usage, :cache_creation_input_tokens) +
+      usage_count(usage, :cache_read_input_tokens)
+  end
+
+  defp usage_count(usage, key) do
+    case usage[key] || usage[Atom.to_string(key)] do
+      n when is_integer(n) -> n
+      _ -> 0
     end
   end
 

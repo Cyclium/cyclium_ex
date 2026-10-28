@@ -177,6 +177,8 @@ defmodule MyApp.Actors.ResourceLLM do
 end
 ```
 
+To have the episode record what each call actually cost, return the provider's usage with the text: `{:ok, %{text: text, usage: %{input_tokens: ..., output_tokens: ...}, model: "..."}}`. Cache counts (`cache_creation_input_tokens`, `cache_read_input_tokens`) are counted too. A bare `{:ok, text}` still works, and the episode falls back to an estimate. The native `chat_with_native_tools/4` path's `usage` is recorded the same way.
+
 The library-level `Cyclium.Synthesizer.Interactive` handles everything else:
 - Building structured user messages from context, tool menu, history, and findings
 - Routing between `:interpret_intent` and `:summarize_results` tasks

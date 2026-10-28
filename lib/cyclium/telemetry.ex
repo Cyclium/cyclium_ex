@@ -18,8 +18,12 @@ defmodule Cyclium.Telemetry do
   ### Step events
 
       [:cyclium, :step, :tool_call]       — %{tool, action, episode_id, actor_id, conversation_id}
-      [:cyclium, :step, :synthesis]       — meas %{duration_ms, input_tokens, output_tokens, total_tokens}, meta %{episode_id, actor_id, conversation_id, model, usage_reported}
+      [:cyclium, :step, :synthesis]       — meas %{duration_ms, input_tokens, output_tokens, cache_creation_input_tokens, cache_read_input_tokens, total_tokens}, meta %{episode_id, actor_id, conversation_id, model, usage_reported}
       [:cyclium, :step, :observation]     — %{actor_id, episode_id}
+
+  `total_tokens` counts
+  cached input (`cache_*_input_tokens`) as well as `input_tokens` and
+  `output_tokens`.
 
   `usage_reported` (boolean) distinguishes a genuine zero-token synthesis from a
   synthesizer that omitted its `usage` key — the latter also logs a warning when

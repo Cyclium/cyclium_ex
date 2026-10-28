@@ -39,7 +39,11 @@ defmodule Cyclium.Synthesizer.Interactive do
     Behaviour for LLM clients used by the Interactive synthesizer.
 
     `chat/3` is the text contract: the model replies with a JSON `ActionPlan`
-    envelope as text, which the synthesizer parses.
+    envelope as text, which the synthesizer parses. It returns `{:ok, text}`, or
+    `{:ok, %{text: text, usage: usage, model: model}}` to report the provider's
+    token usage (`:input_tokens`, `:output_tokens`, and the cache counts
+    `:cache_creation_input_tokens` / `:cache_read_input_tokens` when the provider
+    has them), which the episode records instead of an estimate.
 
     `chat_with_native_tools/4` is the optional **native** contract: tool
     signatures are passed to the provider as structured `tools`, and the model
@@ -61,6 +65,7 @@ defmodule Cyclium.Synthesizer.Interactive do
 
     @callback chat(system_prompt :: String.t(), user_message :: String.t(), opts :: keyword()) ::
                 {:ok, String.t()}
+                | {:ok, %{required(:text) => String.t(), optional(atom()) => term()}}
                 | {:error, :no_api_key}
                 | {:error, {atom(), term()}}
 
@@ -179,15 +184,18 @@ defmodule Cyclium.Synthesizer.Interactive do
   end
 
   defp synthesize_native_textonly(llm_client, llm_opts, system_prompt, user_message, prompt_ctx) do
-    case llm_client.chat(system_prompt, user_message, chat_opts(llm_opts)) do
-      {:ok, text} ->
-        {:ok,
-         %{
-           "kind" => "explain_only",
-           "risk" => "low",
-           "why" => "response",
-           "explanation" => text
-         }}
+    case chat_text(llm_client, system_prompt, user_message, chat_opts(llm_opts)) do
+      {:ok, text, meta} ->
+        with_meta(
+          {:ok,
+           %{
+             "kind" => "explain_only",
+             "risk" => "low",
+             "why" => "response",
+             "explanation" => text
+           }},
+          meta
+        )
 
       {:error, :no_api_key} ->
         Logger.warning("[Interactive.Synthesizer] No API key — returning placeholder")
@@ -320,10 +328,34 @@ defmodule Cyclium.Synthesizer.Interactive do
           }
       end
 
-    case resp[:model] || resp["model"] do
-      nil -> envelope
-      model -> Map.put(envelope, :model, model)
+    envelope
+    |> put_present(:model, resp[:model] || resp["model"])
+    |> put_present(:usage, resp[:usage] || resp["usage"])
+  end
+
+  defp put_present(map, _key, nil), do: map
+  defp put_present(map, key, value), do: Map.put(map, key, value)
+
+  # The text `chat/3` contract returns either bare text or a map carrying the
+  # text with the provider's usage and model. Normalise both to
+  # `{:ok, text, meta}` so every path can record what the call cost.
+  defp chat_text(llm_client, system_prompt, user_message, opts) do
+    case llm_client.chat(system_prompt, user_message, opts) do
+      {:ok, text} when is_binary(text) ->
+        {:ok, text, %{}}
+
+      {:ok, %{} = resp} ->
+        text = resp[:text] || resp["text"] || ""
+        meta = %{model: resp[:model] || resp["model"], usage: resp[:usage] || resp["usage"]}
+        {:ok, text, meta}
+
+      other ->
+        other
     end
+  end
+
+  defp with_meta({:ok, %{} = result}, meta) do
+    {:ok, result |> put_present(:model, meta[:model]) |> put_present(:usage, meta[:usage])}
   end
 
   defp native_tool_call(call) do
@@ -368,9 +400,9 @@ defmodule Cyclium.Synthesizer.Interactive do
   defp synthesize_interpret(llm_client, llm_opts, system_prompt, prompt_ctx) do
     user_message = build_user_message(prompt_ctx)
 
-    case llm_client.chat(system_prompt, user_message, chat_opts(llm_opts)) do
-      {:ok, text} ->
-        parse_json_response(text)
+    case chat_text(llm_client, system_prompt, user_message, chat_opts(llm_opts)) do
+      {:ok, text, meta} ->
+        text |> parse_json_response() |> with_meta(meta)
 
       {:error, :no_api_key} ->
         Logger.warning("[Interactive.Synthesizer] No API key — returning placeholder")
@@ -385,8 +417,25 @@ defmodule Cyclium.Synthesizer.Interactive do
 
   defp synthesize_summary(llm_client, llm_opts, system_prompt, prompt_ctx) do
     context = prompt_ctx[:context] || %{}
+    user_message = build_summary_message(prompt_ctx)
 
-    user_message = """
+    case chat_text(llm_client, system_prompt, user_message, chat_opts(llm_opts)) do
+      {:ok, text, meta} ->
+        text |> parse_json_response() |> with_meta(meta)
+
+      {:error, :no_api_key} ->
+        Logger.warning("[Interactive.Synthesizer] No API key — returning placeholder")
+        {:ok, %{"explanation" => context[:tool_results] || "Tool executed successfully."}}
+
+      {:error, {error_class, detail}} ->
+        {:error, error_class, detail}
+    end
+  end
+
+  defp build_summary_message(prompt_ctx) do
+    context = prompt_ctx[:context] || %{}
+
+    """
     The user asked: #{prompt_ctx[:message]}
 
     A tool was executed: #{context[:tool_executed]}
@@ -400,18 +449,6 @@ defmodule Cyclium.Synthesizer.Interactive do
     2. Or if you need to make another tool call to fulfill the user's request:
        {"kind": "tool_call", "risk": "low", "why": "reason", "tool": {"tool": "TOOL", "action": "ACTION", "args": {ARGS}}}
     """
-
-    case llm_client.chat(system_prompt, user_message, chat_opts(llm_opts)) do
-      {:ok, text} ->
-        parse_json_response(text)
-
-      {:error, :no_api_key} ->
-        Logger.warning("[Interactive.Synthesizer] No API key — returning placeholder")
-        {:ok, %{"explanation" => context[:tool_results] || "Tool executed successfully."}}
-
-      {:error, {error_class, detail}} ->
-        {:error, error_class, detail}
-    end
   end
 
   # --- Prompt building ---
