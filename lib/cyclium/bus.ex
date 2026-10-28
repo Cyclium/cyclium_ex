@@ -14,6 +14,29 @@ defmodule Cyclium.Bus do
   `payload[:actor_id]`, not `payload["actor_id"]`. The exception is what lies
   inside `trigger_ref`: it is the episode's stored JSON map, so its keys are
   strings. Read it with `subject/2`.
+
+  ## Topics
+
+  Every event goes to the global topic (`subscribe/0`) and to its event type's
+  topic (`subscribe/1` with a type). It also goes to a topic for each id its
+  payload names, so a view can subscribe to one run, conversation, actor or
+  workflow and receive nothing else:
+
+      Cyclium.Bus.subscribe(episode: episode_id)
+      Cyclium.Bus.subscribe(conversation: conversation_id)
+      Cyclium.Bus.subscribe(actor: :my_actor)
+      Cyclium.Bus.subscribe(workflow: workflow_instance_id)
+
+  The ids are read from the payload's `episode_id`, `conversation_id`,
+  `actor_id` and `workflow_instance_id`. An event without one of them is not
+  sent to that kind of topic: `episode.dropped`, for one, names no episode and
+  reaches only its actor's topic. Messages keep the `{:bus, event_type,
+  payload}` shape on every topic.
+
+  Subscribe before loading the state a view shows, so an event that lands in
+  between is not lost. A process subscribed to two topics that one event
+  reaches receives it once per topic. Under a clustered PubSub, each topic an
+  event reaches is a broadcast to every node.
   """
 
   @topic "cyclium:events"
@@ -44,15 +67,20 @@ defmodule Cyclium.Bus do
 
   def runtime_events, do: @runtime_events
 
+  @scopes [
+    episode: :episode_id,
+    conversation: :conversation_id,
+    actor: :actor_id,
+    workflow: :workflow_instance_id
+  ]
+
   @doc """
-  Publish an event to the bus. All subscribers receive `{:bus, event_type, payload}`.
+  Publish an event to the bus. The same as `broadcast/2`: subscribers of the
+  global topic, the event type's topic and each scoped topic the payload names
+  receive `{:bus, event_type, payload}`.
   """
-  def publish(event_type, payload \\ %{}) when is_binary(event_type) do
-    case pubsub() do
-      nil -> {:error, :no_pubsub}
-      pubsub -> Phoenix.PubSub.broadcast(pubsub, @topic, {:bus, event_type, payload})
-    end
-  end
+  def publish(event_type, payload \\ %{}) when is_binary(event_type),
+    do: broadcast(event_type, payload)
 
   @doc """
   Subscribe the calling process to all bus events.
@@ -66,7 +94,10 @@ defmodule Cyclium.Bus do
   end
 
   @doc """
-  Subscribe to a specific event type topic.
+  Subscribe to one event type's topic, `subscribe("episode.completed")`, or to
+  the events that name one episode, conversation, actor or workflow instance:
+  `subscribe(episode: id)`, `subscribe(conversation: id)`,
+  `subscribe(actor: id)`, `subscribe(workflow: id)` (one scope per call).
   Messages arrive as `{:bus, event_type, payload}`.
   """
   def subscribe(event_type) when is_binary(event_type) do
@@ -76,9 +107,36 @@ defmodule Cyclium.Bus do
     end
   end
 
+  def subscribe([{scope, id}]) when is_atom(scope) and not is_nil(id) do
+    unless Keyword.has_key?(@scopes, scope) do
+      raise ArgumentError,
+            "unknown Bus scope #{inspect(scope)}; expected one of #{inspect(Keyword.keys(@scopes))}"
+    end
+
+    case pubsub() do
+      nil -> {:error, :no_pubsub}
+      pubsub -> Phoenix.PubSub.subscribe(pubsub, scope_topic(scope, id))
+    end
+  end
+
+  @doc "Stop receiving the events `subscribe/1` subscribed to (a type or a scope)."
+  def unsubscribe(event_type) when is_binary(event_type) do
+    case pubsub() do
+      nil -> {:error, :no_pubsub}
+      pubsub -> Phoenix.PubSub.unsubscribe(pubsub, "#{@topic}:#{event_type}")
+    end
+  end
+
+  def unsubscribe([{scope, id}]) when is_atom(scope) and not is_nil(id) do
+    case pubsub() do
+      nil -> {:error, :no_pubsub}
+      pubsub -> Phoenix.PubSub.unsubscribe(pubsub, scope_topic(scope, id))
+    end
+  end
+
   @doc """
-  Publish to both the global topic and the event-specific topic,
-  so both broad and targeted subscribers receive the event.
+  Publish to the global topic, the event type's topic, and the scoped topic of
+  each id the payload names (see "Topics" above).
   """
   def broadcast(event_type, payload \\ %{}) when is_binary(event_type) do
     case pubsub() do
@@ -89,8 +147,25 @@ defmodule Cyclium.Bus do
         msg = {:bus, event_type, payload}
         Phoenix.PubSub.broadcast(pubsub, @topic, msg)
         Phoenix.PubSub.broadcast(pubsub, "#{@topic}:#{event_type}", msg)
+
+        for topic <- scoped_topics(payload) do
+          Phoenix.PubSub.broadcast(pubsub, topic, msg)
+        end
+
+        :ok
     end
   end
+
+  defp scoped_topics(payload) when is_map(payload) do
+    for {scope, key} <- @scopes,
+        id = payload[key] || payload[Atom.to_string(key)],
+        not is_nil(id),
+        do: scope_topic(scope, id)
+  end
+
+  defp scoped_topics(_payload), do: []
+
+  defp scope_topic(scope, id), do: "cyclium:#{scope}:#{id}"
 
   @doc """
   Read a value from an episode event's trigger subject.

@@ -331,8 +331,8 @@ Before building the LiveView UI, you can verify the whole pipeline end-to-end fr
   principal: %{"type" => "user", "id" => "user_1"}
 })
 
-# 2. (Optional) watch the bus so you can see the episode lifecycle
-Cyclium.Bus.subscribe()
+# 2. (Optional) watch this conversation's events so you can see the episode lifecycle
+Cyclium.Bus.subscribe(conversation: conv.id)
 
 # 3. Send a message — returns {:ok, episode}
 {:ok, episode} = Cyclium.Conversations.Dispatch.send_message(
@@ -580,7 +580,7 @@ When `require_preview_for_side_effects` is true in strategy_config, plans with w
 
 ### Filter bus events by actor_id in the UI
 
-`Cyclium.Bus.subscribe()` delivers ALL bus events to the LiveView — not just events from your interactive actor. If a tool triggers a workflow (e.g., a `resource_review` workflow starts a `ResourceReviewWorkflow`), the workflow's step episodes will broadcast `episode.completed` and `episode.failed` events. Without actor_id filtering, the chat UI may display spurious "something went wrong" messages from unrelated actors.
+`Cyclium.Bus.subscribe()` delivers ALL bus events to the LiveView — not just events from your interactive actor. Subscribe to the conversation instead, `Cyclium.Bus.subscribe(conversation: conversation.id)`, so only events that name it arrive (see `Cyclium.Bus`, "Topics"). If a tool triggers a workflow (e.g., a `resource_review` workflow starts a `ResourceReviewWorkflow`), the workflow's step episodes can carry the conversation's id and broadcast `episode.completed` and `episode.failed` events. Without actor_id filtering, the chat UI may display spurious "something went wrong" messages from those runs.
 
 Always pattern match on `actor_id` in bus event handlers:
 

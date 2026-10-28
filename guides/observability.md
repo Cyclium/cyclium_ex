@@ -173,6 +173,9 @@ request goes out, before it waits on the result:
 `episode.step_journaled` follows when the work returns. Between the two, a view
 can draw the open call and tell an LLM wait from a tool running.
 
+A run view subscribes to that run alone, `Cyclium.Bus.subscribe(episode:
+episode_id)`, rather than the whole bus, then loads the steps already journaled.
+
 Query steps: `Cyclium.Episodes.list_steps(episode_id)`
 
 ## Episode sampling

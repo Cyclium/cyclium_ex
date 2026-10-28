@@ -181,11 +181,13 @@ defmodule MyAppWeb.ConversationLive.Show do
 
   @impl true
   def mount(params, session, socket) do
-    if connected?(socket), do: Cyclium.Bus.subscribe()
     principal = principal(session)
 
     case load_or_create_conversation(params, socket.assigns.live_action, @__actor_id, principal) do
       {conversation, messages} ->
+        # Only this conversation's events, not the whole bus.
+        if connected?(socket), do: Cyclium.Bus.subscribe(conversation: conversation.id)
+
         {:ok,
          socket
          |> assign(:principal, principal)
@@ -319,7 +321,8 @@ defmodule MyAppWeb.ConversationLive.Index do
 
   @impl true
   def mount(_params, _session, socket) do
-    if connected?(socket), do: Cyclium.Bus.subscribe()
+    # Only this actor's events: its runs and its conversations' lifecycle.
+    if connected?(socket), do: Cyclium.Bus.subscribe(actor: @actor_id)
 
     conversations = Conversations.list_for_actor(@actor_id)
 
@@ -604,7 +607,7 @@ Add a link to your nav bar:
 
 If your interactive actor's tools trigger workflows (e.g., `initiate_health_check` → `ClientHealthWorkflow`), the workflow's internal episodes broadcast `episode.completed`/`episode.failed` on the Bus. The chat LiveView receives these too.
 
-**Fix:** Pattern match on `actor_id: @__actor_id` in both `episode.completed` and `episode.failed` handlers. See section 3 above.
+**Fix:** Subscribe with `Cyclium.Bus.subscribe(conversation: conversation.id)` rather than `Cyclium.Bus.subscribe()`, and still pattern match on `actor_id: @__actor_id` in the `episode.completed` and `episode.failed` handlers: a workflow started from the conversation can carry its `conversation_id`. See section 3 above.
 
 ### Messages don't auto-scroll
 
@@ -617,7 +620,7 @@ The `FocusInput` hook handles this. It clears the input value and refocuses afte
 ### "thinking..." indicator stays forever
 
 This means the episode never completed or failed, or the bus event wasn't received. Check:
-1. Is `Cyclium.Bus.subscribe()` called in `mount` (inside `connected?` guard)?
+1. Is `Cyclium.Bus.subscribe(conversation: conversation.id)` called in `mount` (inside the `connected?` guard)?
 2. Is the actor_id filter correct in the `handle_info` pattern?
 3. Did the episode actually complete? Check `/episodes` page or DB.
 

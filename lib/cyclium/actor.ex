@@ -390,8 +390,9 @@ defmodule Cyclium.Actor.Server do
     # actor unit tests), and a duplicate registration is ignored.
     register_actor_process(config.actor_id)
 
-    # Subscribe to bus for event-triggered expectations
-    Bus.subscribe()
+    # Subscribe to the event types this actor acts on, not the whole bus, so
+    # per-step churn from every other run never reaches it.
+    state = sync_bus_subscriptions(state)
 
     # Start schedule timers
     state = start_schedule_timers(state)
@@ -521,12 +522,10 @@ defmodule Cyclium.Actor.Server do
       end)
 
     # Emit :event_received only when the event is relevant to this actor. Every
-    # actor is subscribed to the whole bus, so without this each actor emitted a
-    # receipt for every other actor's broadcast, fanning one lifecycle event out
-    # into N telemetry points (and N log lines). `episode.step_started` and
-    # `episode.step_journaled` are per-step churn and never relevant here.
-    if event_type not in ["episode.step_started", "episode.step_journaled"] and
-         (own_lifecycle_episode_id != nil or matched_expectations != []) do
+    # actor receives every run-ending event, so without this each actor emitted
+    # a receipt for every other actor's run, fanning one lifecycle event out
+    # into N telemetry points (and N log lines).
+    if own_lifecycle_episode_id != nil or matched_expectations != [] do
       :telemetry.execute([:cyclium, :actor, :event_received], %{count: 1}, %{
         actor_id: state.actor_id,
         event_type: event_type
@@ -647,12 +646,14 @@ defmodule Cyclium.Actor.Server do
       end)
 
     # Update state with new config and expectations
-    state = %{
-      state
-      | config: new_config,
-        expectations: new_expectations,
-        cooldowns: cooldowns
-    }
+    state =
+      %{
+        state
+        | config: new_config,
+          expectations: new_expectations,
+          cooldowns: cooldowns
+      }
+      |> sync_bus_subscriptions()
 
     # Start timers for newly added scheduled / cron expectations
     Enum.reduce(added, state, fn id, acc ->
@@ -674,6 +675,27 @@ defmodule Cyclium.Actor.Server do
           end
       end
     end)
+  end
+
+  # The run-ending events free this actor's slots and drive its circuit
+  # breaker; the rest are the types its expectations subscribe to. Each type
+  # is one topic, so an event reaches the actor once however many reasons it
+  # has to want it.
+  @lifecycle_events ["episode.completed", "episode.failed", "episode.canceled"]
+
+  defp sync_bus_subscriptions(state) do
+    wanted =
+      state.expectations
+      |> Enum.flat_map(fn {_id, exp} -> Enum.map(exp.subscribes_to || [], &to_string/1) end)
+      |> Enum.concat(@lifecycle_events)
+      |> MapSet.new()
+
+    current = Map.get(state, :bus_event_types, MapSet.new())
+
+    Enum.each(MapSet.difference(current, wanted), &Bus.unsubscribe/1)
+    Enum.each(MapSet.difference(wanted, current), &Bus.subscribe/1)
+
+    Map.put(state, :bus_event_types, wanted)
   end
 
   defp cancel_timer(state, expectation_id) do
