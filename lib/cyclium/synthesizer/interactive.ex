@@ -376,7 +376,7 @@ defmodule Cyclium.Synthesizer.Interactive do
     context = prompt_ctx[:context] || %{}
 
     """
-    The user asked: #{prompt_ctx[:message]}
+    #{build_history_section(context)}The user asked: #{prompt_ctx[:message]}
 
     A tool was executed: #{context[:tool_executed]}
 
@@ -387,12 +387,24 @@ defmodule Cyclium.Synthesizer.Interactive do
     """
   end
 
+  # Used only when the provider reported no usage. Counts what is actually sent
+  # — the system prompt, the user message as built (history, findings,
+  # collected fields, tool results) and the tool schemas — at ~4 characters a
+  # token, plus a reply allowance.
   @impl true
   def estimate_tokens(prompt_ctx) do
-    msg = prompt_ctx[:message] || ""
-    context = prompt_ctx[:context] || %{}
-    history_size = length(context[:prior_summaries] || []) * 100
-    div(String.length(msg) + history_size + 500, 4)
+    system_prompt = prompt_ctx[:system_prompt] || default_system_prompt()
+
+    user_message =
+      case prompt_ctx[:task] do
+        :summarize_results -> build_summary_message(prompt_ctx)
+        _ -> build_user_message(prompt_ctx)
+      end
+
+    tools = (prompt_ctx[:tool_menu] || []) |> build_native_tools() |> inspect(limit: :infinity)
+
+    div(String.length(system_prompt) + String.length(user_message) + String.length(tools), 4) +
+      500
   end
 
   # --- Interpret ---
@@ -436,7 +448,7 @@ defmodule Cyclium.Synthesizer.Interactive do
     context = prompt_ctx[:context] || %{}
 
     """
-    The user asked: #{prompt_ctx[:message]}
+    #{build_history_section(context)}The user asked: #{prompt_ctx[:message]}
 
     A tool was executed: #{context[:tool_executed]}
 
@@ -482,18 +494,7 @@ defmodule Cyclium.Synthesizer.Interactive do
   defp build_context_section(prompt_ctx) do
     context = prompt_ctx[:context] || %{}
 
-    history_desc =
-      case context[:prior_summaries] do
-        summaries when is_list(summaries) and summaries != [] ->
-          summaries
-          |> Enum.map_join("\n", fn s ->
-            "  [#{s[:started_at] || s["started_at"]}] #{s[:summary] || s["summary"]}"
-          end)
-          |> then(&"## Conversation History\n#{&1}\n\n")
-
-        _ ->
-          ""
-      end
+    history_desc = build_history_section(context)
 
     findings_desc =
       case context[:findings] do
@@ -520,6 +521,42 @@ defmodule Cyclium.Synthesizer.Interactive do
       end
 
     "#{history_desc}#{findings_desc}#{collected_desc}"
+  end
+
+  # Earlier turns as alternating user and assistant lines, so a follow-up keeps
+  # the question it follows. A context with no `history` (a strategy that only
+  # assembles `prior_summaries`) falls back to the replies alone.
+  defp build_history_section(context) do
+    case {context[:history], context[:prior_summaries]} do
+      {[_ | _] = history, _} ->
+        history
+        |> Enum.map_join("\n", &history_line/1)
+        |> then(&"## Conversation History\n#{&1}\n\n")
+
+      {_, [_ | _] = summaries} ->
+        summaries
+        |> Enum.map_join("\n", fn s ->
+          "  [#{s[:started_at] || s["started_at"]}] #{s[:summary] || s["summary"]}"
+        end)
+        |> then(&"## Conversation History\n#{&1}\n\n")
+
+      _ ->
+        ""
+    end
+  end
+
+  defp history_line(entry) do
+    role = entry[:role] || entry["role"]
+    content = entry[:content] || entry["content"] || ""
+
+    tools =
+      case entry[:tools] || entry["tools"] do
+        [_ | _] = names -> " (tools used: #{Enum.join(names, ", ")})"
+        _ -> ""
+      end
+
+    label = if to_string(role) == "user", do: "User", else: "Assistant"
+    "#{label}: #{content}#{tools}"
   end
 
   defp build_tools_desc(tool_menu) do

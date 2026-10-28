@@ -35,6 +35,12 @@ defmodule Cyclium.Trigger do
   end
 
   defmodule Interactive do
+    @moduledoc """
+    One conversation turn. `history` is optional: left empty (as
+    `Cyclium.Conversations.Dispatch` leaves it), the interactive template loads
+    the conversation's earlier turns itself. A trigger that sets it supplies the
+    history as `%{role: "user" | "assistant", content: text}` entries instead.
+    """
     @type t :: %__MODULE__{
             conversation_id: binary(),
             message: binary(),

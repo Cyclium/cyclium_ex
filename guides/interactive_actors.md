@@ -506,10 +506,18 @@ defmodule MyApp.Actors.CustomSynthesizer do
 
   @impl true
   def estimate_tokens(prompt_ctx) do
+    # Count what the call sends: system prompt, message, history, tool results.
     msg = prompt_ctx[:message] || ""
+    system = prompt_ctx[:system_prompt] || ""
     context = prompt_ctx[:context] || %{}
-    history_size = length(context[:prior_summaries] || []) * 100
-    div(String.length(msg) + history_size + 500, 4)
+
+    history =
+      Enum.map_join(context[:history] || [], "\n", &(&1[:content] || &1["content"] || ""))
+
+    results = context[:tool_results] || ""
+
+    div(String.length(system) + String.length(msg) + String.length(history) +
+          String.length(results), 4) + 500
   end
 
   # ... your custom prompt building and parsing ...
@@ -588,4 +596,6 @@ def handle_info({:bus, "episode.completed", %{episode_id: id}}, socket)
 
 ### Conversation history is loaded from DB, not trigger_ref
 
-Earlier designs embedded conversation history in `trigger_ref.history` on every episode. This caused O(N) data duplication — each episode stored all prior summaries. The current design only stores `message`, `conversation_id`, and `principal` in trigger_ref. History is loaded fresh from DB by the Interactive template's `load_prior_episode_summaries/1` during context_assembly.
+Earlier designs embedded conversation history in `trigger_ref.history` on every episode. This caused O(N) data duplication — each episode stored all prior summaries. The current design only stores `message`, `conversation_id`, and `principal` in trigger_ref. During context_assembly the Interactive template loads the conversation's most recent finished turns from the DB: each turn's user `message` (from its trigger_ref), its reply (the episode summary) and the names of the tools it called. They reach the prompt as alternating user and assistant lines under `## Conversation History`, both in the interpret prompt and in the prompt after a tool runs.
+
+`history_turns` in `strategy_config` caps how many turns are sent (default 20, newest kept; `0` sends none). A custom synthesizer reads them from `prompt_ctx.context.history` as `%{role: "user" | "assistant", content: text}` entries (an assistant entry also has `tools`); `context.prior_summaries` is still assembled for strategies that read it.

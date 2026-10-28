@@ -32,6 +32,34 @@ defmodule Cyclium.Synthesizer.InteractiveSynthesizerTest do
     end
   end
 
+  # Records the user message it was sent, and replies with text plus usage.
+  defmodule CapturingLLM do
+    @behaviour Cyclium.Synthesizer.Interactive.LLM
+
+    @impl true
+    def chat(_system, user, _opts) do
+      Application.put_env(:cyclium, :__last_user_message__, user)
+
+      {:ok,
+       %{
+         text: ~s({"kind": "explain_only", "risk": "low", "why": "r", "explanation": "ok"}),
+         usage: %{input_tokens: 7, output_tokens: 3},
+         model: "reported-model"
+       }}
+    end
+
+    @impl true
+    def chat_with_native_tools(_system, user, _tools, _opts) do
+      Application.put_env(:cyclium, :__last_user_message__, user)
+      {:ok, %{tool_calls: [], text: "ok", usage: %{input_tokens: 11, output_tokens: 2}}}
+    end
+  end
+
+  @history [
+    %{role: "user", content: "list the open deals"},
+    %{role: "assistant", content: "There are two: Alpha and Beta.", tools: ["crm.list_deals"]}
+  ]
+
   defp tool_menu do
     [
       %{
@@ -75,6 +103,7 @@ defmodule Cyclium.Synthesizer.InteractiveSynthesizerTest do
       Application.delete_env(:cyclium, :__canned_llm_text__)
       Application.delete_env(:cyclium, :__canned_native__)
       Application.delete_env(:cyclium, :__last_native_tools__)
+      Application.delete_env(:cyclium, :__last_user_message__)
     end)
 
     :ok
@@ -265,6 +294,153 @@ defmodule Cyclium.Synthesizer.InteractiveSynthesizerTest do
 
       assert {:ok, map} = result
       assert map["explanation"] == "via text"
+    end
+  end
+
+  describe "conversation history" do
+    setup do
+      Application.put_env(:cyclium, :interactive_llm, CapturingLLM)
+      :ok
+    end
+
+    defp last_user_message, do: Application.get_env(:cyclium, :__last_user_message__)
+
+    test "the interpret prompt carries earlier turns as user and assistant lines" do
+      for mode <- [:text, :native] do
+        Synth.synthesize(
+          %{
+            task: :interpret_intent,
+            message: "what about the second one?",
+            tool_mode: mode,
+            tool_menu: tool_menu(),
+            context: %{history: @history, prior_summaries: [%{summary: "ignored"}]}
+          },
+          %{}
+        )
+
+        msg = last_user_message()
+        assert msg =~ "## Conversation History"
+        assert msg =~ "User: list the open deals"
+        assert msg =~ "Assistant: There are two: Alpha and Beta. (tools used: crm.list_deals)"
+        refute msg =~ "ignored"
+        assert msg =~ "what about the second one?"
+      end
+    end
+
+    test "the prompt after a tool runs carries the same history" do
+      for mode <- [:text, :native] do
+        Synth.synthesize(
+          %{
+            task: :summarize_results,
+            message: "what about the second one?",
+            tool_mode: mode,
+            tool_menu: tool_menu(),
+            context: %{tool_executed: "crm.get_deal", tool_results: "{}", history: @history}
+          },
+          %{}
+        )
+
+        assert last_user_message() =~ "User: list the open deals"
+      end
+    end
+
+    test "without history, the replies alone are rendered from prior_summaries" do
+      Synth.synthesize(
+        %{
+          task: :interpret_intent,
+          message: "hi",
+          tool_mode: :text,
+          context: %{prior_summaries: [%{summary: "earlier reply", started_at: "t0"}]}
+        },
+        %{}
+      )
+
+      assert last_user_message() =~ "[t0] earlier reply"
+    end
+
+    test "estimate_tokens counts the history it sends" do
+      base = %{task: :interpret_intent, message: "hi", context: %{}}
+      with_history = %{base | context: %{history: @history}}
+
+      assert Synth.estimate_tokens(with_history) > Synth.estimate_tokens(base)
+    end
+  end
+
+  describe "usage" do
+    setup do
+      Application.put_env(:cyclium, :interactive_llm, CapturingLLM)
+      :ok
+    end
+
+    test "the text path keeps the usage and model a map reply reports" do
+      assert {:ok, result} =
+               Synth.synthesize(%{task: :interpret_intent, message: "hi", tool_mode: :text}, %{})
+
+      assert result.usage == %{input_tokens: 7, output_tokens: 3}
+      assert result.model == "reported-model"
+      assert result["explanation"] == "ok"
+    end
+
+    test "the summary text path keeps usage too" do
+      assert {:ok, %{usage: %{input_tokens: 7}}} =
+               Synth.synthesize(
+                 %{task: :summarize_results, message: "hi", tool_mode: :text, context: %{}},
+                 %{}
+               )
+    end
+
+    test "the native path keeps the provider's usage" do
+      assert {:ok, %{usage: %{input_tokens: 11, output_tokens: 2}}} =
+               Synth.synthesize(
+                 %{task: :interpret_intent, message: "hi", tool_menu: tool_menu()},
+                 %{}
+               )
+    end
+  end
+
+  describe "validate_tool_signatures/1" do
+    test "accepts names providers allow" do
+      assert :ok =
+               Synth.validate_tool_signatures([
+                 %{
+                   "name" => "crm",
+                   "actions" => [%{"name" => "list-deals", "args" => %{"a.b" => "x"}}]
+                 }
+               ])
+    end
+
+    test "reports a tool name with a disallowed character" do
+      assert {:error, [problem]} =
+               Synth.validate_tool_signatures([
+                 %{"name" => "crm.v2", "actions" => [%{"name" => "get"}]}
+               ])
+
+      assert problem =~ ~s("crm.v2__get")
+    end
+
+    test "reports a combined name over 64 characters" do
+      long = String.duplicate("a", 40)
+
+      assert {:error, [_]} =
+               Synth.validate_tool_signatures([
+                 %{"name" => long, "actions" => [%{"name" => long}]}
+               ])
+    end
+
+    test "reports a bad argument name" do
+      assert {:error, [problem]} =
+               Synth.validate_tool_signatures([
+                 %{
+                   "name" => "crm",
+                   "actions" => [%{"name" => "get", "args" => %{"deal id" => "x"}}]
+                 }
+               ])
+
+      assert problem =~ ~s("deal id")
+    end
+
+    test "a tool open to every action has no names to check" do
+      assert :ok = Synth.validate_tool_signatures([%{"name" => "crm.v2", "actions" => "*"}])
     end
   end
 end

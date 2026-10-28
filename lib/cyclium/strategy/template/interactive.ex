@@ -17,6 +17,15 @@ defmodule Cyclium.Strategy.Template.Interactive do
   conversation-specific ends: seeding intent from a user message, assembling
   conversation history/findings as context, and converging with conversation
   resolution semantics.
+
+  ## Conversation history
+
+  Each turn's prompt carries the conversation's earlier finished turns: the
+  user's message, the reply, and the names of the tools the turn called, as
+  alternating user and assistant lines. The prompt after a tool runs carries
+  the same history. `strategy_config` `history_turns` caps how many of the most
+  recent turns are included (default 20; `0` sends none). The assembled
+  context still carries `prior_summaries` for strategies that read it.
   """
 
   @behaviour Cyclium.EpisodeRunner.Strategy
@@ -163,12 +172,23 @@ defmodule Cyclium.Strategy.Template.Interactive do
   defp assemble_context(state, episode_ctx) do
     collected = load_collected_fields(state)
     {findings, findings_loaded} = load_relevant_findings(state, episode_ctx, collected)
-    prior_summaries = load_prior_episode_summaries(state)
+    prior_turns = load_prior_turns(state)
+
+    prior_summaries =
+      Enum.map(prior_turns, &Map.take(&1, [:summary, :classification, :started_at]))
+
+    # A trigger that carries its own `history` (a host building the trigger_ref
+    # itself) is used as given; otherwise the conversation's earlier turns are.
+    history =
+      case state.history do
+        [_ | _] = given -> given
+        _ -> Enum.flat_map(prior_turns, &turn_history/1)
+      end
 
     %{
       message: state.message,
       principal: state.principal,
-      history: state.history,
+      history: history,
       findings: findings,
       findings_loaded: findings_loaded,
       prior_summaries: prior_summaries,
@@ -198,28 +218,118 @@ defmodule Cyclium.Strategy.Template.Interactive do
     end
   end
 
-  defp load_prior_episode_summaries(%{conversation_id: nil}), do: []
+  # The conversation's last `history_turns` finished turns, oldest first: each
+  # turn's user message (from its trigger_ref), its reply (the episode summary)
+  # and the tools it called. The newest are kept, so a long conversation drops
+  # its opening turns rather than its latest ones.
+  defp load_prior_turns(%{conversation_id: nil}), do: []
 
-  defp load_prior_episode_summaries(%{conversation_id: conv_id}) do
+  defp load_prior_turns(%{conversation_id: conv_id} = state) do
     import Ecto.Query
 
-    from(e in Cyclium.Schemas.Episode,
-      where: e.conversation_id == ^conv_id and e.status == :done,
-      order_by: [asc: e.started_at],
-      select: %{summary: e.summary, classification: e.classification, started_at: e.started_at},
-      limit: 20
-    )
-    |> Cyclium.repo().all()
+    turns =
+      from(e in Cyclium.Schemas.Episode,
+        where: e.conversation_id == ^conv_id and e.status == :done,
+        order_by: [desc: e.started_at],
+        select: %{
+          id: e.id,
+          trigger_ref: e.trigger_ref,
+          summary: e.summary,
+          classification: e.classification,
+          started_at: e.started_at
+        },
+        limit: ^history_turns(state.strategy_config)
+      )
+      |> Cyclium.repo().all()
+      |> Enum.reverse()
+
+    tools = load_turn_tools(Enum.map(turns, & &1.id))
+
+    Enum.map(turns, fn turn ->
+      %{
+        message: (turn.trigger_ref || %{})["message"],
+        summary: turn.summary,
+        classification: turn.classification,
+        started_at: turn.started_at,
+        tools: Map.get(tools, turn.id, [])
+      }
+    end)
   rescue
     error ->
       # Narrowed from a silent `[] ` — a failed load is logged, not mistaken for
-      # "no prior summaries" (Gap 3). Still degrades to [] so the turn proceeds.
+      # "no prior turns" (Gap 3). Still degrades to [] so the turn proceeds.
       Logger.warning(
-        "cyclium: prior episode summaries failed to load: #{inspect(error)}",
+        "cyclium: prior conversation turns failed to load: #{inspect(error)}",
         cyclium_conversation_id: conv_id
       )
 
       []
+  end
+
+  @default_history_turns 20
+
+  defp history_turns(config) do
+    case config["history_turns"] do
+      n when is_integer(n) and n >= 0 -> n
+      _ -> @default_history_turns
+    end
+  end
+
+  # Tool names each turn called, in order, so a follow-up can see what the
+  # earlier answer was built from. Names only: results stay in the journal.
+  defp load_turn_tools([]), do: %{}
+
+  defp load_turn_tools(episode_ids) do
+    import Ecto.Query
+
+    from(s in Cyclium.Schemas.EpisodeStep,
+      where: s.episode_id in ^episode_ids and s.kind == :tool_call,
+      order_by: [asc: s.step_no],
+      select: {s.episode_id, s.tool_name, s.error_class}
+    )
+    |> Cyclium.repo().all()
+    |> Enum.group_by(&elem(&1, 0), fn {_, name, error_class} ->
+      if error_class, do: "#{name} (failed)", else: name
+    end)
+  end
+
+  @history_entry_max_chars 4_000
+
+  defp turn_history(turn) do
+    user =
+      case turn.message do
+        msg when is_binary(msg) and msg != "" ->
+          [%{role: "user", content: truncate(msg), at: turn.started_at}]
+
+        _ ->
+          []
+      end
+
+    reply =
+      case turn.summary do
+        summary when is_binary(summary) and summary != "" ->
+          [
+            %{
+              role: "assistant",
+              content: truncate(summary),
+              tools: turn.tools,
+              at: turn.started_at
+            }
+          ]
+
+        _ ->
+          []
+      end
+
+    user ++ reply
+  end
+
+  defp truncate(text) when byte_size(text) <= @history_entry_max_chars, do: text
+
+  defp truncate(text) do
+    if String.length(text) <= @history_entry_max_chars,
+      do: text,
+      else: String.slice(text, 0, @history_entry_max_chars) <> "…"
   end
 
   defp load_collected_fields(%{conversation: nil}), do: %{}
