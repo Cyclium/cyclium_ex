@@ -380,6 +380,8 @@ defmodule Cyclium.EpisodeRunner do
               )
 
             :real ->
+              broadcast_step_started(episode, :tool_call, tool_name)
+
               bounded =
                 run_bounded(
                   fn -> Cyclium.ToolExec.call(capability, action, args, %{episode: episode}) end,
@@ -472,6 +474,8 @@ defmodule Cyclium.EpisodeRunner do
                 synthesizer ->
                   episode_ctx = build_episode_ctx(episode)
                   synth_started = System.monotonic_time(:millisecond)
+                  emit_synthesis_start(episode)
+                  broadcast_step_started(episode, :synthesis, nil)
 
                   bounded =
                     run_bounded(
@@ -495,6 +499,7 @@ defmodule Cyclium.EpisodeRunner do
                           args_redacted: prompt_for_storage,
                           result_ref: result,
                           cost_tokens: token_cost,
+                          cost_ms: System.monotonic_time(:millisecond) - synth_started,
                           metadata: synthesis_step_metadata(episode, result)
                         })
 
@@ -516,7 +521,8 @@ defmodule Cyclium.EpisodeRunner do
                         journal_step!(episode, :synthesis, %{
                           args_redacted: prompt_for_storage,
                           error_class: to_string(error_class),
-                          error_detail: %{reason: inspect(detail)}
+                          error_detail: %{reason: inspect(detail)},
+                          cost_ms: System.monotonic_time(:millisecond) - synth_started
                         })
 
                       handle_strategy_result(
@@ -1160,6 +1166,35 @@ defmodule Cyclium.EpisodeRunner do
   end
 
   defp episode_duration_ms(_), do: nil
+
+  # Marks a step's work going out — an LLM request or a tool call — before the
+  # runner waits on it, so a live view can draw the open call and tell an LLM
+  # wait from a tool running. The step itself is journaled (and
+  # `episode.step_journaled` sent) when the work returns; its `cost_ms` then
+  # measures the same span.
+  defp broadcast_step_started(%Episode{} = episode, kind, tool_name) do
+    Cyclium.Bus.broadcast("episode.step_started", %{
+      episode_id: episode.id,
+      actor_id: episode.actor_id,
+      expectation_id: episode.expectation_id,
+      conversation_id: episode.conversation_id,
+      kind: kind,
+      tool_name: tool_name,
+      started_at: DateTime.utc_now()
+    })
+  end
+
+  defp emit_synthesis_start(%Episode{} = episode) do
+    :telemetry.execute(
+      [:cyclium, :step, :synthesis, :start],
+      %{count: 1, system_time: System.system_time()},
+      %{
+        episode_id: episode.id,
+        actor_id: episode.actor_id,
+        conversation_id: episode.conversation_id
+      }
+    )
+  end
 
   # Emit a synthesis (LLM call) event carrying the data needed to build an
   # `llm` span for LLM observability: duration, input/output/total token usage,

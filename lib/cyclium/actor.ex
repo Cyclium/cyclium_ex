@@ -523,9 +523,9 @@ defmodule Cyclium.Actor.Server do
     # Emit :event_received only when the event is relevant to this actor. Every
     # actor is subscribed to the whole bus, so without this each actor emitted a
     # receipt for every other actor's broadcast, fanning one lifecycle event out
-    # into N telemetry points (and N log lines). `episode.step_journaled` is
-    # internal journaling churn and never relevant here.
-    if event_type != "episode.step_journaled" and
+    # into N telemetry points (and N log lines). `episode.step_started` and
+    # `episode.step_journaled` are per-step churn and never relevant here.
+    if event_type not in ["episode.step_started", "episode.step_journaled"] and
          (own_lifecycle_episode_id != nil or matched_expectations != []) do
       :telemetry.execute([:cyclium, :actor, :event_received], %{count: 1}, %{
         actor_id: state.actor_id,

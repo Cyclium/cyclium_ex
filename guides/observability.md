@@ -123,7 +123,8 @@ Key events:
 | `[:cyclium, :episode, :failed]` | episode_id, actor_id |
 | `[:cyclium, :episode, :sampled_out]` | actor_id, expectation_id |
 | `[:cyclium, :step, :tool_call]` | tool, action, episode_id |
-| `[:cyclium, :step, :synthesis]` | episode_id |
+| `[:cyclium, :step, :synthesis, :start]` | episode_id, actor_id, conversation_id |
+| `[:cyclium, :step, :synthesis]` | episode_id, actor_id, conversation_id, model, usage_reported |
 | `[:cyclium, :finding, :raised]` | finding_key, actor_id, class |
 | `[:cyclium, :finding, :cleared]` | finding_key, actor_id, class |
 | `[:cyclium, :finding, :expired]` | count |
@@ -153,6 +154,24 @@ Every episode action is recorded as an `EpisodeStep` with one of 16 kinds:
 
 Each step records: `step_no`, `kind`, `tool_name`, `args_redacted`, `result_ref`,
 `error_class`, `error_detail`, `cost_tokens`, `cost_ms`, `created_at`.
+
+`created_at` is when the step's work returned. `tool_call` and `synthesis` steps
+both record `cost_ms`, the time the tool or the LLM call took, so a step's work
+started at `created_at − cost_ms`.
+
+### Steps in flight
+
+The runner broadcasts `episode.step_started` on the Bus as a tool call or an LLM
+request goes out, before it waits on the result:
+
+```elixir
+%{episode_id: ..., actor_id: ..., expectation_id: ..., conversation_id: ...,
+  kind: :synthesis | :tool_call, tool_name: "capability.action" | nil,
+  started_at: ~U[...]}
+```
+
+`episode.step_journaled` follows when the work returns. Between the two, a view
+can draw the open call and tell an LLM wait from a tool running.
 
 Query steps: `Cyclium.Episodes.list_steps(episode_id)`
 
