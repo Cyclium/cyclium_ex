@@ -154,6 +154,8 @@ defmodule Cyclium.Conversations do
         })
         |> Cyclium.repo().update()
         |> tap_ok(fn updated ->
+          Cyclium.ToolCache.purge(updated.id)
+
           Cyclium.Bus.broadcast("conversation.resolved", %{
             conversation_id: updated.id,
             outcome: outcome,
@@ -189,6 +191,8 @@ defmodule Cyclium.Conversations do
         })
         |> Cyclium.repo().update()
         |> tap_ok(fn updated ->
+          Cyclium.ToolCache.purge(updated.id)
+
           Cyclium.Bus.broadcast("conversation.abandoned", %{
             conversation_id: updated.id,
             reason: reason,
@@ -220,6 +224,8 @@ defmodule Cyclium.Conversations do
         |> Conversation.changeset(%{status: "timed_out"})
         |> Cyclium.repo().update()
         |> tap_ok(fn updated ->
+          Cyclium.ToolCache.purge(updated.id)
+
           Cyclium.Bus.broadcast("conversation.timed_out", %{
             conversation_id: updated.id,
             actor_id: updated.actor_id

@@ -15,10 +15,14 @@ defmodule Cyclium.Supervisor do
     Cyclium.ServiceLevels.ensure_table()
     Cyclium.AdaptiveBudget.ensure_table()
     Cyclium.Findings.Config.ensure_table()
+    Cyclium.ToolCache.ensure_table()
 
     children =
       [
         Cyclium.Mode,
+        # Sweeps expired tool-result cache entries; the table itself is created
+        # above so it outlives a restart of this process.
+        Cyclium.ToolCache,
         # Per-node actor process registry, keyed by actor_id string. Lets recovery
         # (and anything else) find a live actor's pid by id regardless of the
         # `name:` it was started under or which supervisor owns it. Compiled and

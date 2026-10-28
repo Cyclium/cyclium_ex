@@ -34,8 +34,20 @@ defmodule Cyclium.Tool do
   """
   @callback side_effect?() :: boolean()
 
+  @doc """
+  How long, in seconds, `Cyclium.ToolExec` may reuse a successful result of
+  this tool within one conversation (or one episode outside a conversation).
+  `:no_cache` (the default) or `0` calls the tool every time. A tool whose
+  `side_effect?/0` is true is never cached. See `Cyclium.ToolCache`.
+  """
   @callback cache_ttl() :: non_neg_integer() | :no_cache
 
+  @doc """
+  The part of a cache key that stands for `args`: two calls to the same action
+  whose `cache_scope/1` agree share a result. The default keys on the args
+  themselves (without the framework's `_`-prefixed internal keys); override it
+  to key on fewer, e.g. only the id an action reads.
+  """
   @callback cache_scope(args :: map()) :: binary()
 
   @doc """
@@ -68,7 +80,7 @@ defmodule Cyclium.Tool do
       def cache_ttl, do: :no_cache
 
       @impl true
-      def cache_scope(_args), do: ""
+      def cache_scope(args), do: Cyclium.ToolExec.default_cache_scope(args)
 
       @impl true
       def tool_signature, do: nil

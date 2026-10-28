@@ -2,6 +2,11 @@ defmodule Cyclium.ToolExec do
   @moduledoc """
   Wraps every tool call with: capability check, caching, redaction, journaling.
 
+  A tool that declares `cache_ttl/0` has its successful results reused within
+  the conversation (or episode) for that many seconds; see `Cyclium.ToolCache`.
+  A reused result is still journaled as a tool call, marked
+  `metadata: %{"cache_hit" => true}`.
+
   Tool modules are resolved in order:
   1. Actor-registered tools (set via `tools` DSL in the actor module)
   2. App-level capability registry (`config :cyclium, :capability_registry`),
@@ -68,44 +73,106 @@ defmodule Cyclium.ToolExec do
         {:error, :no_tool_for_capability}
 
       tool_module ->
-        try do
-          case tool_module.call(action, args, ctx) do
-            {:ok, result} ->
-              redacted = %{
-                args_redacted: strip_internal_keys(tool_module.redact(args)),
-                result_redacted: tool_module.redact_result(result)
-              }
+        case cache_ttl(tool_module) do
+          nil ->
+            invoke(tool_module, capability, action, args, ctx)
 
-              {:ok, result, 0, redacted}
+          ttl ->
+            key = {cache_scope_id(ctx), capability, action, tool_module.cache_scope(args)}
 
-            {:error, reason} ->
-              Logger.warning(
-                "[ToolExec] Tool returned error: #{inspect(reason)} for #{inspect(capability)}.#{inspect(action)}"
-              )
+            case Cyclium.ToolCache.fetch(key) do
+              {:hit, result} ->
+                emit_cache(:hit, capability, action, ctx)
+                {:ok, result, 0, tool_module |> redacted(args, result) |> Map.put(:cached, true)}
 
-              # Pass through the original error reason if it's already a
-              # string/atom/binary — only fall back to classify_error for
-              # truly unknown shapes. This preserves the actual error
-              # message for the agent (e.g. "File not found: :enoent").
-              {:error, preserve_error(reason)}
-          end
-        catch
-          :error, %{__struct__: _} = e ->
-            msg = "#{inspect(e.__struct__)}: #{Exception.message(e)}"
+              :miss ->
+                emit_cache(:miss, capability, action, ctx)
 
-            Logger.warning(
-              "[ToolExec] Tool raised #{msg} for #{inspect(capability)}.#{inspect(action)}"
-            )
-
-            {:error, msg}
-
-          kind, reason ->
-            msg = "#{kind}: #{inspect(reason)}"
-
-            Logger.warning("[ToolExec] Tool #{msg} for #{inspect(capability)}.#{inspect(action)}")
-
-            {:error, msg}
+                with {:ok, result, _cost, _redacted} = ok <-
+                       invoke(tool_module, capability, action, args, ctx) do
+                  Cyclium.ToolCache.put(key, result, ttl)
+                  ok
+                end
+            end
         end
+    end
+  end
+
+  # A positive TTL from a tool that does not declare side effects; nil means
+  # call the tool every time.
+  defp cache_ttl(tool_module) do
+    case tool_module.cache_ttl() do
+      ttl when is_integer(ttl) and ttl > 0 -> if tool_module.side_effect?(), do: nil, else: ttl
+      _ -> nil
+    end
+  end
+
+  defp cache_scope_id(%{episode: %{conversation_id: conv_id}}) when not is_nil(conv_id),
+    do: conv_id
+
+  defp cache_scope_id(%{episode: episode}), do: {:episode, episode.id}
+
+  defp emit_cache(outcome, capability, action, %{episode: episode}) do
+    :telemetry.execute([:cyclium, :tool_cache, outcome], %{count: 1}, %{
+      tool: capability,
+      action: action,
+      episode_id: episode.id,
+      actor_id: episode.actor_id,
+      conversation_id: episode.conversation_id
+    })
+  end
+
+  @doc false
+  # `Cyclium.Tool`'s default `cache_scope/1`: the args, internal keys removed,
+  # as a stable string.
+  def default_cache_scope(args) do
+    args
+    |> strip_internal_keys()
+    |> :erlang.term_to_binary([:deterministic])
+    |> then(&:crypto.hash(:sha256, &1))
+    |> Base.encode16()
+  end
+
+  defp redacted(tool_module, args, result) do
+    %{
+      args_redacted: strip_internal_keys(tool_module.redact(args)),
+      result_redacted: tool_module.redact_result(result)
+    }
+  end
+
+  defp invoke(tool_module, capability, action, args, ctx) do
+    try do
+      case tool_module.call(action, args, ctx) do
+        {:ok, result} ->
+          {:ok, result, 0, redacted(tool_module, args, result)}
+
+        {:error, reason} ->
+          Logger.warning(
+            "[ToolExec] Tool returned error: #{inspect(reason)} for #{inspect(capability)}.#{inspect(action)}"
+          )
+
+          # Pass through the original error reason if it's already a
+          # string/atom/binary — only fall back to classify_error for
+          # truly unknown shapes. This preserves the actual error
+          # message for the agent (e.g. "File not found: :enoent").
+          {:error, preserve_error(reason)}
+      end
+    catch
+      :error, %{__struct__: _} = e ->
+        msg = "#{inspect(e.__struct__)}: #{Exception.message(e)}"
+
+        Logger.warning(
+          "[ToolExec] Tool raised #{msg} for #{inspect(capability)}.#{inspect(action)}"
+        )
+
+        {:error, msg}
+
+      kind, reason ->
+        msg = "#{kind}: #{inspect(reason)}"
+
+        Logger.warning("[ToolExec] Tool #{msg} for #{inspect(capability)}.#{inspect(action)}")
+
+        {:error, msg}
     end
   end
 

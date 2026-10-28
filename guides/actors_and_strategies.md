@@ -644,17 +644,18 @@ defmodule MyApp.Tools.Notifier do
   end
   def redact_result(result), do: result
 
-  # Mark as having side effects (affects caching/retry behavior)
+  # Advisory: whether the tool mutates state. A tool that says true is never
+  # cached, whatever its cache_ttl.
   @impl true
-  def side_effect?, do: true
+  def side_effect?, do: false
 
-  # Cache results for 5 minutes
+  # Reuse a result within the conversation for 30 seconds
   @impl true
-  def cache_ttl, do: :timer.minutes(5)
+  def cache_ttl, do: 30
 
-  # Cache key scope — same record ID returns cached result
+  # Cache key scope — same record ID returns the cached result
   @impl true
-  def cache_scope(args), do: args["record_id"]
+  def cache_scope(args), do: "record:#{args["record_id"]}"
 end
 ```
 
@@ -664,8 +665,16 @@ end
 | `redact(args)` | passthrough | Strip sensitive/bulky data from args before journaling |
 | `redact_result(result)` | passthrough | Strip bulky data from results before journaling |
 | `side_effect?()` | `false` | Whether the action mutates external state |
-| `cache_ttl()` | `:no_cache` | How long to cache results (ms) |
-| `cache_scope(args)` | `""` | Cache key discriminator |
+| `cache_ttl()` | `:no_cache` | Seconds a successful result is reused within the conversation (or episode) |
+| `cache_scope(args)` | the args | Which args share a cached result |
+
+Caching is per node and per conversation (the episode, outside a conversation):
+a result is never shared between conversations, errors are never cached, and a
+reused result is still journaled as a tool call with
+`metadata: %{"cache_hit" => true}`. Entries are dropped when the conversation
+ends and swept once expired. Keep the TTL short (30–60 seconds) so a turn's
+repeated reads are cheap without serving data much older than the turn. See
+`Cyclium.ToolCache`.
 
 Register tools in config:
 

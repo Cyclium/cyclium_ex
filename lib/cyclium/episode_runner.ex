@@ -403,7 +403,8 @@ defmodule Cyclium.EpisodeRunner do
                       args_redacted: Cyclium.Redaction.redact_sensitive(redacted.args_redacted),
                       result_ref: Cyclium.Redaction.redact_sensitive(redacted.result_redacted),
                       cost_tokens: cost,
-                      cost_ms: System.monotonic_time(:millisecond) - tool_started
+                      cost_ms: System.monotonic_time(:millisecond) - tool_started,
+                      metadata: if(redacted[:cached], do: %{"cache_hit" => true})
                     })
 
                   increment_budget(episode, cost)

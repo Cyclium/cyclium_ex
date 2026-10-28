@@ -32,6 +32,13 @@ defmodule Cyclium.Telemetry do
   the result names a model, since the missing figure otherwise undercounts
   budgets and cost telemetry silently.
 
+  ### Tool-result cache events
+
+      [:cyclium, :tool_cache, :hit]       — %{tool, action, episode_id, actor_id, conversation_id}
+      [:cyclium, :tool_cache, :miss]      — %{tool, action, episode_id, actor_id, conversation_id}
+
+  Emitted only for tools that declare a `cache_ttl/0` (see `Cyclium.ToolCache`).
+
   ### Checkpoint events
 
       [:cyclium, :checkpoint, :save_failed] — %{count}, meta: %{episode_id, actor_id, expectation_id, phase, error_class}
@@ -157,6 +164,9 @@ defmodule Cyclium.Telemetry do
     [:cyclium, :step, :synthesis, :start],
     [:cyclium, :step, :synthesis],
     [:cyclium, :step, :observation],
+    # Tool-result cache
+    [:cyclium, :tool_cache, :hit],
+    [:cyclium, :tool_cache, :miss],
     # Actor
     [:cyclium, :actor, :event_received],
     [:cyclium, :actor, :overflow],
