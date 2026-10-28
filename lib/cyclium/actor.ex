@@ -1276,10 +1276,11 @@ defmodule Cyclium.Actor.Server do
       expectation_id: params.expectation_id
     })
 
+    # No `conversation_id`: conversation turns skip the capacity check, so a
+    # dropped run is never a conversation's.
     Bus.broadcast("episode.dropped", %{
       actor_id: state.actor_id,
-      expectation_id: params.expectation_id,
-      conversation_id: params[:conversation_id]
+      expectation_id: params.expectation_id
     })
 
     state

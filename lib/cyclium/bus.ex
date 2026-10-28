@@ -101,7 +101,7 @@ defmodule Cyclium.Bus do
   the subject the run is about, whichever path ends the run: the runner, a
   crashed or exited task, a recovery sweep, a replayed workflow step, a cancel,
   or a queued run shed at capacity. (`episode.dropped` names no episode — the
-  run was never created — so it carries `expectation_id` only.) This reads
+  run was never created — so it carries `actor_id` and `expectation_id` only.) This reads
   `trigger_ref["payload"][key]` so a subscriber can tell which subject an event
   names without hand-rolling the nested access or a DB read. Returns `nil` when the payload has no `trigger_ref`, no `"payload"`, or
   no such `key`.
