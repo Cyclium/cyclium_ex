@@ -830,23 +830,11 @@ defmodule Cyclium.EpisodeRunner do
   # the episode as cleanly :done).
   defp persist_findings(episode, findings) do
     Enum.reduce(findings, 0, fn action, failed ->
-      case safe_persist_finding(action, episode) do
-        {:ok, finding} ->
-          bus_event = finding_bus_event(action)
-
-          Cyclium.Bus.broadcast(bus_event, %{
-            episode_id: episode.id,
-            conversation_id: episode.conversation_id,
-            finding_id: finding.id,
-            finding_key: finding.finding_key,
-            actor_id: finding.actor_id
-          })
-
-          journal_finding_step!(episode, action, finding)
+      case safe_record_finding(action, episode) do
+        {:ok, _finding} ->
           failed
 
         :ok ->
-          # Idempotent clear — nothing to broadcast
           failed
 
         {:error, reason} ->
@@ -862,8 +850,8 @@ defmodule Cyclium.EpisodeRunner do
   # One malformed finding (a strategy or model-authored map missing a required
   # field) must not crash the post-converge of an episode whose tool side
   # effects already ran; it counts as a failed persist instead.
-  defp safe_persist_finding(action, episode) do
-    Cyclium.Findings.persist_finding(action, episode)
+  defp safe_record_finding(action, episode) do
+    Cyclium.Findings.record(action, episode)
   rescue
     e -> {:error, e}
   end
@@ -896,25 +884,6 @@ defmodule Cyclium.EpisodeRunner do
   defp count_outcomes(results, :ok), do: Enum.count(results, &match?({:ok, _}, &1))
   defp count_outcomes(results, :error), do: Enum.count(results, &match?({:error, _}, &1))
   defp count_outcomes(results, :duplicate), do: Enum.count(results, &match?({:duplicate, _}, &1))
-
-  defp finding_bus_event({:raise, _}), do: "finding.raised"
-  defp finding_bus_event({:update, _, _}), do: "finding.updated"
-  defp finding_bus_event({:clear, _}), do: "finding.cleared"
-  defp finding_bus_event({:clear, _, _}), do: "finding.cleared"
-
-  defp journal_finding_step!(episode, action, finding) do
-    kind =
-      case action do
-        {:raise, _} -> :finding_raised
-        {:update, _, _} -> :finding_updated
-        {:clear, _} -> :finding_cleared
-        {:clear, _, _} -> :finding_cleared
-      end
-
-    Journal.append!(episode, kind, %{
-      result_ref: %{finding_id: finding.id, finding_key: finding.finding_key}
-    })
-  end
 
   defp abort_episode(episode, reason) do
     # Extract a specific error_class from structured abort reasons so
@@ -1407,6 +1376,7 @@ defmodule Cyclium.EpisodeRunner do
           {:update, _, _} -> :finding_updated
           {:clear, _} -> :finding_cleared
           {:clear, _, _} -> :finding_cleared
+          {:supersede, _, _} -> :finding_superseded
         end
 
       detail =
@@ -1415,6 +1385,7 @@ defmodule Cyclium.EpisodeRunner do
           {:update, _key, attrs} -> attrs
           {:clear, key} -> %{finding_key: key}
           {:clear, key, _} -> %{finding_key: key}
+          {:supersede, key, attrs} -> Map.put(attrs, :superseded_key, key)
         end
 
       Journal.append!(episode, kind, %{

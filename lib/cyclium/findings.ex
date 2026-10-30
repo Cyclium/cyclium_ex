@@ -3,7 +3,8 @@ defmodule Cyclium.Findings do
   Context for finding queries and lifecycle operations.
 
   Read-path: strategies query active findings during `init/2`.
-  Write-path: post-converge persists raise/update/clear actions.
+  Write-path: `record/2` persists a raise/update/clear/supersede action and
+  announces it; post-converge records the actions a strategy returns.
 
   Subject queries use denormalized `subject_kind` and `subject_id` columns
   instead of JSON operators for SQL Server 2017 compatibility.
@@ -380,8 +381,76 @@ defmodule Cyclium.Findings do
 
   # --- Write path (Phase 3) ---
 
+  @announcements %{
+    raised: {"finding.raised", :finding_raised},
+    updated: {"finding.updated", :finding_updated},
+    cleared: {"finding.cleared", :finding_cleared},
+    superseded: {"finding.superseded", :finding_superseded}
+  }
+
   @doc """
-  Persist a finding action from a ConvergeResult.
+  Persist a finding action on a running episode and announce it, as the runner
+  does for the findings a strategy returns: the write (`persist_finding/2`),
+  then the `finding.*` Bus event and a `:finding_*` step in the episode's
+  journal. Use it from a tool, or any code, that records a finding during a run.
+
+  Takes the actions `persist_finding/2` takes. For
+  `{:supersede, finding_key, params}` it announces the superseded finding (when
+  there was one) and then the raised one. An idempotent clear announces nothing.
+
+  Returns `{:ok, finding}` (the raised finding, for a supersede), `:ok` for an
+  idempotent clear, or `{:error, reason}`.
+  """
+  @spec record(Cyclium.ConvergeResult.finding_action(), Cyclium.Schemas.Episode.t()) ::
+          {:ok, Finding.t()} | :ok | {:error, term()}
+  def record({:supersede, finding_key, params}, episode) do
+    case supersede(finding_key, params, episode) do
+      {:ok, {superseded, raised}} ->
+        if superseded, do: announce(:superseded, superseded, episode)
+        announce(:raised, raised, episode)
+        {:ok, raised}
+
+      {:error, _} = err ->
+        err
+    end
+  end
+
+  def record(action, episode) do
+    case persist_finding(action, episode) do
+      {:ok, finding} ->
+        announce(announcement(action), finding, episode)
+        {:ok, finding}
+
+      other ->
+        other
+    end
+  end
+
+  defp announcement({:raise, _}), do: :raised
+  defp announcement({:update, _, _}), do: :updated
+  defp announcement({:clear, _}), do: :cleared
+  defp announcement({:clear, _, _}), do: :cleared
+
+  defp announce(event, finding, episode) do
+    {bus_event, step_kind} = Map.fetch!(@announcements, event)
+
+    Cyclium.Bus.broadcast(bus_event, %{
+      episode_id: episode.id,
+      conversation_id: episode.conversation_id,
+      finding_id: finding.id,
+      finding_key: finding.finding_key,
+      actor_id: finding.actor_id
+    })
+
+    Cyclium.Journal.append!(episode, step_kind, %{
+      result_ref: %{finding_id: finding.id, finding_key: finding.finding_key}
+    })
+  end
+
+  @doc """
+  Write a finding action, and nothing more: no Bus event and no journal step.
+  `record/2` writes and announces; use this only where the announcement is not
+  wanted.
 
   ## Actions
 
@@ -389,7 +458,17 @@ defmodule Cyclium.Findings do
     - `{:update, key, changes}` — update mutable fields on an active finding
     - `{:clear, key}` — idempotent clear (set status to `:cleared`)
     - `{:clear, key, reason}` — clear with reason stored in evidence_refs
+    - `{:supersede, key, params}` — mark the active finding under `key`
+      `:superseded` and raise `params` in its place, in one transaction. With
+      no active finding under `key`, it only raises. `params` may reuse `key`.
   """
+  def persist_finding({:supersede, finding_key, params}, episode) do
+    case supersede(finding_key, params, episode) do
+      {:ok, {_superseded, raised}} -> {:ok, raised}
+      {:error, _} = err -> err
+    end
+  end
+
   def persist_finding({:raise, params}, episode) do
     now = DateTime.utc_now() |> DateTime.truncate(:second)
     finding_key = Map.fetch!(params, :finding_key)
@@ -506,6 +585,37 @@ defmodule Cyclium.Findings do
           {:error, _} = err ->
             err
         end
+    end
+  end
+
+  # The superseded row keeps its key; superseded rows are outside the unique
+  # index, so a key can be superseded any number of times.
+  defp supersede(finding_key, params, episode) do
+    now = DateTime.utc_now() |> DateTime.truncate(:second)
+
+    repo().transaction(fn repo ->
+      superseded = supersede_active(repo, finding_key, write_env(episode), now)
+
+      case persist_finding({:raise, params}, episode) do
+        {:ok, raised} -> {superseded, raised}
+        {:error, reason} -> repo.rollback(reason)
+      end
+    end)
+  end
+
+  defp supersede_active(repo, finding_key, env, now) do
+    case get_active_by_key(repo, finding_key, env) do
+      nil ->
+        nil
+
+      existing ->
+        superseded =
+          existing
+          |> Finding.changeset(%{status: :superseded, archived_at: now, updated_at: now})
+          |> repo.update!()
+
+        emit_finding_telemetry(:superseded, superseded)
+        superseded
     end
   end
 

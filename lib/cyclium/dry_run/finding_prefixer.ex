@@ -51,6 +51,11 @@ defmodule Cyclium.DryRun.FindingPrefixer do
     {:raise, params}
   end
 
+  defp prefix_action({:supersede, key, params}, prefix) do
+    {:raise, prefixed} = prefix_action({:raise, params}, prefix)
+    {:supersede, "#{prefix}:#{key}", prefixed}
+  end
+
   defp prefix_action({:update, key, changes}, prefix) do
     {:update, "#{prefix}:#{key}", changes}
   end

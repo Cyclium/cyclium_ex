@@ -9,6 +9,7 @@ defmodule Cyclium.ConvergeResult do
           | {:update, binary(), map()}
           | {:clear, binary()}
           | {:clear, binary(), binary()}
+          | {:supersede, binary(), map()}
 
   @type t :: %__MODULE__{
           outputs: [Cyclium.OutputProposal.t()],

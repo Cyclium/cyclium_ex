@@ -108,7 +108,7 @@ and can be queried via `Cyclium.Episodes.get_log(episode_id)`.
 
 ## Telemetry
 
-Cyclium emits 53 structured telemetry events under the `[:cyclium, ...]` prefix.
+Cyclium emits 54 structured telemetry events under the `[:cyclium, ...]` prefix.
 Attach a handler for development:
 
 ```elixir
@@ -145,12 +145,12 @@ Full list: `Cyclium.Telemetry.events/0`. Work-claim telemetry is documented in t
 
 ## Step journal
 
-Every episode action is recorded as an `EpisodeStep` with one of 16 kinds:
+Every episode action is recorded as an `EpisodeStep` with one of 17 kinds:
 
 `tool_call`, `synthesis`, `observation`, `checkpoint`, `output_proposed`,
 `output_delivered`, `output_failed`, `approval_requested`, `approval_resolved`,
 `wait_started`, `wait_resolved`, `finding_raised`, `finding_updated`,
-`finding_cleared`, `episode_completed`, `episode_failed`
+`finding_cleared`, `finding_superseded`, `episode_completed`, `episode_failed`
 
 Each step records: `step_no`, `kind`, `tool_name`, `args_redacted`, `result_ref`,
 `error_class`, `error_detail`, `cost_tokens`, `cost_ms`, `created_at`.

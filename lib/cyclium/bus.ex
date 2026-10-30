@@ -47,6 +47,7 @@ defmodule Cyclium.Bus do
     "finding.raised",
     "finding.updated",
     "finding.cleared",
+    "finding.superseded",
     "work.requested",
     "output.proposed",
     "output.delivered",

@@ -69,6 +69,7 @@ defmodule Cyclium.Telemetry do
 
       [:cyclium, :finding, :raised]       — %{finding_key, actor_id, class}
       [:cyclium, :finding, :cleared]      — %{finding_key, actor_id, class}
+      [:cyclium, :finding, :superseded]   — %{finding_key, actor_id, class}
       [:cyclium, :finding, :expired]      — %{count}
       [:cyclium, :finding, :escalated]    — %{finding_key, class, from, to}
 
@@ -177,6 +178,7 @@ defmodule Cyclium.Telemetry do
     # Findings
     [:cyclium, :finding, :raised],
     [:cyclium, :finding, :cleared],
+    [:cyclium, :finding, :superseded],
     [:cyclium, :finding, :expired],
     [:cyclium, :finding, :escalated],
     # Service levels

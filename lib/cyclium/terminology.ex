@@ -29,6 +29,7 @@ defmodule Cyclium.Terminology do
     raised: "raised",
     updated: "updated",
     cleared: "cleared",
+    superseded: "superseded",
     completed: "completed",
     failed: "failed",
     resolved: "resolved",

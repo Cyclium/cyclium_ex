@@ -15,6 +15,8 @@ lifecycle:
 - **Raise** — create or update an active finding (upsert by `finding_key`)
 - **Update** — modify mutable fields on an active finding
 - **Clear** — mark a finding as resolved (idempotent)
+- **Supersede** — retire the active finding under one key and raise its
+  replacement, in one transaction
 
 ```elixir
 # In your converge/2 callback:
@@ -33,9 +35,31 @@ findings: [
   }},
   {:update, "resource:limits:123", %{confidence: 0.8}},
   {:clear, "resource:limits:123"},
-  {:clear, "resource:limits:123", "limit raised by operator"}
+  {:clear, "resource:limits:123", "limit raised by operator"},
+  {:supersede, "resource:limits:123", %{finding_key: "resource:limits:123:v2", ...}}
 ]
 ```
+
+Each action is persisted, broadcast as its `finding.*` Bus event and journaled
+as a `finding_*` step on the episode. A superseded finding keeps its row with
+status `:superseded`; with no active finding under the key, a supersede only
+raises. The replacement may reuse the superseded key.
+
+### Recording a finding from a tool
+
+A tool, or any code running inside an episode, records a finding with
+`Cyclium.Findings.record/2`, which does what post-converge does for a returned
+action: it persists, broadcasts and journals.
+
+```elixir
+def call(:flag_resource, args, %{episode: episode}) do
+  Cyclium.Findings.record({:raise, %{finding_key: "resource:limits:#{args["id"]}", ...}}, episode)
+end
+```
+
+The finding's step lands in the journal before the tool's own `tool_call` step,
+which is written when the tool returns. `Cyclium.Findings.persist_finding/2` is
+the same write with no Bus event and no step, for code that announces nothing.
 
 ### Finding key scoping: deduplicated vs distinct
 
@@ -335,7 +359,7 @@ end
 |---|---|
 | Episode lifecycle | `episode.completed`, `episode.failed`, `episode.canceled`, `episode.queued`, `episode.dropped` |
 | Expectations | `expectation.triggered` |
-| Findings | `finding.raised`, `finding.updated`, `finding.cleared` |
+| Findings | `finding.raised`, `finding.updated`, `finding.cleared`, `finding.superseded` |
 | Outputs | `output.delivered` |
 | Workflows | `workflow.started`, `workflow.completed`, `workflow.failed` |
 | System | `spec.updated` |
@@ -355,7 +379,7 @@ defmodule MyAppWeb.DashboardLive do
   end
 
   def handle_info({:bus, event, _payload}, socket)
-      when event in ["finding.raised", "finding.updated", "finding.cleared"] do
+      when event in ["finding.raised", "finding.updated", "finding.cleared", "finding.superseded"] do
     {:noreply, assign(socket, findings: load_findings())}
   end
 

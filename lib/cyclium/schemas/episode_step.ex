@@ -20,6 +20,7 @@ defmodule Cyclium.Schemas.EpisodeStep do
     :finding_raised,
     :finding_updated,
     :finding_cleared,
+    :finding_superseded,
     :episode_completed,
     :episode_failed
   ]

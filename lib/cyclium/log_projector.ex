@@ -120,6 +120,9 @@ defmodule Cyclium.LogProjector do
       :finding_cleared ->
         "[#{time}] #{Terminology.format(:finding, :cleared)}"
 
+      :finding_superseded ->
+        "[#{time}] #{Terminology.format(:finding, :superseded)}"
+
       :approval_requested ->
         "[#{time}] #{Terminology.format(:approval, :requested)}"
 
