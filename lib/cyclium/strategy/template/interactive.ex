@@ -230,7 +230,7 @@ defmodule Cyclium.Strategy.Template.Interactive do
     turns =
       from(e in Cyclium.Schemas.Episode,
         where: e.conversation_id == ^conv_id and e.status == :done,
-        order_by: [desc: e.started_at],
+        order_by: [desc: e.started_at, desc: e.id],
         select: %{
           id: e.id,
           trigger_ref: e.trigger_ref,

@@ -662,16 +662,21 @@ defmodule Cyclium.Episodes do
     end
   end
 
-  @doc "List episodes for a conversation, ordered by start time."
+  @doc """
+  The conversation's most recent episodes (`:limit`, default 50), oldest
+  first. A conversation longer than the limit loses its earliest episodes, not
+  its latest.
+  """
   def list_for_conversation(conversation_id, opts \\ []) do
     limit = Keyword.get(opts, :limit, 50)
 
     from(e in Episode,
       where: e.conversation_id == ^conversation_id,
-      order_by: [asc: e.started_at],
+      order_by: [desc: e.started_at, desc: e.id],
       limit: ^limit
     )
     |> repo().all()
+    |> Enum.reverse()
   end
 
   defp resolve_spec_rev(actor_key) when is_atom(actor_key) do

@@ -205,5 +205,23 @@ defmodule Cyclium.EpisodesApprovalDbTest do
 
       assert length(Episodes.list_for_conversation(conv.id, limit: 3)) == 3
     end
+
+    test "with a limit keeps the most recent episodes, oldest first" do
+      conv = start_conversation()
+      now = DateTime.utc_now()
+
+      [_first, _second, third, fourth, fifth] =
+        for i <- 1..5 do
+          insert_episode(%{
+            actor_id: "approval_test_actor",
+            conversation_id: conv.id,
+            started_at: DateTime.add(now, i, :second),
+            trigger_type: :interactive
+          })
+        end
+
+      assert Enum.map(Episodes.list_for_conversation(conv.id, limit: 3), & &1.id) ==
+               [third.id, fourth.id, fifth.id]
+    end
   end
 end

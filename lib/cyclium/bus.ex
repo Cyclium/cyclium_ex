@@ -120,6 +120,18 @@ defmodule Cyclium.Bus do
     end
   end
 
+  @doc """
+  Stop receiving the events `subscribe/0` delivers, for a subscriber that
+  listens only part of the time. Leaves `subscribe/1` subscriptions alone, and
+  is `:ok` for a process that was not subscribed.
+  """
+  def unsubscribe do
+    case pubsub() do
+      nil -> {:error, :no_pubsub}
+      pubsub -> Phoenix.PubSub.unsubscribe(pubsub, @topic)
+    end
+  end
+
   @doc "Stop receiving the events `subscribe/1` subscribed to (a type or a scope)."
   def unsubscribe(event_type) when is_binary(event_type) do
     case pubsub() do

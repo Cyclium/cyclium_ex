@@ -347,6 +347,10 @@ Cyclium.Bus.subscribe()
 # Subscribe to a specific event:
 Cyclium.Bus.subscribe("episode.completed")
 
+# Stop listening (each pairs with the subscribe above):
+Cyclium.Bus.unsubscribe()
+Cyclium.Bus.unsubscribe("episode.completed")
+
 # In a LiveView or GenServer:
 def handle_info({:bus, "episode.completed", payload}, socket) do
   # payload contains: episode_id, actor_id, status, workflow_instance_id

@@ -47,6 +47,44 @@ defmodule Cyclium.BusTest do
     assert_receive {:bus, "domain.event", %{n: 1}}
   end
 
+  describe "unsubscribe" do
+    test "unsubscribe/0 stops the events subscribe/0 delivered, and keeps typed ones" do
+      Cyclium.Bus.subscribe()
+      Cyclium.Bus.subscribe("kept.event")
+      assert :ok = Cyclium.Bus.unsubscribe()
+
+      Cyclium.Bus.publish("other.event", %{})
+      Cyclium.Bus.broadcast("kept.event", %{})
+
+      refute_receive {:bus, "other.event", _}
+      assert_receive {:bus, "kept.event", _}
+      refute_receive {:bus, "kept.event", _}
+    end
+
+    test "unsubscribe/1 stops only that event type" do
+      Cyclium.Bus.subscribe("kept.event")
+      Cyclium.Bus.subscribe("dropped.event")
+      assert :ok = Cyclium.Bus.unsubscribe("dropped.event")
+
+      Cyclium.Bus.broadcast("dropped.event", %{})
+      Cyclium.Bus.broadcast("kept.event", %{})
+
+      assert_receive {:bus, "kept.event", _}
+      refute_receive {:bus, "dropped.event", _}
+    end
+
+    test "is :ok for a process that never subscribed" do
+      assert :ok = Cyclium.Bus.unsubscribe()
+      assert :ok = Cyclium.Bus.unsubscribe("never.event")
+    end
+
+    test "returns an error when no pubsub is configured" do
+      Application.delete_env(:cyclium, :pubsub)
+      assert {:error, :no_pubsub} = Cyclium.Bus.unsubscribe()
+      assert {:error, :no_pubsub} = Cyclium.Bus.unsubscribe("any.event")
+    end
+  end
+
   describe "scoped topics" do
     @payload %{
       episode_id: "ep-1",
