@@ -146,6 +146,8 @@ The tuple `{Cyclium.Synthesizer.Interactive, llm: MyApp.Actors.ResourceLLM}` tel
 | `allowed_tool_signatures` | list of maps | Tool signatures with `name`, `side_effect`, optional `actions` (list of `%{name, args, description}`) |
 | `require_preview_for_side_effects` | boolean | If true, plans with write/external_effect tools block at preview for approval |
 | `max_plan_steps` | integer | Max steps in a multi_tool_plan |
+| `history_turns` | integer | How many of the conversation's finished turns the prompts carry (default 20, newest kept; `0` sends none) |
+| `summarize_context` | list of strings or atoms | What the prompt after a tool call carries beyond the conversation history: any of `"findings"` and `"collected_fields"`. Default none, since each adds its tokens to every such prompt. `AgenticTask` reads it too; only `"findings"` applies there |
 
 **Tool signature `actions` format:**
 
@@ -526,6 +528,7 @@ end
 
 Key requirements:
 - Must handle both `:interpret_intent` and `:summarize_results` tasks
+- A `:summarize_results` context carries `:history` (the entries the interpret step saw), and `:findings` and `:collected_fields` when the actor sets `summarize_context`
 - Must return `{:ok, map}` where map has ActionPlan fields (`kind`, `risk`, `why`, etc.)
 - The summarize prompt must explicitly allow both `explain_only` and `tool_call` responses to enable multi-step chains
 - Set `synthesizer(MyApp.Actors.CustomSynthesizer)` in the actor (no tuple)

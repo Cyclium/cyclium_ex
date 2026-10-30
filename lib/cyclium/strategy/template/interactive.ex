@@ -165,14 +165,15 @@ defmodule Cyclium.Strategy.Template.Interactive do
     do: Loop.handle_budget_exhausted(state, episode_ctx)
 
   @impl true
-  def resume_from_block(state, episode), do: Loop.resume_from_block(state, episode)
+  def resume_from_block(state, episode),
+    do: Loop.resume_from_block(state, episode, &assemble_context/2)
 
   # --- Private: Context assembly ---
 
   defp assemble_context(state, episode_ctx) do
     collected = load_collected_fields(state)
     {findings, findings_loaded} = load_relevant_findings(state, episode_ctx, collected)
-    prior_turns = load_prior_turns(state)
+    prior_turns = load_prior_turns(state, episode_ctx[:started_before])
 
     prior_summaries =
       Enum.map(prior_turns, &Map.take(&1, [:summary, :classification, :started_at]))
@@ -221,10 +222,11 @@ defmodule Cyclium.Strategy.Template.Interactive do
   # The conversation's last `history_turns` finished turns, oldest first: each
   # turn's user message (from its trigger_ref), its reply (the episode summary)
   # and the tools it called. The newest are kept, so a long conversation drops
-  # its opening turns rather than its latest ones.
-  defp load_prior_turns(%{conversation_id: nil}), do: []
+  # its opening turns rather than its latest ones. `before` bounds them to
+  # turns that started earlier, for a plan resumed after an approval.
+  defp load_prior_turns(%{conversation_id: nil}, _before), do: []
 
-  defp load_prior_turns(%{conversation_id: conv_id} = state) do
+  defp load_prior_turns(%{conversation_id: conv_id} = state, before) do
     import Ecto.Query
 
     turns =
@@ -240,6 +242,7 @@ defmodule Cyclium.Strategy.Template.Interactive do
         },
         limit: ^history_turns(state.strategy_config)
       )
+      |> started_before(before)
       |> Cyclium.repo().all()
       |> Enum.reverse()
 
@@ -264,6 +267,13 @@ defmodule Cyclium.Strategy.Template.Interactive do
       )
 
       []
+  end
+
+  defp started_before(query, nil), do: query
+
+  defp started_before(query, before) do
+    import Ecto.Query
+    where(query, [e], e.started_at < ^before)
   end
 
   @default_history_turns 20

@@ -344,6 +344,29 @@ defmodule Cyclium.Synthesizer.InteractiveSynthesizerTest do
       end
     end
 
+    test "the prompt after a tool runs renders the findings and fields it carries" do
+      Synth.synthesize(
+        %{
+          task: :summarize_results,
+          message: "and now?",
+          tool_mode: :text,
+          context: %{
+            tool_executed: "crm.get_deal",
+            tool_results: "{}",
+            history: [],
+            findings: [%{finding_key: "deal:stalled:1", summary: "Stalled"}],
+            collected_fields: %{"region" => "east"}
+          }
+        },
+        %{}
+      )
+
+      msg = last_user_message()
+      assert msg =~ "## Active Findings\n  - deal:stalled:1: Stalled"
+      assert msg =~ "## Collected Fields"
+      assert msg =~ "east"
+    end
+
     test "without history, the replies alone are rendered from prior_summaries" do
       Synth.synthesize(
         %{

@@ -376,7 +376,7 @@ defmodule Cyclium.Synthesizer.Interactive do
     context = prompt_ctx[:context] || %{}
 
     """
-    #{build_history_section(context)}The user asked: #{prompt_ctx[:message]}
+    #{build_context_section(prompt_ctx)}The user asked: #{prompt_ctx[:message]}
 
     A tool was executed: #{context[:tool_executed]}
 
@@ -448,7 +448,7 @@ defmodule Cyclium.Synthesizer.Interactive do
     context = prompt_ctx[:context] || %{}
 
     """
-    #{build_history_section(context)}The user asked: #{prompt_ctx[:message]}
+    #{build_context_section(prompt_ctx)}The user asked: #{prompt_ctx[:message]}
 
     A tool was executed: #{context[:tool_executed]}
 

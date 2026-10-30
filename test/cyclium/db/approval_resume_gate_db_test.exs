@@ -99,6 +99,110 @@ defmodule Cyclium.ApprovalResumeGateDbTest do
              Interactive.next_step(resumed, %{})
   end
 
+  describe "context a resumed plan's summarize step carries" do
+    defp approved_episode_with_history do
+      episode = blocked_episode()
+
+      insert_episode(%{
+        actor_id: @actor_id,
+        status: :done,
+        conversation_id: episode.conversation_id,
+        trigger_type: :interactive,
+        summary: "294 matches.",
+        started_at: DateTime.add(DateTime.utc_now(), -60, :second)
+      })
+
+      journal(episode, :approval_requested, 1, %{
+        args_redacted: %{
+          "source" => "preview",
+          "plan_hash" => "h",
+          "plan" => plan_json("lookup_user", "get")
+        }
+      })
+
+      journal(episode, :approval_resolved, 2, %{
+        result_ref: %{"approved" => true, "plan_hash" => "h"}
+      })
+
+      episode
+    end
+
+    test "is assembled again on resume, with the conversation history" do
+      episode = approved_episode_with_history()
+
+      {:ok, resumed} = Interactive.resume_from_block(state(episode), episode)
+      assert [%{role: "assistant", content: "294 matches."}] = resumed.gathered_context.history
+
+      summarizing = %{
+        resumed
+        | phase: :summarize,
+          execution_results: [{:ok, %{rows: []}}]
+      }
+
+      assert {:synthesize, %{context: %{history: [%{content: "294 matches."}]}}} =
+               Interactive.next_step(summarizing, %{})
+    end
+
+    test "is assembled again for an AgenticTask too" do
+      episode = approved_episode_with_history()
+
+      state = %{
+        phase: :context_assembly,
+        strategy_config: %{"summarize_context" => [:findings]},
+        message: "review it",
+        payload: %{},
+        gathered_context: nil,
+        action_plan: nil,
+        plan_hash: nil,
+        execution_results: [],
+        current_step_index: 0,
+        deny_reason: nil,
+        explanation: nil,
+        conclusion: nil,
+        budget_exhausted: false
+      }
+
+      {:ok, resumed} = Cyclium.Strategy.Template.AgenticTask.resume_from_block(state, episode)
+      assert %{findings: [], objective: "review it"} = resumed.gathered_context
+    end
+
+    test "leaves out turns sent while the plan waited for approval" do
+      episode = approved_episode_with_history()
+
+      insert_episode(%{
+        actor_id: @actor_id,
+        status: :done,
+        conversation_id: episode.conversation_id,
+        trigger_type: :interactive,
+        summary: "a later turn",
+        started_at: DateTime.add(episode.started_at, 30, :second)
+      })
+
+      {:ok, resumed} = Interactive.resume_from_block(state(episode), episode)
+      assert Enum.map(resumed.gathered_context.history, & &1.content) == ["294 matches."]
+    end
+
+    test "is not assembled for a denied plan" do
+      episode = blocked_episode()
+
+      journal(episode, :approval_requested, 1, %{
+        args_redacted: %{
+          "source" => "preview",
+          "plan_hash" => "h",
+          "plan" => plan_json("lookup_user", "get")
+        }
+      })
+
+      journal(episode, :approval_resolved, 2, %{
+        result_ref: %{"approved" => false, "plan_hash" => "h"}
+      })
+
+      {:ok, resumed} = Interactive.resume_from_block(state(episode), episode)
+      assert resumed.phase == :denied
+      assert resumed.gathered_context == nil
+    end
+  end
+
   test "an approved journal plan that no longer passes the gate is denied, not executed" do
     episode = blocked_episode()
 

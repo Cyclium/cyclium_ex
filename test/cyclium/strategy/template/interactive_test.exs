@@ -1,6 +1,7 @@
 defmodule Cyclium.Strategy.Template.InteractiveTest do
   use ExUnit.Case, async: true
 
+  alias Cyclium.Strategy.Template.Agentic.Loop
   alias Cyclium.Strategy.Template.Interactive
   alias Cyclium.Intent.{ActionPlan, ToolCallStep}
   alias Cyclium.ConvergeResult
@@ -61,6 +62,15 @@ defmodule Cyclium.Strategy.Template.InteractiveTest do
       why: "test",
       tool: %ToolCallStep{tool: tool, action: "get", args: args}
     }
+  end
+
+  defp summarize_state(gathered_context) do
+    base_state(%{
+      phase: :summarize,
+      action_plan: tool_call_plan(),
+      execution_results: [{:ok, %{data: "result"}}],
+      gathered_context: gathered_context
+    })
   end
 
   defp multi_tool_plan(n) do
@@ -304,6 +314,65 @@ defmodule Cyclium.Strategy.Template.InteractiveTest do
 
       assert {:synthesize, prompt} = Interactive.next_step(state, %{})
       assert prompt.task == :summarize_results
+    end
+
+    test "summarize carries the history, and the context sources the actor opted in to" do
+      gathered = %{
+        message: "hello",
+        history: [%{role: "assistant", content: "294 matches."}],
+        findings: [%{finding_key: "k", summary: "s"}],
+        collected_fields: %{"page_context" => %{"table" => "x"}}
+      }
+
+      state =
+        summarize_state(gathered)
+        |> put_in([:strategy_config, "summarize_context"], ["collected_fields"])
+
+      assert {:synthesize, %{context: context}} = Interactive.next_step(state, %{})
+      assert context.collected_fields == gathered.collected_fields
+      assert context.history == gathered.history
+      refute Map.has_key?(context, :findings)
+      refute Map.has_key?(context, :message)
+    end
+
+    test "summarize carries only the history by default" do
+      state =
+        summarize_state(%{
+          history: [%{role: "user", content: "q"}],
+          collected_fields: %{"a" => 1}
+        })
+
+      assert {:synthesize, %{context: context}} = Interactive.next_step(state, %{})
+      assert context |> Map.keys() |> Enum.sort() == [:history, :tool_executed, :tool_results]
+    end
+
+    test "summarize_context accepts atoms as the DSL writes them, and ignores anything else" do
+      config = %{
+        summarize_context: [:findings, "collected_fields", "history", %{"x" => 1}, nil, 3]
+      }
+
+      assert Loop.summarize_context(config) == [:findings, :collected_fields]
+      assert Loop.summarize_context(%{"summarize_context" => "findings"}) == []
+      assert Loop.summarize_context(nil) == []
+    end
+
+    test "summarize tolerates a missing, non-map or string-keyed gathered context" do
+      opted = fn gathered ->
+        summarize_state(gathered)
+        |> put_in([:strategy_config, "summarize_context"], ["collected_fields"])
+      end
+
+      for gathered <- [nil, [collected_fields: %{}], "x"] do
+        assert {:synthesize, %{context: context}} = Interactive.next_step(opted.(gathered), %{})
+        assert context |> Map.keys() |> Enum.sort() == [:history, :tool_executed, :tool_results]
+        assert context.history == []
+      end
+
+      assert {:synthesize, %{context: %{collected_fields: %{"a" => 1}}}} =
+               Interactive.next_step(opted.(%{"collected_fields" => %{"a" => 1}}), %{})
+
+      assert {:synthesize, %{context: %{collected_fields: false}}} =
+               Interactive.next_step(opted.(%{collected_fields: false}), %{})
     end
 
     test "denied phase returns :converge" do

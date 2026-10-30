@@ -162,7 +162,8 @@ defmodule Cyclium.Strategy.Template.AgenticTask do
     do: Loop.handle_budget_exhausted(state, episode_ctx)
 
   @impl true
-  def resume_from_block(state, episode), do: Loop.resume_from_block(state, episode)
+  def resume_from_block(state, episode),
+    do: Loop.resume_from_block(state, episode, &assemble_context/2)
 
   # --- Context assembly ---
 
