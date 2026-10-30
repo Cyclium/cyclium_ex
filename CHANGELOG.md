@@ -6,6 +6,85 @@ All notable changes to Cyclium are recorded here. This project uses
 Entries are high-level, not exhaustive. Versions prior to `0.1.4` are
 reconstructed from git history and are summarized loosely.
 
+## [0.6.1] — 2026-10-30
+
+### Added
+- **`Cyclium.Findings.record/2`** persists a finding action and announces it as
+  post-converge does: the `finding.*` Bus event and a `finding_*` journal step
+  on the episode. A tool, or any code running inside an episode, can record a
+  finding with it. Post-converge records the actions a strategy returns through
+  it too. `persist_finding/2` stays the write alone, with no event and no step.
+- **`{:supersede, finding_key, params}`** finding action: marks the active
+  finding under `finding_key` `:superseded` (keeping its row, with
+  `archived_at`) and raises `params` in its place, in one transaction. With no
+  active finding under the key it only raises; the replacement may reuse the
+  key. It is announced as `finding.superseded` (a new Bus event and
+  `finding_superseded` step kind) and then `finding.raised`, with
+  `[:cyclium, :finding, :superseded]` telemetry. Dry runs prefix both keys.
+- **`Cyclium.Journal.append!/3`** is the one write path for journal steps: it
+  filters a step's data by the episode's log strategy, caps stored maps,
+  projects the rendered log and broadcasts `episode.step_journaled`. The runner,
+  `Findings.record/2` and `Episodes.journal_marker/3` all use it.
+- **`summarize_context`** (`strategy_config`): the prompt after a tool call
+  can carry the findings and collected fields the first step assembled
+  (`"findings"`, `"collected_fields"`), beside the conversation history it
+  already carries. Opt-in, since each adds its tokens to every such prompt.
+- **`Cyclium.Bus.unsubscribe/0`**, the pair to `subscribe/0`. It leaves
+  `subscribe/1` subscriptions alone.
+- **Actor backlog signals.** `[:cyclium, :actor, :capacity]` fires whenever an
+  actor's running or queued count on a node changes, measuring `active`,
+  `queued` and `max_concurrent` (metadata `actor_id`, `node`).
+  `[:cyclium, :actor, :queued]` fires as an episode joins an actor's queue,
+  with the queue's `queue_depth`. `[:cyclium, :episode, :started]` measures
+  `queue_wait_ms` for an episode that waited in the queue, and
+  `[:cyclium, :episode, :resumed]` does for a recovered episode held at
+  capacity. The `episode.started` Bus event carries `queued_at`, when the wait
+  began (`nil` when there was none).
+  `Cyclium.ActorCapacity.get/1` and `all/0` read the latest counts on the
+  current node without calling the actor.
+
+### Changed
+- **History entries are JSON-quoted** (`:javascript_safe`, so U+2028 and U+2029
+  are escaped too), so an earlier message or reply cannot break onto a line
+  that reads as another turn. A turn sent with
+  `Dispatch.send_message(..., system: true)` is marked `"system" => true` on its
+  `trigger_ref`, reaches the context as a `role: "system"` entry and is
+  labelled `System:`.
+- `Episodes.journal_marker/3` now writes through `Cyclium.Journal`, so a marker
+  follows the episode's log strategy and appears in the rendered log.
+- `[:cyclium, :actor, :overflow]` fires for every `episode_overflow` policy
+  (`:queue`, `:drop`, `:shed_oldest`), not only `:drop`.
+- **A queued episode's `started_at` is when it began running.** It was the time
+  the episode was queued; the runner now moves it on the episode's first
+  start, and `queued_at` keeps the queue time.
+
+### Fixed
+- **A plan resumed after an approval keeps the conversation.** A resumed plan
+  skipped context assembly, so the prompt after its tool call had no history.
+  The Interactive and AgenticTask templates now assemble the context again on
+  resume (`Loop.resume_from_block/3`), with the history bounded to turns that
+  started before the plan's own. A denied plan assembles nothing.
+- **`Episodes.list_for_conversation/2` returns the conversation's latest
+  episodes**, oldest first, instead of its first `:limit`. `id` breaks ties on
+  `started_at`, here and in the Interactive template's history query.
+
+### Upgrade notes
+- Code that broadcasts `finding.*` itself after `persist_finding/2` can call
+  `record/2` instead and drop its own broadcast; keeping both announces twice.
+- Code that supersedes findings by hand can send `{:supersede, key, params}`.
+- A custom synthesizer that renders `history` should expect `role: "system"`
+  entries. Prompts from the stock synthesizer now show each history entry
+  quoted.
+- `Episodes.list_for_conversation/2` callers that relied on getting a long
+  conversation's opening episodes must change.
+- A dashboard that reads `[:cyclium, :actor, :overflow]` as "episodes dropped"
+  should filter on `policy: :drop`.
+- A queued episode is stored with status `:running`, so counting `:running`
+  rows includes the queue; `Cyclium.ActorCapacity` separates the two.
+- Durations from `started_at` no longer include queue time, so charts of
+  queued actors' run times step down at the upgrade. Use
+  `started_at − queued_at` for the wait.
+
 ## [0.6.0] — 2026-10-28
 
 ### Added

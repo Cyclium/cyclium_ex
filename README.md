@@ -26,7 +26,7 @@ testability, and full visibility while still using AI where it adds value. See
 - **Declarative Actor DSL** — Define actors, expectations, triggers, and budgets in a compact macro-based syntax
 - **Strategy Pattern** — Pluggable investigation logic with a clear init → observe → converge lifecycle
 - **Episode Runner** — Budget-enforced execution loop with step journaling, checkpointing, and crash recovery
-- **Findings Lifecycle** — Persistent observations with raise/update/clear semantics, upsert-by-key, causality chains, TTL expiration, severity escalation, and post-raise enrichment hooks
+- **Findings Lifecycle** — Persistent observations with raise/update/clear/supersede semantics, recordable from a tool mid-run, upsert-by-key, causality chains, TTL expiration, severity escalation, and post-raise enrichment hooks
 - **Output Router** — Deduplicated, adapter-based delivery (email, Slack, webhooks) with approval gates and adapter registry
 - **Event Bus** — Phoenix.PubSub-backed event system connecting actors without coupling, with topics scoped to one run, conversation, actor or workflow for LiveViews
 - **Workflow Engine** — Multi-actor coordination with dependency graphs, failure policies, retry with backoff, cross-workflow episode dedup, and cancellation cascade
@@ -142,7 +142,7 @@ EpisodeTask starts
     └─────────────────────────────────────────────┘
 
   Converge pipeline (post_converge):
-    1. Persist findings (raise/update/clear) → enrich → Bus events per finding
+    1. Record findings (raise/update/clear/supersede) → enrich → Bus event + journal step per finding
     2. Route outputs through adapters → dedup by dedupe_key, deliver
     3. Compute final episode status from delivery outcomes
     4. Journal completion/failure step
@@ -187,7 +187,7 @@ EpisodeTask starts
 ```elixir
 # mix.exs
 def deps do
-  [{:cyclium, "~> 0.6.0"}]
+  [{:cyclium, "~> 0.6.1"}]
 end
 ```
 
