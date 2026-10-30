@@ -29,6 +29,8 @@ defmodule Cyclium.EpisodeRunner do
       cyclium_expectation_id: episode.expectation_id
     )
 
+    {episode, waited_since} = mark_started(episode, opts)
+
     deadline_ref =
       Process.send_after(self(), :budget_wall_exceeded, episode.budget["max_wall_ms"] || 120_000)
 
@@ -43,7 +45,8 @@ defmodule Cyclium.EpisodeRunner do
       trigger_type: episode.trigger_type,
       trigger_ref: Cyclium.Bus.public_trigger_ref(episode.trigger_ref),
       workflow_instance_id: episode.workflow_instance_id,
-      workflow_step_id: episode.workflow_step_id
+      workflow_step_id: episode.workflow_step_id,
+      queued_at: waited_since
     })
 
     # First-class lifecycle signal: fires on the node that owns the run (unlike
@@ -52,7 +55,7 @@ defmodule Cyclium.EpisodeRunner do
     # (e.g. after an approval block) emits `:resumed`, not a second `:started`.
     :telemetry.execute(
       [:cyclium, :episode, if(opts[:resume], do: :resumed, else: :started)],
-      %{count: 1},
+      start_measurements(waited_since),
       %{
         episode_id: episode.id,
         actor_id: episode.actor_id,
@@ -1329,6 +1332,61 @@ defmodule Cyclium.EpisodeRunner do
   end
 
   defp split_transient(prompt_ctx), do: {prompt_ctx, prompt_ctx}
+
+  # Returns the episode and the time its wait for a slot began, or nil when it
+  # did not wait. A queued episode's row says when it queued; on its first
+  # start `started_at` moves to now, so the row holds both and durations from
+  # `started_at` leave the queue out. A recovered episode held at capacity
+  # resumes with its hold time in `opts[:queued_at]`, and keeps its
+  # `started_at`.
+  defp mark_started(episode, opts) do
+    if opts[:resume] == true,
+      do: {episode, held_since(opts[:queued_at])},
+      else: start_queued(episode)
+  end
+
+  defp start_queued(%Episode{queued_at: %DateTime{} = queued_at} = episode) do
+    if DateTime.compare(episode.started_at, queued_at) == :gt,
+      do: {episode, nil},
+      else: {stamp_started_at(episode), queued_at}
+  end
+
+  defp start_queued(episode), do: {episode, nil}
+
+  defp stamp_started_at(episode) do
+    now = DateTime.utc_now()
+
+    from(e in Episode, where: e.id == ^episode.id)
+    |> repo().update_all(set: [started_at: now])
+
+    %{episode | started_at: now}
+  rescue
+    e ->
+      Logger.warning("cyclium: started_at not updated: #{inspect(e.__struct__)}",
+        cyclium_episode_id: episode.id
+      )
+
+      episode
+  end
+
+  defp held_since(iso8601) when is_binary(iso8601) do
+    case DateTime.from_iso8601(iso8601) do
+      {:ok, held_at, _offset} -> held_at
+      {:error, _} -> nil
+    end
+  end
+
+  defp held_since(_queued_at), do: nil
+
+  # `queue_wait_ms` is how long the episode waited in its actor's queue for a
+  # slot, when it did.
+  defp start_measurements(%DateTime{} = waited_since),
+    do: %{
+      count: 1,
+      queue_wait_ms: max(DateTime.diff(DateTime.utc_now(), waited_since, :millisecond), 0)
+    }
+
+  defp start_measurements(nil), do: %{count: 1}
 
   defp resolve_synthesizer do
     Process.get(:cyclium_synthesizer) || Application.get_env(:cyclium, :synthesizer)

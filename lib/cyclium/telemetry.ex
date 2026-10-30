@@ -6,11 +6,11 @@ defmodule Cyclium.Telemetry do
 
   ### Episode lifecycle
 
-      [:cyclium, :episode, :started]      — %{episode_id, actor_id}
+      [:cyclium, :episode, :started]      — meas %{count, queue_wait_ms?}, meta %{episode_id, actor_id}
       [:cyclium, :episode, :completed]    — %{episode_id, actor_id, output_count, finding_count}
       [:cyclium, :episode, :failed]       — %{episode_id, actor_id, error_class}
       [:cyclium, :episode, :blocked]      — %{episode_id, actor_id, conversation_id, reason}
-      [:cyclium, :episode, :resumed]      — %{episode_id, actor_id}
+      [:cyclium, :episode, :resumed]      — meas %{count, queue_wait_ms?}, meta %{episode_id, actor_id}
       [:cyclium, :episode, :dropped]      — %{actor_id, expectation_id}
       [:cyclium, :episode, :canceled]     — %{episode_id, actor_id, reason}
       [:cyclium, :episode, :sampled_out]  — %{actor_id, expectation_id}
@@ -52,12 +52,22 @@ defmodule Cyclium.Telemetry do
 
       [:cyclium, :actor, :event_received] — %{actor_id, event_type}
       [:cyclium, :actor, :overflow]       — %{actor_id, policy, expectation_id}
+      [:cyclium, :actor, :queued]         — meas %{count, queue_depth, active, max_concurrent}, meta %{actor_id, expectation_id, episode_id}
+      [:cyclium, :actor, :capacity]       — meas %{active, queued, max_concurrent}, meta %{actor_id, node}
+
+  `:overflow` fires when an actor at `max_concurrent_episodes` takes a new
+  episode, with its `episode_overflow` policy (`:queue`, `:drop` or
+  `:shed_oldest`). `:queued` follows it for `:queue`, with the queue's depth
+  counting the new episode. `:capacity` fires whenever an actor's running or
+  queued count on a node changes; `Cyclium.ActorCapacity` holds the latest.
+  `:episode, :started` (and `:resumed`, for a recovered episode held at
+  capacity) measures `queue_wait_ms`, how long the episode waited for a slot,
+  when it did. Queues and slots are per node.
 
   `:event_received` fires only when the event is *relevant* to the actor — one
   of its expectations subscribes to it, or it is a lifecycle transition of the
-  actor's own episode. Every actor is subscribed to the whole bus, so an actor
-  that merely observes another actor's broadcast and drops it is not counted as
-  having "received" it.
+  actor's own episode. An actor's lifecycle subscriptions also deliver other
+  actors' episode events, which it drops without counting.
 
   ### Output events
 
@@ -171,6 +181,8 @@ defmodule Cyclium.Telemetry do
     # Actor
     [:cyclium, :actor, :event_received],
     [:cyclium, :actor, :overflow],
+    [:cyclium, :actor, :queued],
+    [:cyclium, :actor, :capacity],
     # Outputs
     [:cyclium, :output, :delivered],
     [:cyclium, :output, :failed],

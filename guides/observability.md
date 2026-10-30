@@ -108,7 +108,7 @@ and can be queried via `Cyclium.Episodes.get_log(episode_id)`.
 
 ## Telemetry
 
-Cyclium emits 54 structured telemetry events under the `[:cyclium, ...]` prefix.
+Cyclium emits 56 structured telemetry events under the `[:cyclium, ...]` prefix.
 Attach a handler for development:
 
 ```elixir
@@ -133,12 +133,39 @@ Key events:
 | `[:cyclium, :finding_sweep, :failed]` | duration_ms, node, reason |
 | `[:cyclium, :output, :delivered]` | type, episode_id |
 | `[:cyclium, :actor, :event_received]` | actor_id, event_type |
-| `[:cyclium, :actor, :overflow]` | actor_id, policy |
+| `[:cyclium, :actor, :overflow]` | actor_id, policy (`:queue`, `:drop`, `:shed_oldest`) |
+| `[:cyclium, :actor, :queued]` | actor_id, expectation_id, episode_id; measures queue_depth, active, max_concurrent |
+| `[:cyclium, :actor, :capacity]` | actor_id, node; measures active, queued, max_concurrent |
 | `[:cyclium, :circuit_breaker, :opened]` | actor_id, expectation_id, consecutive_failures |
 | `[:cyclium, :circuit_breaker, :closed]` | actor_id, expectation_id |
 | `[:cyclium, :circuit_breaker, :rejected]` | actor_id, expectation_id |
 | `[:cyclium, :service_levels, :breach]` | actor_id, expectation_id, type, current, threshold |
 | `[:cyclium, :workflow, :step_reused]` | workflow_id, instance_id, step_id, reused_episode_id |
+
+### Actor capacity and backlog
+
+An actor runs at most `max_concurrent_episodes` episodes per node. With
+`episode_overflow: :queue`, the rest wait in that node's queue for a slot. Three
+signals show a backlog:
+
+- `[:cyclium, :actor, :capacity]` fires whenever an actor's running or queued
+  count on a node changes, measuring `active`, `queued` and `max_concurrent`.
+  Its latest value is a gauge of the backlog.
+- `[:cyclium, :actor, :queued]` fires as an episode joins the queue, with the
+  queue's `queue_depth`.
+- `[:cyclium, :episode, :started]` measures `queue_wait_ms`, how long a queued
+  episode waited for its slot (`:resumed` does too, for a recovered episode
+  held at capacity). A rising wait is the sign to add slots or nodes. The
+  `episode.started` Bus event carries the wait's start as `queued_at`.
+
+A queued episode's row keeps both times: `queued_at` when it joined the queue,
+and `started_at` when it began running (moved on its first start), so a
+duration from `started_at` leaves the queue out.
+
+`Cyclium.ActorCapacity.get(actor_id)` and `all/0` read the same counts on the
+current node without calling the actor. A queued episode is stored with status
+`:running` before it starts, so counting `:running` rows overstates what is
+running; read the capacity counts instead.
 
 Full list: `Cyclium.Telemetry.events/0`. Work-claim telemetry is documented in the
 [Cluster Operations](cluster_operations.md) guide.

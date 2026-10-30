@@ -16,6 +16,7 @@ defmodule Cyclium.Supervisor do
     Cyclium.AdaptiveBudget.ensure_table()
     Cyclium.Findings.Config.ensure_table()
     Cyclium.ToolCache.ensure_table()
+    Cyclium.ActorCapacity.ensure_table()
 
     children =
       [

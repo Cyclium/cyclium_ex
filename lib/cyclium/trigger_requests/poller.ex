@@ -117,8 +117,14 @@ defmodule Cyclium.TriggerRequests.Poller do
 
     opts =
       case request.opts do
-        %{"resume" => true} -> [resume: true]
-        _ -> []
+        %{"resume" => true, "queued_at" => queued_at} when is_binary(queued_at) ->
+          [resume: true, queued_at: queued_at]
+
+        %{"resume" => true} ->
+          [resume: true]
+
+        _ ->
+          []
       end
 
     case Cyclium.Runner.OTP.enqueue(request.episode_id, opts) do

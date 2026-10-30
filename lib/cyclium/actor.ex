@@ -225,6 +225,7 @@ defmodule Cyclium.Actor.Server do
       active_episodes: MapSet.new(),
       queued_episodes: :queue.new(),
       recovered_episodes: MapSet.new(),
+      recovery_held_at: %{},
       timers: %{},
       debounce_timers: %{},
       cooldowns: %{},
@@ -397,7 +398,7 @@ defmodule Cyclium.Actor.Server do
     # Start schedule timers
     state = start_schedule_timers(state)
 
-    {:ok, state}
+    {:ok, Cyclium.ActorCapacity.record(state)}
   end
 
   @actor_process_registry Cyclium.ActorProcessRegistry
@@ -654,6 +655,7 @@ defmodule Cyclium.Actor.Server do
           cooldowns: cooldowns
       }
       |> sync_bus_subscriptions()
+      |> Cyclium.ActorCapacity.record()
 
     # Start timers for newly added scheduled / cron expectations
     Enum.reduce(added, state, fn id, acc ->
@@ -1208,7 +1210,9 @@ defmodule Cyclium.Actor.Server do
           conversation_id: episode.conversation_id
         })
 
-        Map.update!(state, :active_episodes, &MapSet.put(&1, episode.id))
+        state
+        |> Map.update!(:active_episodes, &MapSet.put(&1, episode.id))
+        |> Cyclium.ActorCapacity.record()
 
       {:error, %Ecto.Changeset{} = cs} ->
         if has_dedupe_violation?(cs) do
@@ -1245,7 +1249,10 @@ defmodule Cyclium.Actor.Server do
         # `resume: true` so the episode restores from its latest checkpoint
         # instead of re-initing from the trigger and replaying completed work.
         runner(state.actor_id).enqueue(episode_id, resume: true)
-        Map.update!(state, :active_episodes, &MapSet.put(&1, episode_id))
+
+        state
+        |> Map.update!(:active_episodes, &MapSet.put(&1, episode_id))
+        |> Cyclium.ActorCapacity.record()
 
       true ->
         # Held at capacity — remember it's a recovery so the drain in
@@ -1253,6 +1260,8 @@ defmodule Cyclium.Actor.Server do
         state
         |> Map.update!(:queued_episodes, &:queue.in(episode_id, &1))
         |> Map.update!(:recovered_episodes, &MapSet.put(&1, episode_id))
+        |> Map.update!(:recovery_held_at, &Map.put(&1, episode_id, DateTime.utc_now()))
+        |> Cyclium.ActorCapacity.record()
     end
   end
 
@@ -1269,7 +1278,9 @@ defmodule Cyclium.Actor.Server do
           conversation_id: episode.conversation_id
         })
 
-        Map.update!(state, :queued_episodes, &:queue.in(episode.id, &1))
+        state = Map.update!(state, :queued_episodes, &:queue.in(episode.id, &1))
+        emit_queued(state, params, episode.id)
+        Cyclium.ActorCapacity.record(state)
 
       {:error, %Ecto.Changeset{} = cs} ->
         if has_dedupe_violation?(cs) do
@@ -1286,12 +1297,33 @@ defmodule Cyclium.Actor.Server do
     end
   end
 
-  defp drop_episode(state, params) do
+  # At capacity with `episode_overflow: :queue`: the overflow, then the queue
+  # the episode joined, with its depth counting it.
+  defp emit_queued(state, params, episode_id) do
+    emit_overflow(state, :queue, params.expectation_id)
+
+    :telemetry.execute(
+      [:cyclium, :actor, :queued],
+      %{
+        count: 1,
+        queue_depth: :queue.len(state.queued_episodes),
+        active: MapSet.size(state.active_episodes),
+        max_concurrent: state.config.max_concurrent_episodes
+      },
+      %{actor_id: state.actor_id, expectation_id: params.expectation_id, episode_id: episode_id}
+    )
+  end
+
+  defp emit_overflow(state, policy, expectation_id) do
     :telemetry.execute([:cyclium, :actor, :overflow], %{count: 1}, %{
       actor_id: state.actor_id,
-      policy: :drop,
-      expectation_id: params.expectation_id
+      policy: policy,
+      expectation_id: expectation_id
     })
+  end
+
+  defp drop_episode(state, params) do
+    emit_overflow(state, :drop, params.expectation_id)
 
     :telemetry.execute([:cyclium, :episode, :dropped], %{count: 1}, %{
       actor_id: state.actor_id,
@@ -1309,6 +1341,8 @@ defmodule Cyclium.Actor.Server do
   end
 
   defp shed_and_enqueue(state, params) do
+    emit_overflow(state, :shed_oldest, params.expectation_id)
+
     case :queue.out(state.queued_episodes) do
       {{:value, oldest_id}, rest} ->
         case Cyclium.Episodes.update_status(oldest_id, :canceled) do
@@ -1342,7 +1376,7 @@ defmodule Cyclium.Actor.Server do
     case :queue.out(state.queued_episodes) do
       {{:value, queued_id}, rest} ->
         if MapSet.member?(state.recovered_episodes, queued_id) do
-          runner(state.actor_id).enqueue(queued_id, resume: true)
+          runner(state.actor_id).enqueue(queued_id, recovered_opts(state, queued_id))
         else
           runner(state.actor_id).enqueue(queued_id)
         end
@@ -1351,9 +1385,21 @@ defmodule Cyclium.Actor.Server do
         |> Map.put(:queued_episodes, rest)
         |> Map.update!(:active_episodes, &MapSet.put(&1, queued_id))
         |> Map.update!(:recovered_episodes, &MapSet.delete(&1, queued_id))
+        |> Map.update!(:recovery_held_at, &Map.delete(&1, queued_id))
+        |> Cyclium.ActorCapacity.record()
 
       {:empty, _} ->
-        state
+        Cyclium.ActorCapacity.record(state)
+    end
+  end
+
+  # A recovered episode held at capacity resumes with the time it joined the
+  # queue, so its start can measure the wait. The row's own `queued_at` keeps
+  # the time the episode first queued, if it did.
+  defp recovered_opts(state, episode_id) do
+    case Map.fetch(state.recovery_held_at, episode_id) do
+      {:ok, held_at} -> [resume: true, queued_at: DateTime.to_iso8601(held_at)]
+      :error -> [resume: true]
     end
   end
 

@@ -206,7 +206,7 @@ defmodule Cyclium.ActorTest do
       # The drained episode was recovered work — it must also resume from its
       # checkpoint, and its recovered marker is consumed on promotion.
       assert Enum.all?(Cyclium.FakeRunner.enqueued_calls(), fn {_id, opts} ->
-               opts == [resume: true]
+               opts[:resume] == true
              end)
 
       assert MapSet.size(state.recovered_episodes) == 0

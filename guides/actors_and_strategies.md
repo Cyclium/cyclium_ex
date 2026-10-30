@@ -143,6 +143,10 @@ Key properties:
 - `:drop` — discard when at capacity
 - `:shed_oldest` — cancel the oldest queued episode to make room
 
+Capacity and queues are per node. Each choice fires
+`[:cyclium, :actor, :overflow]` with its policy; to watch a backlog build, see
+"Actor capacity and backlog" in the [Observability](observability.md) guide.
+
 **Expectation options:**
 
 | Option | Default | Description |
