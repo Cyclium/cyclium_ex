@@ -251,6 +251,7 @@ defmodule Cyclium.Strategy.Template.Interactive do
     Enum.map(turns, fn turn ->
       %{
         message: (turn.trigger_ref || %{})["message"],
+        system: (turn.trigger_ref || %{})["system"] == true,
         summary: turn.summary,
         classification: turn.classification,
         started_at: turn.started_at,
@@ -309,7 +310,7 @@ defmodule Cyclium.Strategy.Template.Interactive do
     user =
       case turn.message do
         msg when is_binary(msg) and msg != "" ->
-          [%{role: "user", content: truncate(msg), at: turn.started_at}]
+          [%{role: message_role(turn), content: truncate(msg), at: turn.started_at}]
 
         _ ->
           []
@@ -333,6 +334,9 @@ defmodule Cyclium.Strategy.Template.Interactive do
 
     user ++ reply
   end
+
+  defp message_role(%{system: true}), do: "system"
+  defp message_role(_turn), do: "user"
 
   defp truncate(text) when byte_size(text) <= @history_entry_max_chars, do: text
 

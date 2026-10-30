@@ -100,4 +100,22 @@ defmodule Cyclium.Conversations.PrincipalDbTest do
                Dispatch.send_message(conv.id, "hi", principal: @other, system: true)
     end
   end
+
+  describe "Dispatch.send_message/3 trigger_ref" do
+    setup do
+      key = {:cyclium_actor_strategy, :dispatch_mark_actor, :chat}
+      :persistent_term.put(key, Cyclium.Strategy.Template.Interactive)
+      on_exit(fn -> :persistent_term.erase(key) end)
+    end
+
+    test "marks a system: true message on its turn, and only that one" do
+      {:ok, conv} = Conversations.start(%{actor_id: "dispatch_mark_actor", name: "c"})
+
+      assert {:ok, user_turn} = Dispatch.send_message(conv.id, "hi")
+      assert {:ok, system_turn} = Dispatch.send_message(conv.id, "nudge", system: true)
+
+      refute Map.has_key?(user_turn.trigger_ref, "system")
+      assert system_turn.trigger_ref["system"] == true
+    end
+  end
 end

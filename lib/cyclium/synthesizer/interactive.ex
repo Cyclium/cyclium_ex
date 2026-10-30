@@ -536,7 +536,7 @@ defmodule Cyclium.Synthesizer.Interactive do
       {_, [_ | _] = summaries} ->
         summaries
         |> Enum.map_join("\n", fn s ->
-          "  [#{s[:started_at] || s["started_at"]}] #{s[:summary] || s["summary"]}"
+          "  [#{s[:started_at] || s["started_at"]}] #{quoted(s[:summary] || s["summary"])}"
         end)
         |> then(&"## Conversation History\n#{&1}\n\n")
 
@@ -555,9 +555,25 @@ defmodule Cyclium.Synthesizer.Interactive do
         _ -> ""
       end
 
-    label = if to_string(role) == "user", do: "User", else: "Assistant"
-    "#{label}: #{content}#{tools}"
+    "#{history_label(role)}: #{quoted(content)}#{tools}"
   end
+
+  @history_labels %{"user" => "User", "system" => "System"}
+
+  defp history_label(role), do: Map.get(@history_labels, to_string(role), "Assistant")
+
+  # Each entry is JSON-quoted, so its text stays on its own line and cannot
+  # read as another turn. `:javascript_safe` also escapes U+2028 and U+2029,
+  # which some readers treat as line breaks.
+  defp quoted(text) when is_binary(text) do
+    case Jason.encode(text, escape: :javascript_safe) do
+      {:ok, json} -> json
+      {:error, _} -> inspect(text)
+    end
+  end
+
+  defp quoted(nil), do: ~s("")
+  defp quoted(other), do: quoted(inspect(other))
 
   defp build_tools_desc(tool_menu) do
     Enum.map_join(tool_menu, "\n", fn t ->

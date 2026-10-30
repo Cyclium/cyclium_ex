@@ -57,6 +57,23 @@ defmodule Cyclium.InteractiveHistoryDbTest do
            ] = context(conv_id).history
   end
 
+  test "a turn a trusted caller started is a system entry" do
+    conv_id = Ecto.UUID.generate()
+
+    insert_episode(%{
+      actor_id: "history_actor",
+      conversation_id: conv_id,
+      trigger_type: :interactive,
+      trigger_ref: %{"conversation_id" => conv_id, "message" => "nudge", "system" => true},
+      status: :done,
+      summary: "nudged",
+      started_at: ~U[2026-01-01 00:00:01Z]
+    })
+
+    assert [%{role: "system", content: "nudge"}, %{role: "assistant", content: "nudged"}] =
+             context(conv_id).history
+  end
+
   test "prior_summaries is still assembled" do
     conv_id = Ecto.UUID.generate()
     turn(conv_id, 1)

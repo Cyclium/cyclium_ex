@@ -68,7 +68,8 @@ defmodule Cyclium.Conversations.Dispatch do
             expectation_id,
             Keyword.get(opts, :budget, budget),
             Keyword.get(opts, :log_strategy, log_strategy),
-            Keyword.get(opts, :principal)
+            Keyword.get(opts, :principal),
+            Keyword.get(opts, :system, false)
           )
 
         {:error, reason} ->
@@ -118,13 +119,16 @@ defmodule Cyclium.Conversations.Dispatch do
          expectation_id,
          budget,
          log_strategy,
-         principal
+         principal,
+         system?
        ) do
-    trigger_ref = %{
-      "conversation_id" => conversation_id,
-      "message" => message,
-      "principal" => principal
-    }
+    trigger_ref =
+      %{
+        "conversation_id" => conversation_id,
+        "message" => message,
+        "principal" => principal
+      }
+      |> mark_system(system?)
 
     attrs = %{
       actor_id: actor_id,
@@ -159,6 +163,11 @@ defmodule Cyclium.Conversations.Dispatch do
         {:error, changeset}
     end
   end
+
+  # A trusted caller's message is marked on the turn, so the conversation
+  # history can tell it from the user's.
+  defp mark_system(trigger_ref, true), do: Map.put(trigger_ref, "system", true)
+  defp mark_system(trigger_ref, _system?), do: trigger_ref
 
   @doc """
   Resolve the interactive expectation for an actor from persistent_term.
