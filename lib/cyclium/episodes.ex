@@ -362,41 +362,22 @@ defmodule Cyclium.Episodes do
 
   @doc """
   Append one lifecycle step to an episode's journal from outside the running
-  loop and broadcast `episode.step_journaled` for it, so a step feed can show
-  what happened to the run between two owners: recovery's `"resumed"` marker,
-  or the `:episode_failed` line when recovery fails an orphan. Best-effort: a
-  failed write is logged and returns `:error` rather than raising into the
-  caller.
+  loop, through `Cyclium.Journal.append!/3`, so a step feed and the rendered log
+  show what happened to the run between two owners: recovery's `"resumed"`
+  marker, or the `:episode_failed` line when recovery fails an orphan.
+  Best-effort: a failed write is logged and returns `:error` rather than
+  raising into the caller.
 
   `opts`: `:kind` (default `:observation`), `:error_class`, `:error_detail`.
   """
   @spec journal_marker(Episode.t(), map(), keyword()) :: {:ok, EpisodeStep.t()} | :error
   def journal_marker(%Episode{} = episode, result_ref, opts \\ []) when is_map(result_ref) do
-    step_no = next_step_no(episode.id)
-    kind = Keyword.get(opts, :kind, :observation)
-    error_class = Keyword.get(opts, :error_class)
-
     step =
-      repo().insert!(%EpisodeStep{
-        episode_id: episode.id,
-        step_no: step_no,
-        kind: kind,
+      Cyclium.Journal.append!(episode, Keyword.get(opts, :kind, :observation), %{
         result_ref: result_ref,
-        error_class: error_class,
-        error_detail: Keyword.get(opts, :error_detail),
-        created_at: DateTime.utc_now()
+        error_class: Keyword.get(opts, :error_class),
+        error_detail: Keyword.get(opts, :error_detail)
       })
-
-    Cyclium.Bus.broadcast("episode.step_journaled", %{
-      episode_id: episode.id,
-      actor_id: episode.actor_id,
-      conversation_id: episode.conversation_id,
-      step_no: step_no,
-      kind: kind,
-      tool_name: nil,
-      error_class: error_class,
-      cost_tokens: nil
-    })
 
     {:ok, step}
   rescue
