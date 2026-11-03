@@ -2,7 +2,7 @@ defmodule Cyclium.Schemas.WorkClaim do
   use Ecto.Schema
   import Ecto.Changeset
 
-  @primary_key {:id, :binary_id, autogenerate: true}
+  @primary_key {:id, Cyclium.UUID, autogenerate: true}
 
   # An expired lease is NOT a distinct state — it's a `:claimed` row whose
   # `lease_until` has elapsed (re-acquired via the takeover path). There is no

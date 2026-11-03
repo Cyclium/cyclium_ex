@@ -8,14 +8,14 @@ defmodule Cyclium.Schemas.Export do
   use Ecto.Schema
   import Ecto.Changeset
 
-  @primary_key {:id, :binary_id, autogenerate: true}
-  @foreign_key_type :binary_id
+  @primary_key {:id, Cyclium.UUID, autogenerate: true}
+  @foreign_key_type Cyclium.UUID
 
   @type t :: %__MODULE__{}
 
   schema "cyclium_exports" do
-    field(:episode_id, :binary_id)
-    field(:conversation_id, :binary_id)
+    field(:episode_id, Cyclium.UUID)
+    field(:conversation_id, Cyclium.UUID)
     field(:principal_type, :string)
     field(:principal_id, :string)
     field(:type, :string, default: "csv")

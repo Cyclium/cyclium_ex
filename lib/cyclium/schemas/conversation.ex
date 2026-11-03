@@ -29,8 +29,8 @@ defmodule Cyclium.Schemas.Conversation do
              :updated_at
            ]}
 
-  @primary_key {:id, :binary_id, autogenerate: true}
-  @foreign_key_type :binary_id
+  @primary_key {:id, Cyclium.UUID, autogenerate: true}
+  @foreign_key_type Cyclium.UUID
 
   @type t :: %__MODULE__{}
 

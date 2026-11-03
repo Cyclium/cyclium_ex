@@ -2,15 +2,15 @@ defmodule Cyclium.Schemas.TriggerRequest do
   use Ecto.Schema
   import Ecto.Changeset
 
-  @primary_key {:id, :binary_id, autogenerate: true}
-  @foreign_key_type :binary_id
+  @primary_key {:id, Cyclium.UUID, autogenerate: true}
+  @foreign_key_type Cyclium.UUID
 
   @statuses [:pending, :claimed, :completed, :expired]
 
   @type t :: %__MODULE__{}
 
   schema "cyclium_trigger_requests" do
-    field(:episode_id, :binary_id)
+    field(:episode_id, Cyclium.UUID)
     field(:actor_id, :string)
     field(:expectation_id, :string)
     field(:source_node, :string)

@@ -2,7 +2,7 @@ defmodule Cyclium.Schemas.WorkflowDefinition do
   use Ecto.Schema
   import Ecto.Changeset
 
-  @primary_key {:id, :binary_id, autogenerate: true}
+  @primary_key {:id, Cyclium.UUID, autogenerate: true}
 
   @type t :: %__MODULE__{}
 

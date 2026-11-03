@@ -6,6 +6,47 @@ All notable changes to Cyclium are recorded here. This project uses
 Entries are high-level, not exhaustive. Versions prior to `0.1.4` are
 reconstructed from git history and are summarized loosely.
 
+## [0.6.2] — 2026-11-03
+
+### Fixed
+- **SQL Server: an id whose raw bytes are printable no longer fails its
+  statement.** The Tds adapter dumps a `:binary_id` to its 16 raw bytes and
+  sends any binary that `String.printable?/1` accepts as an `nvarchar`, which
+  SQL Server cannot convert to a `uniqueidentifier` (error 8169, "Conversion
+  failed when converting from a character string to uniqueidentifier"). About
+  one adapter-generated id in 46,000 is printable, so inserts and queries
+  failed at random: a primary key, a foreign key, or an `in ^ids` list. Every
+  schema's ids are now **`Cyclium.UUID`**, which on SQL Server sends the bytes
+  as a typed `uniqueidentifier` parameter and on every other adapter reads and
+  writes what `:binary_id` does. Values are the same UUID strings; no
+  migration, no column change.
+
+### Upgrading
+- **A host schema over a cyclium table** (a read model of
+  `cyclium_conversations`, `cyclium_episodes`, `cyclium_episode_steps`, …),
+  and any of the host's own UUID columns on SQL Server, keeps the bug while it
+  types its ids `:binary_id`. Change each to `Cyclium.UUID`:
+
+      @primary_key {:id, Cyclium.UUID, autogenerate: true}
+      @foreign_key_type Cyclium.UUID
+
+      field(:episode_id, Cyclium.UUID)
+
+  - `@foreign_key_type` applies to every `belongs_to` without its own `type:`.
+    A `belongs_to` to an integer-keyed table needs `type: :id` (or
+    `define_field: false`).
+  - The type takes its wire format from the adapter of `config :cyclium,
+    :repo`. A schema read through a repo on a different adapter should keep
+    its own id type.
+  - In queries, cast a bare parameter with `type(^id, Cyclium.UUID)` instead of
+    `type(^id, :binary_id)`. A schemaless query against a UUID column takes
+    the 36-character string as is, which SQL Server converts correctly.
+- **Primary keys are generated in Elixir** (`Cyclium.UUID.autogenerate/0`, a
+  v4 UUID) instead of by the adapter. `Repo.insert` is unaffected, but
+  `Repo.insert_all` only fills a missing key for `:id` and `:binary_id` types,
+  so every `insert_all` row into a cyclium table must carry its `id` (cyclium's
+  own already do). The id columns have no database default.
+
 ## [0.6.1] — 2026-10-30
 
 ### Added

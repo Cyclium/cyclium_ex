@@ -2,8 +2,8 @@ defmodule Cyclium.Schemas.Episode do
   use Ecto.Schema
   import Ecto.Changeset
 
-  @primary_key {:id, :binary_id, autogenerate: true}
-  @foreign_key_type :binary_id
+  @primary_key {:id, Cyclium.UUID, autogenerate: true}
+  @foreign_key_type Cyclium.UUID
 
   @statuses [:running, :blocked, :done, :failed, :partially_failed, :canceled]
   @trigger_types [:schedule, :event, :manual, :workflow, :interactive]
@@ -30,14 +30,14 @@ defmodule Cyclium.Schemas.Episode do
     field(:log_strategy, :string)
     field(:error_class, :string)
     field(:error_detail, :map)
-    field(:workflow_instance_id, :binary_id)
+    field(:workflow_instance_id, Cyclium.UUID)
     field(:workflow_step_id, :string)
     field(:workflow_step_no, :integer)
     field(:started_at, :utc_datetime_usec)
     field(:finished_at, :utc_datetime_usec)
     field(:queued_at, :utc_datetime_usec)
     field(:archived_at, :utc_datetime_usec)
-    field(:conversation_id, :binary_id)
+    field(:conversation_id, Cyclium.UUID)
     field(:parent_episode_id, :string)
     field(:mode, :string, default: "live")
     field(:dry_run_opts, :map)

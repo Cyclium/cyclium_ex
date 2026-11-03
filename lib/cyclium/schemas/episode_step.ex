@@ -2,8 +2,8 @@ defmodule Cyclium.Schemas.EpisodeStep do
   use Ecto.Schema
   import Ecto.Changeset
 
-  @primary_key {:id, :binary_id, autogenerate: true}
-  @foreign_key_type :binary_id
+  @primary_key {:id, Cyclium.UUID, autogenerate: true}
+  @foreign_key_type Cyclium.UUID
 
   @step_kinds [
     :tool_call,
@@ -28,7 +28,7 @@ defmodule Cyclium.Schemas.EpisodeStep do
   @type t :: %__MODULE__{}
 
   schema "cyclium_episode_steps" do
-    field(:episode_id, :binary_id)
+    field(:episode_id, Cyclium.UUID)
     field(:step_no, :integer)
     field(:kind, Ecto.Enum, values: @step_kinds)
     field(:tool_name, :string)

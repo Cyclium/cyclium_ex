@@ -2,13 +2,13 @@ defmodule Cyclium.Schemas.EpisodeLog do
   use Ecto.Schema
   import Ecto.Changeset
 
-  @primary_key {:id, :binary_id, autogenerate: true}
-  @foreign_key_type :binary_id
+  @primary_key {:id, Cyclium.UUID, autogenerate: true}
+  @foreign_key_type Cyclium.UUID
 
   @type t :: %__MODULE__{}
 
   schema "cyclium_episode_logs" do
-    field(:episode_id, :binary_id)
+    field(:episode_id, Cyclium.UUID)
     field(:format, :string, default: "markdown")
     field(:content, :string)
     field(:last_step_no_rendered, :integer, default: 0)

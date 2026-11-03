@@ -2,8 +2,8 @@ defmodule Cyclium.Schemas.Finding do
   use Ecto.Schema
   import Ecto.Changeset
 
-  @primary_key {:id, :binary_id, autogenerate: true}
-  @foreign_key_type :binary_id
+  @primary_key {:id, Cyclium.UUID, autogenerate: true}
+  @foreign_key_type Cyclium.UUID
 
   @statuses [:active, :cleared, :superseded]
   @severities [:low, :medium, :high, :critical]
@@ -21,8 +21,8 @@ defmodule Cyclium.Schemas.Finding do
     field(:subject, :map)
     field(:evidence_refs, :map)
     field(:summary, :string)
-    field(:raised_by_episode_id, :binary_id)
-    field(:cleared_by_episode_id, :binary_id)
+    field(:raised_by_episode_id, Cyclium.UUID)
+    field(:cleared_by_episode_id, Cyclium.UUID)
     field(:raised_at, :utc_datetime)
     field(:cleared_at, :utc_datetime)
     field(:updated_at, :utc_datetime)

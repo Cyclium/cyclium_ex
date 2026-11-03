@@ -2,7 +2,7 @@ defmodule Cyclium.Schemas.WorkflowInstance do
   use Ecto.Schema
   import Ecto.Changeset
 
-  @primary_key {:id, :binary_id, autogenerate: true}
+  @primary_key {:id, Cyclium.UUID, autogenerate: true}
 
   @statuses [:running, :blocked, :done, :failed, :canceled]
 
@@ -15,7 +15,7 @@ defmodule Cyclium.Schemas.WorkflowInstance do
     field(:step_states, :map, default: %{})
     field(:started_at, :utc_datetime)
     field(:finished_at, :utc_datetime)
-    field(:conversation_id, :binary_id)
+    field(:conversation_id, Cyclium.UUID)
     field(:mode, :string, default: "live")
     field(:dry_run_opts, :map)
     field(:source_stack, :string)

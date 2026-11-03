@@ -2,15 +2,15 @@ defmodule Cyclium.Schemas.Output do
   use Ecto.Schema
   import Ecto.Changeset
 
-  @primary_key {:id, :binary_id, autogenerate: true}
-  @foreign_key_type :binary_id
+  @primary_key {:id, Cyclium.UUID, autogenerate: true}
+  @foreign_key_type Cyclium.UUID
 
   @statuses [:proposed, :delivered, :failed, :canceled]
 
   @type t :: %__MODULE__{}
 
   schema "cyclium_outputs" do
-    field(:episode_id, :binary_id)
+    field(:episode_id, Cyclium.UUID)
     field(:type, :string)
     field(:dedupe_key, :string)
     field(:status, Ecto.Enum, values: @statuses, default: :proposed)

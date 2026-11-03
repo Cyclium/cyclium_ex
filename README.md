@@ -187,7 +187,7 @@ EpisodeTask starts
 ```elixir
 # mix.exs
 def deps do
-  [{:cyclium, "~> 0.6.1"}]
+  [{:cyclium, "~> 0.6.2"}]
 end
 ```
 
@@ -338,6 +338,12 @@ the Reconciler and WorkflowEngine.
 ## Database tables
 
 All tables use `binary_id` primary keys (no JSON operators, application-layer upserts, denormalized columns for indexed queries).
+
+Every id column is a UUID (`binary_id` in the migrations), and the schemas type it as
+`Cyclium.UUID`. A host schema that reads or writes a cyclium table, or any of its own
+UUID columns on SQL Server, should type its ids `Cyclium.UUID` too: with `:binary_id` the
+Tds adapter sends roughly one generated id in 46,000 as text, and the statement fails
+(SQL Server error 8169). See the `Cyclium.UUID` moduledoc and the changelog.
 
 | Table | Migration | Purpose |
 |---|---|---|
