@@ -266,6 +266,7 @@ defmodule Cyclium.EpisodeRunner do
       turns_used: current.turns_used,
       max_turns: (current.budget || %{})["max_turns"],
       tokens_used: current.tokens_used,
+      budget_tokens_used: budget_tokens_used(current),
       max_tokens: (current.budget || %{})["max_tokens"]
     }
 
@@ -411,7 +412,7 @@ defmodule Cyclium.EpisodeRunner do
                       metadata: if(redacted[:cached], do: %{"cache_hit" => true})
                     })
 
-                  increment_budget(episode, cost)
+                  increment_budget(episode, cost, cost)
 
                   handle_strategy_result(
                     episode,
@@ -494,22 +495,28 @@ defmodule Cyclium.EpisodeRunner do
                       fail_wall_budget(episode, started_at)
 
                     {:completed, {:ok, result}} ->
-                      token_cost =
-                        extract_api_token_cost(result) ||
-                          fallback_estimate_tokens(synthesizer, prompt_for_synth)
+                      {token_cost, budget_cost} =
+                        case extract_api_token_cost(result, episode.budget) do
+                          nil ->
+                            estimate = fallback_estimate_tokens(synthesizer, prompt_for_synth)
+                            {estimate, estimate}
+
+                          costs ->
+                            costs
+                        end
 
                       emit_synthesis(episode, result, synth_started)
 
                       step =
                         Journal.append!(episode, :synthesis, %{
                           args_redacted: prompt_for_storage,
-                          result_ref: result,
+                          result_ref: journaled_synthesis_result(result),
                           cost_tokens: token_cost,
                           cost_ms: System.monotonic_time(:millisecond) - synth_started,
                           metadata: synthesis_step_metadata(episode, result)
                         })
 
-                      increment_budget(episode, token_cost)
+                      increment_budget(episode, token_cost, budget_cost)
 
                       handle_strategy_result(
                         episode,
@@ -971,7 +978,7 @@ defmodule Cyclium.EpisodeRunner do
 
     cond do
       episode.turns_used >= max_turns -> {:error, :budget_exceeded}
-      episode.tokens_used >= max_tokens -> {:error, :budget_exceeded}
+      budget_tokens_used(episode) >= max_tokens -> {:error, :budget_exceeded}
       true -> :ok
     end
   end
@@ -1173,6 +1180,16 @@ defmodule Cyclium.EpisodeRunner do
     )
   end
 
+  # A synthesizer's reply may carry the transcript turns it added (`:turns`):
+  # the tool results it sent, raw, and the assistant message. The strategy
+  # keeps them in its state; the journal must not, since a tool's result
+  # reaches it only through the tool step, redacted, and a synthesis step's
+  # size cap covers its `:content` alone.
+  defp journaled_synthesis_result(result) when is_map(result),
+    do: Map.drop(result, [:turns, "turns"])
+
+  defp journaled_synthesis_result(result), do: result
+
   # The episode's `metadata` bag holds the **primary** model (stamped once, on
   # the first synthesis that reports one). A synthesis step only records a model
   # in its own metadata when it *diverges* from that primary — so a single-model
@@ -1199,25 +1216,48 @@ defmodule Cyclium.EpisodeRunner do
     end
   end
 
-  defp extract_api_token_cost(result) do
+  # `{tokens_used, budget_tokens_used}` for one call from the provider's usage,
+  # or nil when it reported none. Cached input is input the call sent, so it
+  # counts in full in `tokens_used`; the budget counts cache reads at the
+  # budget's `cache_read_weight`.
+  defp extract_api_token_cost(result, budget) do
     usage = result[:usage] || result["usage"]
 
     case usage do
       %{} = u ->
-        total = usage_count(u, :input_tokens) + usage_count(u, :output_tokens) + cache_tokens(u)
-        if total > 0, do: total, else: nil
+        read = usage_count(u, :cache_read_input_tokens)
+
+        uncached =
+          usage_count(u, :input_tokens) + usage_count(u, :output_tokens) +
+            usage_count(u, :cache_creation_input_tokens)
+
+        total = uncached + read
+
+        if total > 0,
+          do: {total, uncached + ceil(read * cache_read_weight(budget))},
+          else: nil
 
       _ ->
         nil
     end
   end
 
-  # Providers that cache prompts (Anthropic) report cached input apart from
-  # `input_tokens`; it is still input the call sent, so it counts.
-  defp cache_tokens(usage) do
-    usage_count(usage, :cache_creation_input_tokens) +
-      usage_count(usage, :cache_read_input_tokens)
+  # From the episode's budget (`cache_read_weight`, 0.0 to 1.0), else
+  # `config :cyclium, :cache_read_budget_weight`, else 1.0: a cached read costs
+  # the budget what any other input token does.
+  defp cache_read_weight(budget) do
+    from_budget = if is_map(budget), do: budget["cache_read_weight"] || budget[:cache_read_weight]
+
+    case from_budget || Application.get_env(:cyclium, :cache_read_budget_weight) do
+      w when is_number(w) and w >= 0 and w <= 1 -> w
+      _ -> 1.0
+    end
   end
+
+  # A row from before V27 is backfilled, but a struct built in memory may
+  # carry nil.
+  defp budget_tokens_used(%Episode{budget_tokens_used: n}) when is_integer(n), do: n
+  defp budget_tokens_used(%Episode{tokens_used: n}), do: n || 0
 
   defp usage_count(usage, key) do
     case usage[key] || usage[Atom.to_string(key)] do
@@ -1232,13 +1272,14 @@ defmodule Cyclium.EpisodeRunner do
       else: 0
   end
 
-  defp increment_budget(%Episode{} = episode, token_cost) when is_integer(token_cost) do
+  defp increment_budget(%Episode{} = episode, token_cost, budget_cost)
+       when is_integer(token_cost) and is_integer(budget_cost) do
     # Running per-process token total, snapshotted by record_step_kind so loop
     # detection can distinguish a stuck cycle from one that's consuming budget.
     Process.put(:cyclium_loop_tokens, Process.get(:cyclium_loop_tokens, 0) + token_cost)
 
     from(e in Episode, where: e.id == ^episode.id)
-    |> repo().update_all(inc: [tokens_used: token_cost])
+    |> repo().update_all(inc: [tokens_used: token_cost, budget_tokens_used: budget_cost])
   end
 
   # Best-effort: a checkpoint exists only to make resume cheaper/safer, so it

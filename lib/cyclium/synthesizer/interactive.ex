@@ -61,6 +61,64 @@ defmodule Cyclium.Synthesizer.Interactive do
           model: "model-id",   # optional
           usage: %{...}        # optional
         }}
+
+    ## Cacheable user blocks
+
+    On the native path the opts also carry `:user_blocks`, the user message cut
+    into the pieces it was built from:
+
+        [%{text: String.t(), stable: boolean()}, ...]
+
+    Their texts joined with no separator are `user_message` exactly. A block
+    marked `stable: true` is sent unchanged, at the same position, on the
+    episode's later calls: the conversation and question first, then each tool
+    result in the order it ran. The closing instruction is not stable. A client
+    whose provider caches prompt prefixes can send each block as its own text
+    block and mark the last stable one for caching, so each later call reads the
+    earlier results back from the cache. A client that ignores the opt sends
+    `user_message` as before; one that forwards its opts to the provider
+    wholesale should drop `:user_blocks` first.
+
+    The head of the prompt after a tool call is the interpret prompt's head
+    only when the interpret context carried nothing beyond the conversation
+    history, or when `summarize_context` names what it carried. Otherwise the
+    second call starts a new prefix, and the calls from the second on share it.
+
+    ## Multi-turn messages
+
+    `chat_with_messages/4` is the optional **multi-turn** contract, preferred
+    over `chat_with_native_tools/4` when a client has both. Instead of one user
+    message holding every earlier tool result, the client gets the episode's
+    transcript so far, in the Anthropic Messages shape with string keys:
+
+        [
+          %{"role" => "user", "content" => [%{"type" => "text", "text" => "..."}]},
+          %{"role" => "assistant", "content" => [...]},   # the client's own reply
+          %{"role" => "user",
+            "content" => [%{"type" => "tool_result", "tool_use_id" => "toolu_1",
+                            "content" => "...", "is_error" => false}]}
+        ]
+
+    The transcript only ever grows at its end, so a provider can cache it
+    whole, and the model sees its own earlier calls and their arguments. A
+    client for another provider converts the shape.
+
+    The return is the native one, plus:
+
+      * each tool call's `:id`, the id its result will be sent back under
+      * `:message`, the assistant message as the provider returned it
+        (`%{"role" => "assistant", "content" => [...]}`), thinking blocks and
+        all. Cyclium stores it and sends it back unchanged on the next call.
+        A client that leaves it out gets one built from `:text` and
+        `:tool_calls`, with no thinking block, so a client with extended
+        thinking on must return it or the provider rejects the next call.
+
+    The turns a call adds are kept in the strategy's state, not in the step
+    journal; each tool's result reaches the journal through its own tool step.
+
+    A reply whose `:message` is given but a tool call has no `:id` cannot be
+    answered by id, so the episode's later calls use the single-message path.
+    An actor opts out with `strategy_config: %{multi_turn: false}`.
     """
 
     @callback chat(system_prompt :: String.t(), user_message :: String.t(), opts :: keyword()) ::
@@ -79,7 +137,17 @@ defmodule Cyclium.Synthesizer.Interactive do
                 | {:error, :no_api_key}
                 | {:error, {atom(), term()}}
 
-    @optional_callbacks chat_with_native_tools: 4
+    @callback chat_with_messages(
+                system_prompt :: String.t(),
+                messages :: [map()],
+                tools :: [map()],
+                opts :: keyword()
+              ) ::
+                {:ok, map()}
+                | {:error, :no_api_key}
+                | {:error, {atom(), term()}}
+
+    @optional_callbacks chat_with_native_tools: 4, chat_with_messages: 4
   end
 
   @impl true
@@ -90,6 +158,9 @@ defmodule Cyclium.Synthesizer.Interactive do
 
     result =
       cond do
+        multi_turn_mode?(prompt_ctx, llm_client) ->
+          synthesize_turns(llm_client, llm_opts, system_prompt, prompt_ctx)
+
         native_tool_mode?(prompt_ctx, llm_client) ->
           synthesize_native(llm_client, llm_opts, system_prompt, prompt_ctx)
 
@@ -143,8 +214,133 @@ defmodule Cyclium.Synthesizer.Interactive do
   end
 
   defp native_capable?(llm_client) do
-    Code.ensure_loaded?(llm_client) and function_exported?(llm_client, :chat_with_native_tools, 4)
+    Code.ensure_loaded?(llm_client) and
+      (function_exported?(llm_client, :chat_with_native_tools, 4) or
+         function_exported?(llm_client, :chat_with_messages, 4))
   end
+
+  # --- Multi-turn messages ---
+
+  # A transcript needs a client that takes one, tools to call (a toolless actor
+  # takes the native text-only path), and, after a tool runs, a transcript
+  # that ends with the reply whose calls just ran, each result carrying the id
+  # of its call. Anything less falls back to the single-message path.
+  defp multi_turn_mode?(prompt_ctx, llm_client) do
+    prompt_ctx[:tool_mode] not in [:text, "text"] and prompt_ctx[:multi_turn] != false and
+      (prompt_ctx[:tool_menu] || []) |> build_native_tools() |> Enum.any?() and
+      Code.ensure_loaded?(llm_client) and function_exported?(llm_client, :chat_with_messages, 4) and
+      transcript_ready?(prompt_ctx)
+  end
+
+  defp transcript_ready?(%{task: :summarize_results} = prompt_ctx) do
+    with [_ | _] = transcript <- prompt_ctx[:transcript],
+         %{} = last <- List.last(transcript),
+         "assistant" <- last["role"],
+         [_ | _] = pending <- prompt_ctx[:pending_tool_results] do
+      Enum.all?(pending, &is_binary(&1[:id]))
+    else
+      _ -> false
+    end
+  end
+
+  defp transcript_ready?(_prompt_ctx), do: true
+
+  defp synthesize_turns(llm_client, llm_opts, system_prompt, prompt_ctx) do
+    tools = build_native_tools(prompt_ctx[:tool_menu] || [])
+
+    {earlier, turn} =
+      case prompt_ctx[:task] do
+        :summarize_results ->
+          {prompt_ctx[:transcript], tool_results_turn(prompt_ctx[:pending_tool_results])}
+
+        _ ->
+          {[], text_turn(build_native_user_message(prompt_ctx))}
+      end
+
+    case llm_client.chat_with_messages(
+           system_prompt,
+           earlier ++ [turn],
+           tools,
+           chat_opts(llm_opts)
+         ) do
+      {:ok, %{} = resp} ->
+        {calls, reply} = reply_message(resp)
+        envelope = native_envelope(Map.put(resp, :tool_calls, calls))
+
+        if reply,
+          do: {:ok, Map.put(envelope, :turns, [turn, reply])},
+          else: {:ok, envelope}
+
+      {:error, :no_api_key} ->
+        Logger.warning("[Interactive.Synthesizer] No API key — returning placeholder")
+        native_fallback(prompt_ctx)
+
+      {:error, {error_class, detail}} ->
+        {:error, error_class, detail}
+    end
+  end
+
+  defp text_turn(text),
+    do: %{"role" => "user", "content" => [%{"type" => "text", "text" => text}]}
+
+  defp tool_results_turn(pending) do
+    %{
+      "role" => "user",
+      "content" =>
+        Enum.map(pending, fn result ->
+          %{
+            "type" => "tool_result",
+            "tool_use_id" => result[:id],
+            "content" => result[:text],
+            "is_error" => result[:error] == true
+          }
+        end)
+    }
+  end
+
+  # The tool calls with their ids, and the assistant message to replay; nil
+  # when a call the provider made has no id to answer it by.
+  defp reply_message(resp) do
+    calls = resp[:tool_calls] || resp["tool_calls"] || []
+    message = resp[:message] || resp["message"]
+    ids = Enum.map(calls, &(&1[:id] || &1["id"]))
+
+    cond do
+      is_map(message) and Enum.all?(ids, &is_binary/1) ->
+        {calls, message}
+
+      is_map(message) ->
+        {calls, nil}
+
+      true ->
+        calls =
+          Enum.map(calls, fn call ->
+            Map.put(call, :id, call[:id] || call["id"] || generated_tool_use_id())
+          end)
+
+        {calls, built_reply(resp[:text] || resp["text"], calls)}
+    end
+  end
+
+  defp built_reply(text, calls) do
+    text_blocks =
+      if is_binary(text) and text != "", do: [%{"type" => "text", "text" => text}], else: []
+
+    tool_blocks =
+      Enum.map(calls, fn call ->
+        %{
+          "type" => "tool_use",
+          "id" => call[:id],
+          "name" => call[:name] || call["name"],
+          "input" => call[:input] || call["input"] || %{}
+        }
+      end)
+
+    %{"role" => "assistant", "content" => text_blocks ++ tool_blocks}
+  end
+
+  defp generated_tool_use_id,
+    do: "toolu_cyclium_" <> Integer.to_string(System.unique_integer([:positive]))
 
   # Pass the actor's tool signatures to the provider as structured `tools` and
   # read back validated tool_use blocks, then shape them into the SAME map the
@@ -153,23 +349,20 @@ defmodule Cyclium.Synthesizer.Interactive do
   defp synthesize_native(llm_client, llm_opts, system_prompt, prompt_ctx) do
     tools = build_native_tools(prompt_ctx[:tool_menu] || [])
 
-    user_message =
+    blocks =
       case prompt_ctx[:task] do
-        :summarize_results -> build_native_summary_message(prompt_ctx)
-        _ -> build_native_user_message(prompt_ctx)
+        :summarize_results -> native_summary_blocks(prompt_ctx)
+        _ -> [%{text: build_native_user_message(prompt_ctx), stable: true}]
       end
+
+    user_message = Enum.map_join(blocks, & &1.text)
 
     # Nothing to call (an actor with no tools): fall back to a plain text reply
     # and treat it as an explanation rather than sending an empty `tools` list.
     if tools == [] do
       synthesize_native_textonly(llm_client, llm_opts, system_prompt, user_message, prompt_ctx)
     else
-      case llm_client.chat_with_native_tools(
-             system_prompt,
-             user_message,
-             tools,
-             chat_opts(llm_opts)
-           ) do
+      case native_call(llm_client, system_prompt, user_message, blocks, tools, llm_opts) do
         {:ok, %{} = resp} ->
           {:ok, native_envelope(resp)}
 
@@ -180,6 +373,25 @@ defmodule Cyclium.Synthesizer.Interactive do
         {:error, {error_class, detail}} ->
           {:error, error_class, detail}
       end
+    end
+  end
+
+  # A client with only `chat_with_messages/4` gets the single message as a
+  # one-message transcript, its blocks as separate text blocks.
+  defp native_call(llm_client, system_prompt, user_message, blocks, tools, llm_opts) do
+    opts = Keyword.put(chat_opts(llm_opts), :user_blocks, blocks)
+
+    if function_exported?(llm_client, :chat_with_native_tools, 4) do
+      llm_client.chat_with_native_tools(system_prompt, user_message, tools, opts)
+    else
+      content = Enum.map(blocks, &%{"type" => "text", "text" => &1.text})
+
+      llm_client.chat_with_messages(
+        system_prompt,
+        [%{"role" => "user", "content" => content}],
+        tools,
+        opts
+      )
     end
   end
 
@@ -206,6 +418,8 @@ defmodule Cyclium.Synthesizer.Interactive do
     end
   end
 
+  # With no API key the "explanation" is the results as rendered for the model
+  # (compact or columnar JSON), so a placeholder reply shows what was gathered.
   defp native_fallback(%{task: :summarize_results} = prompt_ctx) do
     context = prompt_ctx[:context] || %{}
     {:ok, %{"explanation" => context[:tool_results] || "Tool executed successfully."}}
@@ -362,7 +576,9 @@ defmodule Cyclium.Synthesizer.Interactive do
     name = call[:name] || call["name"] || ""
     input = call[:input] || call["input"] || %{}
     {tool, action} = split_native_tool_name(name)
+
     %{"tool" => tool, "action" => action, "args" => input}
+    |> put_present("id", call[:id] || call["id"])
   end
 
   defp split_native_tool_name(name) do
@@ -372,39 +588,80 @@ defmodule Cyclium.Synthesizer.Interactive do
     end
   end
 
-  defp build_native_summary_message(prompt_ctx) do
-    context = prompt_ctx[:context] || %{}
+  # The prompt after a tool runs, as blocks that only ever grow at the end:
+  # the native interpret message's shape as the head, each tool result in the
+  # order it ran (each fence names its tool), then the instruction. Nothing
+  # that changes from call to call sits ahead of a result, so every block but
+  # the last is a prefix of the next call's message. The head matches the
+  # interpret call's byte for byte only when its context carried nothing the
+  # summary context leaves out (findings, collected fields, prior summaries);
+  # otherwise the prefix is shared from the second call on.
+  defp native_summary_blocks(prompt_ctx) do
+    head = %{text: build_native_user_message(prompt_ctx), stable: true}
 
-    """
-    #{build_context_section(prompt_ctx)}The user asked: #{prompt_ctx[:message]}
+    results =
+      prompt_ctx
+      |> summary_result_blocks()
+      |> Enum.map(&%{text: "\n#{&1}\n", stable: true})
 
-    A tool was executed: #{context[:tool_executed]}
+    tail = %{
+      text:
+        "\nSummarize the results for the user, or call another tool if more data is needed.\n",
+      stable: false
+    }
 
-    Tool results:
-    #{context[:tool_results]}
+    [head | results] ++ [tail]
+  end
 
-    Summarize the results for the user, or call another tool if more data is needed.
-    """
+  # A prompt built by `Cyclium.Strategy.Template.Agentic.Loop` hands each fenced
+  # result over on its own; any other carries only the joined text.
+  defp summary_result_blocks(prompt_ctx) do
+    case prompt_ctx[:tool_result_blocks] do
+      [_ | _] = blocks ->
+        blocks
+
+      _ ->
+        case (prompt_ctx[:context] || %{})[:tool_results] do
+          text when is_binary(text) and text != "" -> [text]
+          _ -> []
+        end
+    end
   end
 
   # Used only when the provider reported no usage. Counts what is actually sent
   # — the system prompt, the user message as built (history, findings,
   # collected fields, tool results) and the tool schemas — at ~4 characters a
-  # token, plus a reply allowance.
+  # token, plus a reply allowance. A call with a transcript sends the
+  # transcript and the pending results, not a message holding every result.
   @impl true
   def estimate_tokens(prompt_ctx) do
     system_prompt = prompt_ctx[:system_prompt] || default_system_prompt()
 
     user_message =
-      case prompt_ctx[:task] do
-        :summarize_results -> build_summary_message(prompt_ctx)
-        _ -> build_user_message(prompt_ctx)
+      case {prompt_ctx[:task], prompt_ctx[:transcript]} do
+        {:summarize_results, [_ | _]} ->
+          Enum.map_join(prompt_ctx[:pending_tool_results] || [], "\n", &(&1[:text] || ""))
+
+        {:summarize_results, _} ->
+          build_summary_message(prompt_ctx)
+
+        _ ->
+          build_user_message(prompt_ctx)
       end
 
     tools = (prompt_ctx[:tool_menu] || []) |> build_native_tools() |> inspect(limit: :infinity)
 
-    div(String.length(system_prompt) + String.length(user_message) + String.length(tools), 4) +
-      500
+    transcript =
+      case prompt_ctx[:transcript] do
+        [_ | _] = messages -> inspect(messages, limit: :infinity, printable_limit: :infinity)
+        _ -> ""
+      end
+
+    div(
+      String.length(system_prompt) + String.length(user_message) + String.length(tools) +
+        String.length(transcript),
+      4
+    ) + 500
   end
 
   # --- Interpret ---

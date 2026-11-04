@@ -22,6 +22,7 @@ defmodule Cyclium.Schemas.Episode do
     field(:budget, :map)
     field(:turns_used, :integer, default: 0)
     field(:tokens_used, :integer, default: 0)
+    field(:budget_tokens_used, :integer, default: 0)
     field(:attempts, :integer, default: 0)
     field(:max_attempts, :integer, default: 3)
     field(:classification, :map)
@@ -65,6 +66,7 @@ defmodule Cyclium.Schemas.Episode do
       :budget,
       :turns_used,
       :tokens_used,
+      :budget_tokens_used,
       :attempts,
       :max_attempts,
       :classification,

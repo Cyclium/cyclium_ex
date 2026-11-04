@@ -133,7 +133,8 @@ The tuple `{Cyclium.Synthesizer.Interactive, llm: MyApp.Actors.ResourceLLM}` tel
 
 **Budget guidance:**
 - `max_turns` — each phase transition is a turn; a simple explain_only uses ~5 turns, a tool_call uses ~7, multi-step chains use more
-- `max_tokens` — cumulative synthesis token cost across all LLM calls in the episode
+- `max_tokens` — cumulative synthesis token cost across all LLM calls in the episode, checked against the episode's `budget_tokens_used`
+- `cache_read_weight` — what a cached input token read back from the provider's prompt cache costs the budget, 0.0 to 1.0 (default 1.0, or `config :cyclium, :cache_read_budget_weight`). `tokens_used` always counts it in full
 - `max_wall_ms` — wall clock timeout; LLM calls can be slow, so allow at least 60s
 
 **strategy_config keys:**
@@ -148,6 +149,11 @@ The tuple `{Cyclium.Synthesizer.Interactive, llm: MyApp.Actors.ResourceLLM}` tel
 | `max_plan_steps` | integer | Max steps in a multi_tool_plan |
 | `history_turns` | integer | How many of the conversation's finished turns the prompts carry (default 20, newest kept; `0` sends none) |
 | `summarize_context` | list of strings or atoms | What the prompt after a tool call carries beyond the conversation history: any of `"findings"` and `"collected_fields"`. Default none, since each adds its tokens to every such prompt. `AgenticTask` reads it too; only `"findings"` applies there |
+| `multi_turn` | boolean | When the LLM client implements `chat_with_messages/4`, each call sends the episode's transcript (earlier replies replayed as returned, tool results as `tool_result` turns) instead of one message holding every earlier result. Default `true`; `false` keeps the single-message path |
+| `tool_result_window` | positive integer | How many of the latest tool results the prompt after a tool call shows in full. Older ones become a note naming the tool and the result's size. Default none: every result in full. A window changes earlier parts of the prompt as results age out, so a provider's prompt cache can't read those calls back |
+| `tool_result_format` | `"json"` or `"columnar"` | How a tool result is rendered for the model. `"json"` (default) is compact JSON. `"columnar"` renders a list of maps as `{"columns":[...],"rows":[[...],...]}`, about half the tokens of compact JSON on a table; everything else stays compact JSON. See `Cyclium.ToolResult` |
+| `tool_result_columns_max` | positive integer | With `"columnar"`, the most columns a list is rendered that way with; a wider list, or one where some row holds less than 80% of the columns, stays compact JSON. Default 30 |
+| `tool_result_columnar_nested` | boolean | With `"columnar"`, whether a list of maps that is a value of a top-level map is rendered columnar too, leaving the map's other fields as they are. Default `true` |
 
 **Tool signature `actions` format:**
 
@@ -530,6 +536,7 @@ end
 Key requirements:
 - Must handle both `:interpret_intent` and `:summarize_results` tasks
 - A `:summarize_results` context carries `:history` (the entries the interpret step saw), and `:findings` and `:collected_fields` when the actor sets `summarize_context`
+- A `:summarize_results` prompt also carries `:tool_result_blocks`: each fenced tool result on its own, oldest first, the same on every later call of the episode. `context.tool_results` is the same blocks joined with newlines
 - Must return `{:ok, map}` where map has ActionPlan fields (`kind`, `risk`, `why`, etc.)
 - The summarize prompt must explicitly allow both `explain_only` and `tool_call` responses to enable multi-step chains
 - Set `synthesizer(MyApp.Actors.CustomSynthesizer)` in the actor (no tuple)

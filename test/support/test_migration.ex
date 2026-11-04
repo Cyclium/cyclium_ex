@@ -21,6 +21,7 @@ defmodule Cyclium.Test.Migration do
       add(:budget, :map)
       add(:turns_used, :integer, default: 0)
       add(:tokens_used, :integer, default: 0)
+      add(:budget_tokens_used, :integer, default: 0)
       add(:attempts, :integer, default: 0)
       add(:max_attempts, :integer, default: 3)
       add(:classification, :map)

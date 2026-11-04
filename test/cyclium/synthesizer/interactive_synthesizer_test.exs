@@ -49,8 +49,9 @@ defmodule Cyclium.Synthesizer.InteractiveSynthesizerTest do
     end
 
     @impl true
-    def chat_with_native_tools(_system, user, _tools, _opts) do
+    def chat_with_native_tools(_system, user, _tools, opts) do
       Application.put_env(:cyclium, :__last_user_message__, user)
+      Application.put_env(:cyclium, :__last_native_opts__, opts)
       {:ok, %{tool_calls: [], text: "ok", usage: %{input_tokens: 11, output_tokens: 2}}}
     end
   end
@@ -104,6 +105,7 @@ defmodule Cyclium.Synthesizer.InteractiveSynthesizerTest do
       Application.delete_env(:cyclium, :__canned_native__)
       Application.delete_env(:cyclium, :__last_native_tools__)
       Application.delete_env(:cyclium, :__last_user_message__)
+      Application.delete_env(:cyclium, :__last_native_opts__)
     end)
 
     :ok
@@ -413,6 +415,77 @@ defmodule Cyclium.Synthesizer.InteractiveSynthesizerTest do
       with_history = %{base | context: %{history: @history}}
 
       assert Synth.estimate_tokens(with_history) > Synth.estimate_tokens(base)
+    end
+  end
+
+  describe "cacheable user blocks" do
+    setup do
+      Application.put_env(:cyclium, :interactive_llm, CapturingLLM)
+      :ok
+    end
+
+    defp native_call(prompt_ctx) do
+      Synth.synthesize(Map.merge(%{tool_mode: :native, tool_menu: tool_menu()}, prompt_ctx), %{})
+
+      {Application.get_env(:cyclium, :__last_user_message__),
+       Application.get_env(:cyclium, :__last_native_opts__)[:user_blocks]}
+    end
+
+    defp summary_ctx(blocks) do
+      %{
+        task: :summarize_results,
+        message: "who is user 7?",
+        context: %{tool_executed: "x", tool_results: Enum.join(blocks, "\n"), history: @history},
+        tool_result_blocks: blocks
+      }
+    end
+
+    test "the blocks join to the user message" do
+      for ctx <- [
+            %{task: :interpret_intent, message: "who is user 7?", context: %{history: @history}},
+            summary_ctx([
+              "<<<TOOL_RESULT lookup_user.get r1",
+              "<<<TOOL_RESULT lookup_user.list r2"
+            ])
+          ] do
+        {message, blocks} = native_call(ctx)
+        assert Enum.map_join(blocks, & &1.text) == message
+      end
+    end
+
+    test "each call's stable blocks lead the next call's message" do
+      {first, first_blocks} =
+        native_call(%{
+          task: :interpret_intent,
+          message: "who is user 7?",
+          context: %{history: @history}
+        })
+
+      {second, second_blocks} = native_call(summary_ctx(["r1"]))
+      {third, _} = native_call(summary_ctx(["r1", "r2"]))
+
+      stable_prefix = fn blocks ->
+        blocks |> Enum.take_while(& &1.stable) |> Enum.map_join(& &1.text)
+      end
+
+      assert [%{stable: true}] = first_blocks
+      assert String.starts_with?(second, first)
+      assert String.starts_with?(third, stable_prefix.(second_blocks))
+      assert stable_prefix.(second_blocks) =~ "r1"
+      assert %{stable: false, text: tail} = List.last(second_blocks)
+      assert tail =~ "Summarize the results"
+    end
+
+    test "a summary prompt without blocks falls back to the joined results" do
+      {message, blocks} =
+        native_call(%{
+          task: :summarize_results,
+          message: "q",
+          context: %{tool_executed: "x", tool_results: "joined"}
+        })
+
+      assert message =~ "joined"
+      assert length(blocks) == 3
     end
   end
 

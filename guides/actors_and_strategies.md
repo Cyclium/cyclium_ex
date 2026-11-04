@@ -159,7 +159,7 @@ Capacity and queues are per node. Each choice fires
 | `debounce_ms` | `nil` | Coalesce rapid events into one firing |
 | `cooldown_ms` | `nil` | Minimum gap between firings |
 | `subject_key` | `nil` | Payload key to scope debounce/cooldown per subject (e.g., `:resource_id`) |
-| `budget` | `%{max_turns: 12, max_tokens: 25_000, max_wall_ms: 120_000}` | Resource limits |
+| `budget` | `%{max_turns: 12, max_tokens: 25_000, max_wall_ms: 120_000}` | Resource limits. `cache_read_weight` (0.0–1.0, default 1.0) sets what a cached input token costs against `max_tokens` |
 | `log_strategy` | `:timeline` | Controls materialized log verbosity AND step journal detail (see the Observability guide) |
 | `outputs` | `[]` | Declared output types (informational) |
 | `resources` | `[]` | Declared capability dependencies (informational) |

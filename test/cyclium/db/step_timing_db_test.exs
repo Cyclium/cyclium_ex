@@ -25,6 +25,21 @@ defmodule Cyclium.StepTimingDbTest do
     end
   end
 
+  # A multi-turn reply: the turns it added to the transcript ride on the result.
+  defmodule TurnsSynth do
+    def synthesize(_prompt_ctx, _episode_ctx) do
+      {:ok,
+       %{
+         text: "x",
+         usage: %{input_tokens: 1, output_tokens: 1},
+         turns: [
+           %{"role" => "user", "content" => [%{"type" => "tool_result", "content" => "raw"}]},
+           %{"role" => "assistant", "content" => [%{"type" => "text", "text" => "x"}]}
+         ]
+       }}
+    end
+  end
+
   defmodule FailingSynth do
     def synthesize(_prompt_ctx, _episode_ctx) do
       Process.sleep(20)
@@ -77,13 +92,17 @@ defmodule Cyclium.StepTimingDbTest do
     :ok
   end
 
-  defp run(synth) do
+  defp run(synth, budget \\ %{}) do
     episode =
       insert_episode(%{
         actor_id: "step_timing_actor",
         expectation_id: "do_work",
         tokens_used: 0,
-        budget: %{"max_turns" => 10, "max_tokens" => 100_000, "max_wall_ms" => 10_000},
+        budget:
+          Map.merge(
+            %{"max_turns" => 10, "max_tokens" => 100_000, "max_wall_ms" => 10_000},
+            budget
+          ),
         log_strategy: "full_debug"
       })
 
@@ -113,11 +132,57 @@ defmodule Cyclium.StepTimingDbTest do
     assert step.cost_ms >= 20
   end
 
+  test "a synthesis step's journal keeps the reply, not the transcript turns it added" do
+    {episode, {:ok, _}} = run(TurnsSynth)
+
+    result = synthesis_step(episode.id).result_ref
+    assert result["text"] == "x"
+    refute Map.has_key?(result, "turns")
+  end
+
   test "cached input counts toward the episode's tokens" do
     {episode, {:ok, _}} = run(SlowSynth)
 
     assert Episodes.get!(episode.id).tokens_used == 1_115
     assert synthesis_step(episode.id).cost_tokens == 1_115
+  end
+
+  test "by default the budget counts cached input in full too" do
+    {episode, {:ok, _}} = run(SlowSynth)
+
+    assert Episodes.get!(episode.id).budget_tokens_used == 1_115
+  end
+
+  test "the budget counts cache reads at the budget's cache_read_weight" do
+    {episode, {:ok, _}} = run(SlowSynth, %{"cache_read_weight" => 0.1})
+
+    stored = Episodes.get!(episode.id)
+    assert stored.tokens_used == 1_115
+    assert stored.budget_tokens_used == 215
+  end
+
+  test "the app's cache_read_budget_weight applies when the budget sets none" do
+    Application.put_env(:cyclium, :cache_read_budget_weight, 0.5)
+    on_exit(fn -> Application.delete_env(:cyclium, :cache_read_budget_weight) end)
+
+    {episode, {:ok, _}} = run(SlowSynth)
+    assert Episodes.get!(episode.id).budget_tokens_used == 615
+
+    {episode, {:ok, _}} = run(SlowSynth, %{"cache_read_weight" => 0})
+    assert Episodes.get!(episode.id).budget_tokens_used == 115
+  end
+
+  test "an out-of-range weight counts cache reads in full" do
+    {episode, {:ok, _}} = run(SlowSynth, %{"cache_read_weight" => 2})
+
+    assert Episodes.get!(episode.id).budget_tokens_used == 1_115
+  end
+
+  test "max_tokens is checked against the weighted count" do
+    assert {:error, _} = run(SlowSynth, %{"max_tokens" => 500}) |> elem(1)
+
+    assert {:ok, _} =
+             run(SlowSynth, %{"max_tokens" => 500, "cache_read_weight" => 0.1}) |> elem(1)
   end
 
   test "episode.step_started is broadcast before each synthesis and tool call" do
