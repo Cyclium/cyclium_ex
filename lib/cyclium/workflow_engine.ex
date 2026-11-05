@@ -386,7 +386,7 @@ defmodule Cyclium.WorkflowEngine do
 
               # Mark step as done with conversation result
               step_states =
-                Map.put(instance.step_states, step_id, %{
+                put_step_state(instance.step_states, step_id, %{
                   "status" => "done",
                   "conversation_id" => conv_id,
                   "result" => result,
@@ -445,26 +445,75 @@ defmodule Cyclium.WorkflowEngine do
            work_type: "workflow_instance"
          ) do
       {:ok, :passthrough} ->
-        do_create_workflow_instance(config, trigger_data, subject_value, opts, state)
+        create_unless_live(config, trigger_data, subject_value, opts, state)
 
       {:ok, _claim} ->
-        result = do_create_workflow_instance(config, trigger_data, subject_value, opts, state)
+        result = create_unless_live(config, trigger_data, subject_value, opts, state)
         Cyclium.WorkClaims.gate_complete(dedupe_key, owner_node)
         result
 
       {:error, :busy} ->
-        :telemetry.execute(
-          [:cyclium, :workflow, :duplicate_blocked],
-          %{count: 1},
-          %{
-            workflow_id: config.workflow_id,
-            subject_value: subject_value,
-            owner_node: owner_node
-          }
-        )
-
-        {:error, :duplicate_in_flight}
+        duplicate_blocked(config, subject_value, :claim_busy)
     end
+  end
+
+  # A step's state is rewritten on each transition, which used to drop the
+  # episode of an earlier attempt. `episode_ids` keeps every episode the step
+  # ran, oldest first; `episode_id` stays the latest.
+  defp put_step_state(step_states, step_id, step_state) do
+    previous = Map.get(step_states, step_id, %{})
+
+    Map.put(
+      step_states,
+      step_id,
+      Map.put(step_state, "episode_ids", episode_ids(previous, step_state))
+    )
+  end
+
+  defp episode_ids(previous, step_state) do
+    ids = previous["episode_ids"] || List.wrap(previous["episode_id"])
+
+    case step_state["episode_id"] do
+      id when is_binary(id) -> if id in ids, do: ids, else: ids ++ [id]
+      _none -> ids
+    end
+  end
+
+  # The claim is released once the instance row exists, so on its own it only
+  # parts starts that race each other. An exclusive subject also refuses a start
+  # while an instance for the subject is running or blocked; checked under the
+  # claim, so two nodes cannot both pass.
+  defp create_unless_live(config, trigger_data, subject_value, opts, state) do
+    if live_exclusive_subject?(config, subject_value) do
+      duplicate_blocked(config, subject_value, :live_instance)
+    else
+      do_create_workflow_instance(config, trigger_data, subject_value, opts, state)
+    end
+  end
+
+  defp live_exclusive_subject?(
+         %Config{exclusive_subject: true, subject_key: key, workflow_id: workflow_id},
+         subject_value
+       )
+       when not is_nil(key) and subject_value != "_" do
+    WorkflowInstances.live_for_subject?(workflow_id, subject_value, Cyclium.StackSlug.current())
+  end
+
+  defp live_exclusive_subject?(_config, _subject_value), do: false
+
+  defp duplicate_blocked(config, subject_value, reason) do
+    :telemetry.execute(
+      [:cyclium, :workflow, :duplicate_blocked],
+      %{count: 1},
+      %{
+        workflow_id: config.workflow_id,
+        subject_value: subject_value,
+        owner_node: Cyclium.NodeIdentity.name(),
+        reason: reason
+      }
+    )
+
+    {:error, :duplicate_in_flight}
   end
 
   defp do_create_workflow_instance(%Config{} = config, trigger_data, subject_value, opts, state) do
@@ -509,6 +558,7 @@ defmodule Cyclium.WorkflowEngine do
         Cyclium.Bus.broadcast("workflow.started", %{
           workflow_id: config.workflow_id,
           instance_id: instance.id,
+          workflow_instance_id: instance.id,
           conversation_id: instance.conversation_id,
           mode: instance.mode
         })
@@ -633,7 +683,7 @@ defmodule Cyclium.WorkflowEngine do
 
     # Update step_states
     step_states =
-      Map.put(instance.step_states, step_id, %{
+      put_step_state(instance.step_states, step_id, %{
         "status" => "done",
         "episode_id" => payload.episode_id,
         "result" => result,
@@ -702,7 +752,7 @@ defmodule Cyclium.WorkflowEngine do
       %{policy: :pause} ->
         # Update step status
         step_states =
-          Map.put(instance.step_states, step_id, %{
+          put_step_state(instance.step_states, step_id, %{
             "status" => "paused",
             "attempts" => current_attempts
           })
@@ -744,7 +794,7 @@ defmodule Cyclium.WorkflowEngine do
 
     # Update step to pending with incremented attempts
     step_states =
-      Map.put(instance.step_states, step_id, %{
+      put_step_state(instance.step_states, step_id, %{
         "status" => "retrying",
         "attempts" => current_attempts + 1
       })
@@ -818,7 +868,7 @@ defmodule Cyclium.WorkflowEngine do
     case Cyclium.Conversations.start(conv_attrs) do
       {:ok, conversation} ->
         step_states =
-          Map.put(fresh_instance.step_states, step_id, %{
+          put_step_state(fresh_instance.step_states, step_id, %{
             "status" => "blocked",
             "conversation_id" => conversation.id,
             "attempts" => get_in(fresh_instance.step_states, [step_id, "attempts"]) || 1
@@ -873,7 +923,7 @@ defmodule Cyclium.WorkflowEngine do
 
       %{id: episode_id} = reused ->
         step_states =
-          Map.put(fresh_instance.step_states, step_id, %{
+          put_step_state(fresh_instance.step_states, step_id, %{
             "status" => "done",
             "episode_id" => episode_id,
             "reused" => true,
@@ -967,7 +1017,7 @@ defmodule Cyclium.WorkflowEngine do
         current_attempts = get_in(fresh_instance.step_states, [step_id, "attempts"]) || 0
 
         step_states =
-          Map.put(fresh_instance.step_states, step_id, %{
+          put_step_state(fresh_instance.step_states, step_id, %{
             "status" => "running",
             "episode_id" => episode.id,
             "attempts" => max(current_attempts, 1)
@@ -985,6 +1035,7 @@ defmodule Cyclium.WorkflowEngine do
         Cyclium.Bus.broadcast("workflow.step_started", %{
           workflow_id: config.workflow_id,
           instance_id: instance.id,
+          workflow_instance_id: instance.id,
           conversation_id: instance.conversation_id,
           step_id: step_atom,
           episode_id: episode.id
@@ -1012,6 +1063,7 @@ defmodule Cyclium.WorkflowEngine do
     Cyclium.Bus.broadcast("workflow.completed", %{
       workflow_id: config.workflow_id,
       instance_id: instance.id,
+      workflow_instance_id: instance.id,
       conversation_id: instance.conversation_id,
       mode: instance.mode
     })
@@ -1083,6 +1135,7 @@ defmodule Cyclium.WorkflowEngine do
     Cyclium.Bus.broadcast("workflow.failed", %{
       workflow_id: config.workflow_id,
       instance_id: instance.id,
+      workflow_instance_id: instance.id,
       conversation_id: instance.conversation_id,
       step_id: step_id,
       mode: instance.mode

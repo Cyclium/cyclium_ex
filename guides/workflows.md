@@ -46,6 +46,29 @@ independently. Without `subject_key`, all events for the workflow share a single
 timer. Each new event resets the debounce window (trailing-edge). This is useful
 for workflows that trigger on high-frequency events like `"resource.updated"`.
 
+**One live instance per subject:** when `subject_key` is set, a subject has at
+most one instance running or blocked at a time. A start for a subject that has
+one (from an event, a debounce firing, or `start_workflow/4`) is refused as
+`{:error, :duplicate_in_flight}`, and `[:cyclium, :workflow, :duplicate_blocked]`
+fires with `reason: :live_instance`. With work claims configured, the check
+runs under the subject's claim, so two nodes handling the same event yield one
+instance and the other start is refused (`reason: :claim_busy` when the two
+raced). A payload without the subject key is not held, and a workflow without
+`subject_key` is never held.
+
+To let a later start run beside a live instance (a debounced workflow whose
+newer event must start a run of its own, say), opt out:
+
+```elixir
+workflow do
+  trigger {:event, "resource.updated"}
+  debounce_ms :timer.seconds(3)
+  subject_key :resource_id, exclusive: false
+
+  step :check_limits, actor: :resource_monitor, expectation: :check_resource_limits
+end
+```
+
 **Episode reuse (cross-workflow dedup):** By default, workflows reuse recent
 completed episodes when two workflows trigger the same actor + expectation +
 input within a 5-minute window. To disable this:

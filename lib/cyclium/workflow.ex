@@ -43,6 +43,7 @@ defmodule Cyclium.Workflow do
       Module.register_attribute(__MODULE__, :cyclium_wf_episode_reuse, accumulate: false)
       Module.register_attribute(__MODULE__, :cyclium_wf_debounce_ms, accumulate: false)
       Module.register_attribute(__MODULE__, :cyclium_wf_subject_key, accumulate: false)
+      Module.register_attribute(__MODULE__, :cyclium_wf_exclusive_subject, accumulate: false)
 
       @before_compile Cyclium.Workflow
     end
@@ -56,6 +57,7 @@ defmodule Cyclium.Workflow do
     episode_reuse = if episode_reuse == nil, do: true, else: episode_reuse
     debounce_ms = Module.get_attribute(env.module, :cyclium_wf_debounce_ms)
     subject_key = Module.get_attribute(env.module, :cyclium_wf_subject_key)
+    exclusive_subject = Module.get_attribute(env.module, :cyclium_wf_exclusive_subject) != false
 
     unless trigger do
       raise CompileError,
@@ -135,7 +137,8 @@ defmodule Cyclium.Workflow do
           failure_policies: unquote(Macro.escape(policy_map)),
           episode_reuse: unquote(episode_reuse),
           debounce_ms: unquote(debounce_ms),
-          subject_key: unquote(subject_key)
+          subject_key: unquote(subject_key),
+          exclusive_subject: unquote(exclusive_subject)
         }
       end
     end
@@ -164,6 +167,16 @@ defmodule Cyclium.Workflow.DSL do
   defmacro subject_key(key) do
     quote do
       @cyclium_wf_subject_key unquote(key)
+    end
+  end
+
+  # A subject allows one live instance (running or blocked) at a time: a start
+  # for a subject that has one is refused as `:duplicate_in_flight`.
+  # `exclusive: false` lets a later start run beside it.
+  defmacro subject_key(key, opts) do
+    quote do
+      @cyclium_wf_subject_key unquote(key)
+      @cyclium_wf_exclusive_subject Keyword.get(unquote(opts), :exclusive, true)
     end
   end
 

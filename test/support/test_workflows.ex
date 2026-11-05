@@ -42,6 +42,36 @@ defmodule TestWorkflows.Debounced do
   end
 end
 
+defmodule TestWorkflows.Exclusive do
+  use Cyclium.Workflow
+
+  workflow do
+    trigger({:event, "entity.claimed"})
+    subject_key(:entity_id)
+
+    step(:process,
+      actor: TestWorkflows.FakeActor,
+      expectation: :process_entity,
+      input: fn trigger, _prior -> %{entity_id: trigger["entity_id"]} end
+    )
+  end
+end
+
+defmodule TestWorkflows.NonExclusive do
+  use Cyclium.Workflow
+
+  workflow do
+    trigger({:event, "entity.claimed"})
+    subject_key(:entity_id, exclusive: false)
+
+    step(:process,
+      actor: TestWorkflows.FakeActor,
+      expectation: :process_entity,
+      input: fn trigger, _prior -> %{entity_id: trigger["entity_id"]} end
+    )
+  end
+end
+
 defmodule TestWorkflows.DebouncedNoSubject do
   use Cyclium.Workflow
 

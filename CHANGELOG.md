@@ -6,6 +6,40 @@ All notable changes to Cyclium are recorded here. This project uses
 Entries are high-level, not exhaustive. Versions prior to `0.1.4` are
 reconstructed from git history and are summarized loosely.
 
+## [0.7.1] — 2026-11-05
+
+### Changed
+- **A workflow's subject has one live instance at a time.** With
+  `subject_key` set, a start for a subject that has an instance running or
+  blocked is refused as `{:error, :duplicate_in_flight}`. The work claim behind
+  `subject_key` is released once the instance row exists, so until now it only
+  parted starts racing each other: a later start for the same subject, a
+  scheduled sweep or a repeated manual start, began a second instance while the
+  first ran, and an event handled by two nodes could start one on each. The
+  check runs under the claim, so a second node is refused too. Opt out per
+  workflow with `subject_key :id, exclusive: false`.
+  `Cyclium.WorkflowInstances.live_for_subject?/3` is the check.
+- **Workflow bus events carry `workflow_instance_id`**, beside `instance_id`,
+  so `Cyclium.Bus.subscribe(workflow: id)` receives `workflow.started`,
+  `workflow.step_started`, `workflow.completed` and `workflow.failed`, not only
+  the instance's episode events.
+- `[:cyclium, :workflow, :duplicate_blocked]` metadata gains `reason`:
+  `:claim_busy` (a racing start held the claim) or `:live_instance`.
+
+### Added
+- **Every attempt's episode in `step_states`:** each step's state keeps
+  `episode_ids`, the episodes it ran, oldest first, beside `episode_id`, the
+  latest. A retry used to drop the failed attempt's episode from the state.
+
+### Upgrading
+- **A workflow with `subject_key` now refuses a start while the subject's
+  instance is live.** Code that expects a second start for a busy subject to
+  succeed (a debounced workflow whose newer event must run on its own, a
+  manual rerun beside a running instance) declares
+  `subject_key :id, exclusive: false`. A start that is refused returns
+  `{:error, :duplicate_in_flight}`, as a racing start already did.
+- No migration.
+
 ## [0.7.0] — 2026-11-04
 
 ### Changed

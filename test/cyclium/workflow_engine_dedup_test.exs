@@ -191,16 +191,99 @@ defmodule Cyclium.WorkflowEngineDedupTest do
   end
 
   describe "claim release after create" do
-    test "second sequential call for the same subject succeeds (claim was released)" do
-      engine = start_engine(:release_engine, [TestWorkflows.Debounced])
+    test "with exclusive: false, a second call for a busy subject starts its own instance" do
+      engine = start_engine(:release_engine, [TestWorkflows.NonExclusive])
 
       {:ok, _} =
-        WorkflowEngine.start_workflow(engine, TestWorkflows.Debounced, %{"entity_id" => "REL"})
+        WorkflowEngine.start_workflow(engine, TestWorkflows.NonExclusive, %{"entity_id" => "REL"})
 
       {:ok, _} =
-        WorkflowEngine.start_workflow(engine, TestWorkflows.Debounced, %{"entity_id" => "REL"})
+        WorkflowEngine.start_workflow(engine, TestWorkflows.NonExclusive, %{"entity_id" => "REL"})
 
-      assert count_instances("Elixir.TestWorkflows.Debounced") == 2
+      assert count_instances("Elixir.TestWorkflows.NonExclusive") == 2
+    end
+  end
+
+  describe "exclusive subject" do
+    test "a start while the subject's instance is running is refused" do
+      engine = start_engine(:exclusive_running_engine, [TestWorkflows.Exclusive])
+      attach_telemetry([:cyclium, :workflow, :duplicate_blocked])
+
+      {:ok, _first} =
+        WorkflowEngine.start_workflow(engine, TestWorkflows.Exclusive, %{"entity_id" => "EX-1"})
+
+      assert {:error, :duplicate_in_flight} =
+               WorkflowEngine.start_workflow(engine, TestWorkflows.Exclusive, %{
+                 "entity_id" => "EX-1"
+               })
+
+      assert count_instances("Elixir.TestWorkflows.Exclusive") == 1
+
+      assert_receive {:telemetry, [:cyclium, :workflow, :duplicate_blocked], %{count: 1},
+                      %{subject_value: "EX-1", reason: :live_instance}},
+                     1_000
+    end
+
+    test "a blocked instance holds its subject too" do
+      engine = start_engine(:exclusive_blocked_engine, [TestWorkflows.Exclusive])
+
+      {:ok, first} =
+        WorkflowEngine.start_workflow(engine, TestWorkflows.Exclusive, %{"entity_id" => "EX-2"})
+
+      {:ok, _} = WorkflowInstances.update_status(first, :blocked)
+
+      assert {:error, :duplicate_in_flight} =
+               WorkflowEngine.start_workflow(engine, TestWorkflows.Exclusive, %{
+                 "entity_id" => "EX-2"
+               })
+    end
+
+    test "once the instance finishes, the subject starts again" do
+      engine = start_engine(:exclusive_done_engine, [TestWorkflows.Exclusive])
+
+      {:ok, first} =
+        WorkflowEngine.start_workflow(engine, TestWorkflows.Exclusive, %{"entity_id" => "EX-3"})
+
+      {:ok, _} = WorkflowInstances.update_status(first, :done)
+
+      assert {:ok, _second} =
+               WorkflowEngine.start_workflow(engine, TestWorkflows.Exclusive, %{
+                 "entity_id" => "EX-3"
+               })
+
+      assert count_instances("Elixir.TestWorkflows.Exclusive") == 2
+    end
+
+    test "another subject is not held" do
+      engine = start_engine(:exclusive_other_engine, [TestWorkflows.Exclusive])
+
+      {:ok, _} =
+        WorkflowEngine.start_workflow(engine, TestWorkflows.Exclusive, %{"entity_id" => "EX-4"})
+
+      assert {:ok, _} =
+               WorkflowEngine.start_workflow(engine, TestWorkflows.Exclusive, %{
+                 "entity_id" => "EX-5"
+               })
+    end
+
+    test "a second node starting the same subject after the first has created it is refused" do
+      engine_a = start_engine(:exclusive_node_a, [TestWorkflows.Exclusive])
+      engine_b = start_engine(:exclusive_node_b, [TestWorkflows.Exclusive])
+      payload = %{"entity_id" => "EX-6"}
+
+      {:ok, _} = WorkflowEngine.start_workflow(engine_a, TestWorkflows.Exclusive, payload)
+
+      assert {:error, :duplicate_in_flight} =
+               WorkflowEngine.start_workflow(engine_b, TestWorkflows.Exclusive, payload)
+
+      assert count_instances("Elixir.TestWorkflows.Exclusive") == 1
+    end
+
+    test "with no subject in the payload, nothing is held" do
+      engine = start_engine(:exclusive_no_subject_engine, [TestWorkflows.Exclusive])
+
+      {:ok, _} = WorkflowEngine.start_workflow(engine, TestWorkflows.Exclusive, %{})
+      assert {:ok, _} = WorkflowEngine.start_workflow(engine, TestWorkflows.Exclusive, %{})
     end
   end
 

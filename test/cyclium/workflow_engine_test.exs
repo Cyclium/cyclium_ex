@@ -291,6 +291,48 @@ defmodule Cyclium.WorkflowEngineTest do
       assert length(Cyclium.FakeRunner.enqueued_episodes()) > initial_enqueue_count
     end
 
+    test "a retried step keeps every attempt's episode, oldest first", %{engine: engine} do
+      {:ok, instance_id} =
+        WorkflowEngine.start_workflow(engine, TestWorkflows.TwoStep, %{"order_id" => "ORD-501"})
+
+      validate_episode_id =
+        WorkflowInstances.get!(instance_id).step_states["validate"]["episode_id"]
+
+      Cyclium.Bus.broadcast("episode.completed", %{
+        episode_id: validate_episode_id,
+        actor_id: "fake_actor",
+        status: :done,
+        workflow_instance_id: instance_id,
+        workflow_step_id: "validate"
+      })
+
+      Process.sleep(50)
+
+      first_attempt = WorkflowInstances.get!(instance_id).step_states["fulfill"]["episode_id"]
+
+      Cyclium.Bus.broadcast("episode.failed", %{
+        episode_id: first_attempt,
+        actor_id: "fake_actor",
+        status: :failed,
+        workflow_instance_id: instance_id,
+        workflow_step_id: "fulfill"
+      })
+
+      Process.sleep(50)
+
+      assert WorkflowInstances.get!(instance_id).step_states["fulfill"]["episode_ids"] == [
+               first_attempt
+             ]
+
+      Process.sleep(150)
+
+      fulfill = WorkflowInstances.get!(instance_id).step_states["fulfill"]
+      second_attempt = fulfill["episode_id"]
+
+      refute second_attempt == first_attempt
+      assert fulfill["episode_ids"] == [first_attempt, second_attempt]
+    end
+
     test "retry skipped when error_class is in skip_on_error_class list" do
       {:ok, skip_engine} =
         start_supervised(
@@ -594,6 +636,32 @@ defmodule Cyclium.WorkflowEngineTest do
 
       instance = WorkflowInstances.get!(instance_id)
       assert instance.dry_run_opts == %{"persist_findings" => "batch_test"}
+    end
+  end
+
+  describe "bus events" do
+    test "workflow events carry workflow_instance_id, so a scoped subscriber gets them", %{
+      engine: engine
+    } do
+      {:ok, instance_id} =
+        WorkflowEngine.start_workflow(engine, TestWorkflows.TwoStep, %{"order_id" => "ORD-600"})
+
+      :ok = Cyclium.Bus.subscribe(workflow: instance_id)
+
+      validate_episode_id =
+        WorkflowInstances.get!(instance_id).step_states["validate"]["episode_id"]
+
+      Cyclium.Bus.broadcast("episode.completed", %{
+        episode_id: validate_episode_id,
+        actor_id: "fake_actor",
+        status: :done,
+        workflow_instance_id: instance_id,
+        workflow_step_id: "validate"
+      })
+
+      assert_receive {:bus, "workflow.step_started",
+                      %{instance_id: ^instance_id, workflow_instance_id: ^instance_id}},
+                     1_000
     end
   end
 

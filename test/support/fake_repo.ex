@@ -157,6 +157,11 @@ defmodule Cyclium.FakeRepo do
     []
   end
 
+  def exists?(_query) do
+    # Default: no rows (used by the workflow engine's live-instance check)
+    false
+  end
+
   # --- Helpers ---
 
   defp ensure_id(%{id: nil} = record) do

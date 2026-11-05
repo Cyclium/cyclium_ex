@@ -10,7 +10,8 @@ defmodule Cyclium.Workflow.Config do
           failure_policies: %{atom() => map()},
           episode_reuse: boolean(),
           debounce_ms: non_neg_integer() | nil,
-          subject_key: atom() | nil
+          subject_key: atom() | nil,
+          exclusive_subject: boolean()
         }
 
   defstruct [
@@ -20,6 +21,7 @@ defmodule Cyclium.Workflow.Config do
     failure_policies: %{},
     episode_reuse: true,
     debounce_ms: nil,
-    subject_key: nil
+    subject_key: nil,
+    exclusive_subject: true
   ]
 end
