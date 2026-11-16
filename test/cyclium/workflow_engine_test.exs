@@ -1129,4 +1129,250 @@ defmodule Cyclium.WorkflowEngineTest do
       assert result["confidence"] == 0.9
     end
   end
+
+  describe "pause_step/3 and resume_step/3" do
+    test "resume_step runs a step its :pause policy paused, with a new episode" do
+      engine = start_engine([TestWorkflows.PauseOnFailure])
+
+      {:ok, instance_id} =
+        WorkflowEngine.start_workflow(engine, TestWorkflows.PauseOnFailure, %{})
+
+      first_episode = WorkflowInstances.get!(instance_id).step_states["work"]["episode_id"]
+      fail_step(instance_id, "work")
+
+      instance = WorkflowInstances.get!(instance_id)
+      assert instance.status == :blocked
+      assert instance.step_states["work"]["status"] == "paused"
+
+      assert :ok = WorkflowEngine.resume_step(engine, instance_id, :work)
+
+      instance = WorkflowInstances.get!(instance_id)
+      assert instance.status == :running
+      assert instance.step_states["work"]["status"] == "running"
+      assert instance.step_states["work"]["attempts"] == 2
+      assert instance.step_states["work"]["episode_id"] != first_episode
+      assert length(instance.step_states["work"]["episode_ids"]) == 2
+
+      complete_step(instance_id, "work")
+      assert WorkflowInstances.get!(instance_id).step_states["report"]["status"] == "running"
+
+      GenServer.stop(engine)
+    end
+
+    test "resume_step refuses a step that is not paused, and unknown ids" do
+      engine = start_engine([TestWorkflows.PauseOnFailure])
+
+      {:ok, instance_id} =
+        WorkflowEngine.start_workflow(engine, TestWorkflows.PauseOnFailure, %{})
+
+      assert {:error, :not_paused} = WorkflowEngine.resume_step(engine, instance_id, :work)
+      assert {:error, :not_paused} = WorkflowEngine.resume_step(engine, instance_id, :report)
+      assert {:error, :not_found} = WorkflowEngine.resume_step(engine, instance_id, :nope)
+
+      assert {:error, :not_found} =
+               WorkflowEngine.resume_step(engine, Ecto.UUID.generate(), :work)
+
+      GenServer.stop(engine)
+    end
+
+    test "pause_step asks the running episode to stop and blocks the instance" do
+      engine = start_engine([TestWorkflows.PauseOnFailure])
+
+      {:ok, instance_id} =
+        WorkflowEngine.start_workflow(engine, TestWorkflows.PauseOnFailure, %{})
+
+      episode_id = WorkflowInstances.get!(instance_id).step_states["work"]["episode_id"]
+      Cyclium.Bus.subscribe_cancel(episode_id)
+
+      assert :ok = WorkflowEngine.pause_step(engine, instance_id, :work)
+      assert_receive {:cyclium_cancel, "workflow_step_paused"}
+
+      instance = WorkflowInstances.get!(instance_id)
+      assert instance.status == :blocked
+      assert instance.step_states["work"]["status"] == "paused"
+      assert instance.step_states["work"]["episode_id"] == episode_id
+
+      GenServer.stop(engine)
+    end
+
+    test "a paused step ignores its episode's late completion" do
+      engine = start_engine([TestWorkflows.PauseOnFailure])
+
+      {:ok, instance_id} =
+        WorkflowEngine.start_workflow(engine, TestWorkflows.PauseOnFailure, %{})
+
+      :ok = WorkflowEngine.pause_step(engine, instance_id, :work)
+      complete_step(instance_id, "work")
+
+      instance = WorkflowInstances.get!(instance_id)
+      assert instance.step_states["work"]["status"] == "paused"
+      assert instance.step_states["report"]["status"] == "pending"
+
+      assert :ok = WorkflowEngine.resume_step(engine, instance_id, :work)
+      assert WorkflowInstances.get!(instance_id).step_states["work"]["status"] == "running"
+
+      GenServer.stop(engine)
+    end
+
+    test "pause_step drops a pending retry, so the timer does not restart the step",
+         %{engine: engine} do
+      # TwoStep retries :fulfill after 100 ms.
+      Cyclium.FakeRunner.reset()
+
+      {:ok, instance_id} =
+        WorkflowEngine.start_workflow(engine, TestWorkflows.TwoStep, %{"order_id" => "ORD-2"})
+
+      complete_step(instance_id, "validate")
+      fail_step(instance_id, "fulfill")
+      assert WorkflowInstances.get!(instance_id).step_states["fulfill"]["status"] == "retrying"
+
+      assert :ok = WorkflowEngine.pause_step(engine, instance_id, :fulfill)
+      Process.sleep(150)
+
+      instance = WorkflowInstances.get!(instance_id)
+      assert instance.step_states["fulfill"]["status"] == "paused"
+      assert length(Cyclium.FakeRunner.enqueued_episodes()) == 2
+    end
+
+    test "pause_step refuses a step that is not running" do
+      engine = start_engine([TestWorkflows.PauseOnFailure])
+
+      {:ok, instance_id} =
+        WorkflowEngine.start_workflow(engine, TestWorkflows.PauseOnFailure, %{})
+
+      assert {:error, :not_running} = WorkflowEngine.pause_step(engine, instance_id, :report)
+      assert {:error, :not_found} = WorkflowEngine.pause_step(engine, instance_id, :nope)
+
+      GenServer.stop(engine)
+    end
+  end
+
+  describe "cancel_workflow/3" do
+    test "stops running episodes, cancels unfinished steps and broadcasts" do
+      engine = start_engine([TestWorkflows.Parallel])
+      Cyclium.Bus.subscribe()
+
+      {:ok, instance_id} = WorkflowEngine.start_workflow(engine, TestWorkflows.Parallel, %{})
+      instance = WorkflowInstances.get!(instance_id)
+      step_a_episode = instance.step_states["step_a"]["episode_id"]
+      Cyclium.Bus.subscribe_cancel(step_a_episode)
+
+      assert :ok = WorkflowEngine.cancel_workflow(engine, instance_id, "operator_stop")
+      assert_receive {:cyclium_cancel, "operator_stop"}
+
+      assert_receive {:bus, "workflow.canceled",
+                      %{workflow_instance_id: ^instance_id, reason: "operator_stop"}}
+
+      instance = WorkflowInstances.get!(instance_id)
+      assert instance.status == :canceled
+
+      assert Enum.all?(instance.step_states, fn {_id, st} -> st["status"] == "canceled" end)
+
+      GenServer.stop(engine)
+    end
+
+    test "a canceled instance ignores a late completion", %{engine: engine} do
+      {:ok, instance_id} =
+        WorkflowEngine.start_workflow(engine, TestWorkflows.TwoStep, %{"order_id" => "ORD-1"})
+
+      episode_id = WorkflowInstances.get!(instance_id).step_states["validate"]["episode_id"]
+      :ok = WorkflowEngine.cancel_workflow(engine, instance_id, "operator_stop")
+
+      Cyclium.Bus.broadcast("episode.completed", %{
+        episode_id: episode_id,
+        actor_id: "fake_actor",
+        status: :done,
+        workflow_instance_id: instance_id,
+        workflow_step_id: "validate"
+      })
+
+      Process.sleep(50)
+
+      instance = WorkflowInstances.get!(instance_id)
+      assert instance.status == :canceled
+      assert instance.step_states["validate"]["status"] == "canceled"
+      assert instance.step_states["fulfill"]["status"] == "canceled"
+    end
+
+    test "ends a blocked instance and refuses a finished or unknown one" do
+      engine = start_engine([TestWorkflows.PauseOnFailure])
+
+      {:ok, instance_id} =
+        WorkflowEngine.start_workflow(engine, TestWorkflows.PauseOnFailure, %{})
+
+      fail_step(instance_id, "work")
+      assert WorkflowInstances.get!(instance_id).status == :blocked
+
+      assert :ok = WorkflowEngine.cancel_workflow(engine, instance_id, "abandoned")
+      assert WorkflowInstances.get!(instance_id).status == :canceled
+
+      assert {:error, :finished} = WorkflowEngine.cancel_workflow(engine, instance_id, "again")
+
+      assert {:error, :not_found} =
+               WorkflowEngine.cancel_workflow(engine, Ecto.UUID.generate(), "x")
+
+      GenServer.stop(engine)
+    end
+  end
+
+  describe "aborting a workflow" do
+    test "asks a running sibling's worker to stop instead of canceling it from outside" do
+      engine = start_engine([TestWorkflows.Parallel])
+
+      {:ok, instance_id} = WorkflowEngine.start_workflow(engine, TestWorkflows.Parallel, %{})
+      instance = WorkflowInstances.get!(instance_id)
+      step_b_episode = instance.step_states["step_b"]["episode_id"]
+      Cyclium.Bus.subscribe_cancel(step_b_episode)
+
+      fail_step(instance_id, "step_a")
+
+      assert_receive {:cyclium_cancel, "workflow_aborted"}
+      assert Cyclium.Episodes.get(step_b_episode).status == :running
+      assert WorkflowInstances.get!(instance_id).status == :failed
+
+      GenServer.stop(engine)
+    end
+  end
+
+  describe "a step's open conversation" do
+    defp conversation_workflow(workflow_id) do
+      dynamic_config(workflow_id, :manual, [
+        %Cyclium.Workflow.StepConfig{
+          id: :ask,
+          actor: "fake_actor",
+          expectation: :ask,
+          type: :interactive_conversation,
+          goal: %{"question" => "approve?"}
+        },
+        %Cyclium.Workflow.StepConfig{id: :work, actor: "fake_actor", expectation: :work}
+      ])
+    end
+
+    test "is abandoned when the workflow is canceled", %{engine: engine} do
+      WorkflowEngine.register_dynamic_workflow(engine, conversation_workflow("conv_cancel"), %{})
+      {:ok, instance_id} = WorkflowEngine.start_dynamic_workflow(engine, "conv_cancel", %{})
+
+      conv_id = WorkflowInstances.get!(instance_id).step_states["ask"]["conversation_id"]
+      assert Cyclium.Conversations.get(conv_id).status == "awaiting_participant"
+
+      :ok = WorkflowEngine.cancel_workflow(engine, instance_id, "operator_stop")
+
+      conversation = Cyclium.Conversations.get(conv_id)
+      assert conversation.status == "abandoned"
+      assert conversation.result =~ "operator_stop"
+    end
+
+    test "is abandoned when a sibling step aborts the workflow", %{engine: engine} do
+      WorkflowEngine.register_dynamic_workflow(engine, conversation_workflow("conv_abort"), %{})
+      {:ok, instance_id} = WorkflowEngine.start_dynamic_workflow(engine, "conv_abort", %{})
+
+      conv_id = WorkflowInstances.get!(instance_id).step_states["ask"]["conversation_id"]
+      fail_step(instance_id, "work")
+
+      instance = WorkflowInstances.get!(instance_id)
+      assert instance.status == :failed
+      assert instance.step_states["ask"]["status"] == "canceled"
+      assert Cyclium.Conversations.get(conv_id).status == "abandoned"
+    end
+  end
 end

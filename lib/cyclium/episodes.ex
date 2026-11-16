@@ -431,14 +431,32 @@ defmodule Cyclium.Episodes do
   @doc """
   Shallow-merge `attrs` into an episode's `metadata` bag. Used to stamp per-run
   attributes (e.g. the primary `model`) without clobbering existing keys.
+
+  The read and the write run in one transaction that first takes the row's
+  write lock, so two merges at once (a cancel request recorded while the
+  worker stamps its model, say) each keep the other's keys.
   """
   def merge_metadata(episode_id, attrs) when is_map(attrs) do
-    episode = get!(episode_id)
-    merged = Map.merge(episode.metadata || %{}, attrs)
+    result =
+      repo().transaction(fn repo ->
+        # A no-op write holds the row's write lock until commit on every
+        # adapter (SQL Server, Postgres, SQLite). A concurrent merge waits here,
+        # then reads what this one wrote.
+        from(e in Episode, where: e.id == ^episode_id, update: [set: [metadata: e.metadata]])
+        |> repo.update_all([])
 
-    episode
-    |> Episode.changeset(%{metadata: merged})
-    |> repo().update()
+        episode = repo.get!(Episode, episode_id)
+        merged = Map.merge(episode.metadata || %{}, attrs)
+
+        episode
+        |> Episode.changeset(%{metadata: merged})
+        |> repo.update()
+      end)
+
+    case result do
+      {:ok, updated} -> updated
+      {:error, _} = error -> error
+    end
   end
 
   defp maybe_set_finished_at(attrs, status)
@@ -508,14 +526,27 @@ defmodule Cyclium.Episodes do
   Request cancellation of an episode (e.g. a UI "stop" button). Cooperative and
   safe mid-flight, and never touches the parent conversation:
 
-    - `:running` — broadcasts to the worker (any node), which stops at its next
-      step boundary and writes `:canceled` itself. Returns `{:ok, :requested}`.
+    - `:running` — records the request in the episode's
+      `metadata["cancel_requested"]` and broadcasts to the worker (any node),
+      which stops at its next step boundary and writes `:canceled` itself. An
+      episode whose worker has not started yet (still queued, or deferred to
+      another node) finds the recorded request when it starts and is canceled
+      before its first step. Returns `{:ok, :requested}`.
     - `:blocked` — no worker running, so cancel directly. Returns `{:ok, :canceled}`.
     - terminal — `{:error, {:not_active, status}}`.
   """
   def request_cancel(episode_id, reason \\ "user_canceled") do
     case get!(episode_id) do
       %{status: :running} ->
+        # Recorded before the broadcast: a worker subscribes to cancels before
+        # it reads its row, so it either sees this or receives the broadcast.
+        merge_metadata(episode_id, %{
+          "cancel_requested" => %{
+            "reason" => reason,
+            "at" => DateTime.utc_now() |> DateTime.to_iso8601()
+          }
+        })
+
         Cyclium.Bus.publish_cancel(episode_id, reason)
         {:ok, :requested}
 
@@ -527,6 +558,18 @@ defmodule Cyclium.Episodes do
         {:error, {:not_active, status}}
     end
   end
+
+  @doc """
+  The reason of a cancel recorded by `request_cancel/2`, or `nil`.
+  """
+  @spec cancel_requested(Episode.t()) :: String.t() | nil
+  def cancel_requested(%Episode{metadata: %{"cancel_requested" => %{"reason" => reason}}}),
+    do: reason
+
+  def cancel_requested(%Episode{metadata: %{"cancel_requested" => %{reason: reason}}}),
+    do: to_string(reason)
+
+  def cancel_requested(%Episode{}), do: nil
 
   @doc """
   Return the most recent still-active (`:running` or `:blocked`) episode for a

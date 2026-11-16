@@ -206,3 +206,26 @@ defmodule TestWorkflows.ApprovalRetry do
     on_failure(:apply, :retry, max_step_attempts: 3, backoff_ms: 20)
   end
 end
+
+defmodule TestWorkflows.PauseOnFailure do
+  use Cyclium.Workflow
+
+  workflow do
+    trigger({:event, "job.paused"})
+
+    step(:work,
+      actor: TestWorkflows.FakeActor,
+      expectation: :do_work,
+      input: fn _trigger, _prior -> %{} end
+    )
+
+    step(:report,
+      actor: TestWorkflows.FakeActor,
+      expectation: :report_work,
+      depends_on: [:work],
+      input: fn _trigger, prior -> %{work: prior[:work]} end
+    )
+
+    on_failure(:work, :pause)
+  end
+end

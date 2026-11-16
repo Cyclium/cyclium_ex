@@ -32,12 +32,48 @@ defmodule Cyclium.EpisodeTask do
     # killing the process mid-step.
     Process.flag(:trap_exit, true)
 
-    episode = Cyclium.Episodes.get!(episode_id)
     Process.put(:cyclium_episode_id, episode_id)
 
     # Receive cancel requests in this process's mailbox; handled at the next
-    # step boundary by the runner's drain.
+    # step boundary by the runner's drain. Subscribed before the row is read,
+    # so a request made before this point is seen on the row below and one
+    # made after it reaches the mailbox.
     Cyclium.Bus.subscribe_cancel(episode_id)
+
+    episode = Cyclium.Episodes.get!(episode_id)
+
+    cond do
+      # Canceled while it waited to start (queued, deferred, or awaiting a
+      # retry): never run it.
+      episode.status == :canceled ->
+        :ok
+
+      reason = Cyclium.Episodes.cancel_requested(episode) ->
+        cancel_before_start(episode, reason)
+
+      true ->
+        run_episode(episode, opts)
+    end
+  end
+
+  # A cancel was requested before any worker could receive it. Cancel without
+  # running a step, so the episode delivers no outputs and raises no findings.
+  defp cancel_before_start(episode, reason) do
+    require Logger
+
+    Logger.info("Episode canceled before its first step: #{reason}",
+      cyclium_episode_id: episode.id
+    )
+
+    if episode.status in [:running, :blocked] do
+      Cyclium.Episodes.cancel(episode.id, reason)
+    end
+
+    :ok
+  end
+
+  defp run_episode(episode, opts) do
+    episode_id = episode.id
 
     # Claim gate — only runs if work_claims is configured
     lease_seconds = lease_seconds()

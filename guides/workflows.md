@@ -108,7 +108,10 @@ Cyclium.WorkflowEngine.approve_step(instance_id, :apply_change,
 ```
 
 **Cancellation cascade:** When a workflow fails, pending, retrying and
-awaiting-approval steps are automatically canceled. To also clear active findings raised by the workflow's
+awaiting-approval, blocked and paused steps are automatically canceled, the
+workers of running sibling steps are asked to stop at their next step
+boundary, and conversations that blocked steps are waiting on are
+abandoned. To also clear active findings raised by the workflow's
 episodes, set `clear_findings_on_cancel` in the workflow instance metadata.
 
 ## Passing data between steps
@@ -152,7 +155,44 @@ The `WorkflowEngine` GenServer:
 - Fires steps in dependency order (DAG validated at compile time)
 - Passes data between steps via `workflow_result/2` → `input` functions
 - Applies failure policies per-step: `:abort` (cancel all), `:retry` (with
-  backoff), `:pause` (wait for manual intervention)
+  backoff), `:pause` (wait for manual intervention; see below)
+
+### Pausing, resuming and canceling
+
+A step paused by its `:pause` failure policy holds its instance `:blocked`
+until someone acts on it:
+
+```elixir
+# Run the paused step again: a new episode, attempts + 1, instance :running
+Cyclium.WorkflowEngine.resume_step(instance_id, :check_limits)
+
+# Or give up on the instance
+Cyclium.WorkflowEngine.cancel_workflow(instance_id, "operator_stop")
+```
+
+`pause_step/3` pauses a running step on request. Its episode is asked to stop
+at its next step boundary (`Cyclium.Episodes.request_cancel/2`), a pending
+retry is dropped, and the step is left `"paused"` with the instance
+`:blocked`, the same state the `:pause` policy leaves, so `resume_step/3` runs
+it again. A paused step ignores its episode's later terminal event, so a
+converge that finishes after the pause cannot mark it done.
+
+`cancel_workflow/3` ends a running or blocked instance. Running workers are
+asked to stop at their next step boundary and write `:canceled` themselves;
+blocked episodes are canceled directly. An episode whose worker has not
+started yet (still queued, deferred to another node, or awaiting a retry)
+finds the request on its row when it starts and is canceled before its first
+step, so it delivers no outputs. A conversation an interactive step is waiting
+on is abandoned with the reason. Unfinished steps become `"canceled"`,
+retry timers are dropped, the instance becomes `:canceled`, and
+`workflow.canceled` is broadcast with the `reason`, which also goes into each
+canceled episode's journal. It returns `{:error, :finished}` for an instance
+that is already done, failed or canceled.
+
+`pause_step/3` returns `{:error, :not_running}` and `resume_step/3`
+`{:error, :not_paused}` for a step in another state; both return
+`{:error, :not_found}` for an unknown step or an instance that is not running
+or blocked.
 
 Workflows can also be started manually:
 

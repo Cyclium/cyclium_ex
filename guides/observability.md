@@ -143,6 +143,9 @@ Key events:
 | `[:cyclium, :workflow, :step_reused]` | workflow_id, instance_id, step_id, reused_episode_id |
 | `[:cyclium, :workflow, :step_awaiting_approval]` | workflow_id, instance_id, step_id |
 | `[:cyclium, :workflow, :step_approval_resolved]` | workflow_id, instance_id, step_id, approved |
+| `[:cyclium, :workflow, :step_paused]` | workflow_id, instance_id, step_id |
+| `[:cyclium, :workflow, :step_resumed]` | workflow_id, instance_id, step_id, attempt |
+| `[:cyclium, :workflow, :canceled]` | workflow_id, instance_id, reason |
 
 ### Actor capacity and backlog
 

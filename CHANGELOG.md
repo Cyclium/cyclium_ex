@@ -6,6 +6,63 @@ All notable changes to Cyclium are recorded here. This project uses
 Entries are high-level, not exhaustive. Versions prior to `0.1.4` are
 reconstructed from git history and are summarized loosely.
 
+## [0.7.3] — 2026-11-16
+
+### Added
+- **`Cyclium.WorkflowEngine.resume_step/3`** runs a paused step again: a new
+  episode, its attempt count raised by one, and the instance set `:running`
+  unless another step still holds it blocked. Until now a step paused by its
+  `:pause` failure policy had no way forward, and its instance stayed
+  `:blocked`. Returns `:ok`, or `{:error, :not_found | :not_paused}`.
+- **`Cyclium.WorkflowEngine.cancel_workflow/3`** ends a running or blocked
+  instance. Its running episodes' workers are asked to stop at their next step
+  boundary (`Cyclium.Episodes.request_cancel/2`) and its blocked episodes are
+  canceled directly; a conversation an interactive step is waiting on is
+  abandoned with the reason; its unfinished steps are marked `"canceled"`, its
+  retry timers are dropped, the instance is set `:canceled`, and
+  `workflow.canceled` is broadcast. The `reason` goes into each canceled episode's journal and the
+  event. Findings are cleared when the instance's metadata sets
+  `clear_findings_on_cancel`, as on failure. Returns `:ok`, or
+  `{:error, :not_found | :finished}`.
+- **`Cyclium.WorkflowEngine.pause_step/3`** pauses a running step on request:
+  its episode is asked to stop at its next step boundary, or a pending retry
+  is dropped. The step is marked `"paused"` and the instance `:blocked`, the
+  state a `:pause` failure policy leaves, so `resume_step/3` runs it again.
+  Returns `:ok`, or `{:error, :not_found | :not_running}`.
+- Telemetry `[:cyclium, :workflow, :step_paused]`,
+  `[:cyclium, :workflow, :step_resumed]` and `[:cyclium, :workflow, :canceled]`;
+  `workflow.canceled` joins `Cyclium.Bus.runtime_events/0`.
+
+### Fixed
+- **A cancel requested before an episode's worker starts is no longer lost.**
+  `Cyclium.Episodes.request_cancel/2` only broadcast to a running worker, so
+  an episode still queued, deferred to another node, or awaiting a retry ran
+  in full once it started, delivering outputs and raising findings. The
+  request is now also recorded in the episode's `metadata["cancel_requested"]`
+  (read with `Cyclium.Episodes.cancel_requested/1`), and a worker that finds it
+  when it starts cancels the episode before its first step. A worker started
+  for an episode that is already `:canceled` does not run it.
+- **`Cyclium.Episodes.merge_metadata/2` no longer loses keys to a concurrent
+  merge.** It read the bag, merged and wrote it back, so two merges at once
+  (a cancel request recorded while the worker stamped its model or its
+  `workflow_result`) could drop one's keys. The merge now runs in a
+  transaction that first takes the row's write lock.
+- **A paused or canceled step ignores its episode's later terminal event**, so
+  a converge that finishes after the pause or cancel cannot mark it done or
+  run its failure policy.
+- **An aborting workflow no longer cancels a running sibling's episode from
+  outside.** It marked the episode `:canceled` while its task kept running,
+  and a late converge could still write `:done`. The worker is now asked to
+  stop at its next step boundary and writes `:canceled` itself; a blocked
+  episode is canceled directly. Its blocked and paused steps are now marked
+  `"canceled"` too, and a conversation a blocked step was waiting on is
+  abandoned instead of staying open for a participant.
+- **A retry timer no longer restarts a step** that was paused or canceled
+  while the timer was pending.
+
+### Upgrading
+- No migration and no breaking change.
+
 ## [0.7.2] — 2026-11-16
 
 ### Fixed

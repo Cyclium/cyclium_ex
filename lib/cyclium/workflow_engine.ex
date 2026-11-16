@@ -114,6 +114,65 @@ defmodule Cyclium.WorkflowEngine do
     GenServer.call(server, {:resolve_step_approval, instance_id, to_string(step_id), false, opts})
   end
 
+  @doc """
+  Pause a running step on request.
+
+  The step's episode is asked to stop at its next step boundary
+  (`Cyclium.Episodes.request_cancel/2`, reason `"workflow_step_paused"`); a
+  step waiting on a retry timer has the timer dropped. The step is marked
+  `"paused"` and the instance `:blocked`, the state a `:pause` failure policy
+  leaves, so `resume_step/3` runs it again. A paused step ignores its
+  episode's later terminal event, so a converge that finishes after the pause
+  cannot mark it done.
+
+  Returns `:ok`, or `{:error, :not_found}` for an unknown step or an instance
+  that is unknown or not running or blocked, or `{:error, :not_running}` when
+  the step is neither running nor retrying.
+  """
+  @spec pause_step(GenServer.server(), binary(), atom() | binary()) ::
+          :ok | {:error, :not_found | :not_running}
+  def pause_step(server \\ __MODULE__, instance_id, step_id) do
+    GenServer.call(server, {:pause_step, instance_id, to_string(step_id)})
+  end
+
+  @doc """
+  Run a paused step again.
+
+  A step paused by its `:pause` failure policy or by `pause_step/3` starts
+  with a new episode and its attempt count raised by one. The instance is set
+  `:running` unless another step still holds it blocked.
+
+  Returns `:ok`, or `{:error, :not_found}` for an unknown step or an instance
+  that is unknown or not running or blocked, or `{:error, :not_paused}` when
+  the step is not paused.
+  """
+  @spec resume_step(GenServer.server(), binary(), atom() | binary()) ::
+          :ok | {:error, :not_found | :not_paused}
+  def resume_step(server \\ __MODULE__, instance_id, step_id) do
+    GenServer.call(server, {:resume_step, instance_id, to_string(step_id)})
+  end
+
+  @doc """
+  Cancel a running or blocked workflow instance.
+
+  Each of its running or blocked episodes is stopped through
+  `Cyclium.Episodes.request_cancel/2`: a running worker stops at its next step
+  boundary and writes `:canceled` itself, and a blocked episode is canceled
+  directly. Its unfinished steps are marked `"canceled"`, its retry timers are
+  dropped, the instance is set `:canceled`, and `workflow.canceled` is
+  broadcast. `reason` goes into each canceled episode's journal and the event.
+  Findings raised by the instance's episodes are cleared when its metadata
+  sets `clear_findings_on_cancel`, as when it fails.
+
+  Returns `:ok`, or `{:error, :not_found}` for an unknown instance, or
+  `{:error, :finished}` for one that is already done, failed or canceled.
+  """
+  @spec cancel_workflow(GenServer.server(), binary(), binary()) ::
+          :ok | {:error, :not_found | :finished}
+  def cancel_workflow(server \\ __MODULE__, instance_id, reason) do
+    GenServer.call(server, {:cancel_workflow, instance_id, to_string(reason)})
+  end
+
   # --- GenServer callbacks ---
 
   @impl true
@@ -189,6 +248,50 @@ defmodule Cyclium.WorkflowEngine do
   end
 
   @impl true
+  def handle_call({:pause_step, instance_id, step_id}, _from, state) do
+    with {:ok, instance, config} <- live_step(instance_id, step_id, state) do
+      case Map.get(instance.step_states, step_id, %{}) do
+        %{"status" => status} = step_state when status in ["running", "retrying"] ->
+          {:reply, :ok, do_pause_step(instance, config, step_id, step_state, state)}
+
+        _ ->
+          {:reply, {:error, :not_running}, state}
+      end
+    else
+      error -> {:reply, error, state}
+    end
+  end
+
+  @impl true
+  def handle_call({:resume_step, instance_id, step_id}, _from, state) do
+    with {:ok, instance, config} <- live_step(instance_id, step_id, state) do
+      case Map.get(instance.step_states, step_id, %{}) do
+        %{"status" => "paused"} = step_state ->
+          {:reply, :ok, do_resume_step(instance, config, step_id, step_state, state)}
+
+        _ ->
+          {:reply, {:error, :not_paused}, state}
+      end
+    else
+      error -> {:reply, error, state}
+    end
+  end
+
+  @impl true
+  def handle_call({:cancel_workflow, instance_id, reason}, _from, state) do
+    case WorkflowInstances.get(instance_id) do
+      nil ->
+        {:reply, {:error, :not_found}, state}
+
+      %WorkflowInstance{status: status} when status in [:done, :failed, :canceled] ->
+        {:reply, {:error, :finished}, state}
+
+      instance ->
+        {:reply, :ok, do_cancel_workflow(instance, reason, state)}
+    end
+  end
+
+  @impl true
   def handle_cast({:register_workflow, module}, state) do
     {:noreply, do_register_workflow(module, state)}
   end
@@ -242,6 +345,12 @@ defmodule Cyclium.WorkflowEngine do
             s
 
           %WorkflowInstance{status: status} when status in [:failed, :canceled, :done] ->
+            s
+
+          # A step paused or canceled while its retry timer was pending is
+          # not restarted by the timer.
+          %WorkflowInstance{step_states: %{^step_id => %{"status" => status}}}
+          when status != "retrying" ->
             s
 
           instance ->
@@ -708,6 +817,11 @@ defmodule Cyclium.WorkflowEngine do
           # the original) must not advance the workflow or re-start downstream
           # steps a second time.
           step_state["status"] == "done" ->
+            state
+
+          # A paused or canceled step no longer waits on its episode: a converge
+          # that finishes after the pause or cancel must not advance it.
+          step_state["status"] in ["paused", "canceled"] ->
             state
 
           # Terminal event for a superseded episode — the step has since been
@@ -1247,9 +1361,10 @@ defmodule Cyclium.WorkflowEngine do
       if sid != step_id do
         case step_state["status"] do
           "running" ->
-            if episode_id = step_state["episode_id"] do
-              Cyclium.Episodes.cancel(episode_id, "workflow_aborted")
-            end
+            stop_step_episode(step_state, "workflow_aborted")
+
+          "blocked" ->
+            abandon_step_conversation(step_state, "workflow_aborted")
 
           status when status in ["pending", "retrying", "awaiting_approval"] ->
             # Mark pending/retrying steps as failed in step_states
@@ -1269,7 +1384,13 @@ defmodule Cyclium.WorkflowEngine do
           sid == step_id ->
             {sid, Map.put(step_state, "status", "failed")}
 
-          step_state["status"] in ["pending", "retrying", "awaiting_approval"] ->
+          step_state["status"] in [
+            "pending",
+            "retrying",
+            "awaiting_approval",
+            "blocked",
+            "paused"
+          ] ->
             {sid, Map.put(step_state, "status", "canceled")}
 
           true ->
@@ -1280,16 +1401,7 @@ defmodule Cyclium.WorkflowEngine do
 
     WorkflowInstances.update_step_states(instance.id, step_states)
 
-    # Cancel any pending retry timers
-    state =
-      Enum.reduce(state.retry_timers, state, fn {key, timer_ref}, acc ->
-        if String.starts_with?(key, "#{instance.id}:") do
-          Process.cancel_timer(timer_ref)
-          %{acc | retry_timers: Map.delete(acc.retry_timers, key)}
-        else
-          acc
-        end
-      end)
+    state = cancel_retry_timers(state, instance.id)
 
     # Optionally clear findings raised by this workflow's episodes
     maybe_clear_workflow_findings(instance)
@@ -1313,6 +1425,180 @@ defmodule Cyclium.WorkflowEngine do
 
     state
   end
+
+  defp cancel_retry_timers(state, instance_id) do
+    Enum.reduce(state.retry_timers, state, fn {key, timer_ref}, acc ->
+      if String.starts_with?(key, "#{instance_id}:") do
+        Process.cancel_timer(timer_ref)
+        %{acc | retry_timers: Map.delete(acc.retry_timers, key)}
+      else
+        acc
+      end
+    end)
+  end
+
+  defp cancel_retry_timer(state, instance_id, step_id) do
+    key = "#{instance_id}:#{step_id}"
+
+    case Map.pop(state.retry_timers, key) do
+      {nil, _} ->
+        state
+
+      {timer_ref, retry_timers} ->
+        Process.cancel_timer(timer_ref)
+        %{state | retry_timers: retry_timers}
+    end
+  end
+
+  # Stops a step's episode without racing its worker: a running worker is asked
+  # to stop at its next step boundary and writes :canceled itself; a blocked
+  # episode is canceled directly. An episode already finished is left alone.
+  defp stop_step_episode(%{"episode_id" => episode_id}, reason) when is_binary(episode_id) do
+    case Cyclium.Episodes.get(episode_id) do
+      %{status: status} when status in [:running, :blocked] ->
+        Cyclium.Episodes.request_cancel(episode_id, reason)
+
+      _ ->
+        :ok
+    end
+  rescue
+    e ->
+      Logger.warning("Could not stop workflow step episode: #{Exception.message(e)}",
+        cyclium_episode_id: episode_id
+      )
+
+      :ok
+  end
+
+  defp stop_step_episode(_step_state, _reason), do: :ok
+
+  # An interactive step blocked on a conversation would leave it open for a
+  # participant to answer a workflow that has ended. Abandon it; one already
+  # resolved, abandoned or timed out is left as it is.
+  defp abandon_step_conversation(%{"conversation_id" => conv_id}, reason)
+       when is_binary(conv_id) do
+    Cyclium.Conversations.abandon(conv_id, reason)
+    :ok
+  rescue
+    e ->
+      Logger.warning("Could not abandon workflow step conversation: #{Exception.message(e)}",
+        cyclium_conversation_id: conv_id
+      )
+
+      :ok
+  end
+
+  defp abandon_step_conversation(_step_state, _reason), do: :ok
+
+  # The instance (running or blocked), its config and a known step, or the error
+  # pause_step/resume_step reply with.
+  defp live_step(instance_id, step_id, state) do
+    with %WorkflowInstance{status: status} = instance when status in [:running, :blocked] <-
+           WorkflowInstances.get(instance_id),
+         %Config{} = config <- resolve_config(instance.workflow_id, state),
+         true <- Enum.any?(Map.keys(config.steps), &(to_string(&1) == step_id)) do
+      {:ok, instance, config}
+    else
+      _ -> {:error, :not_found}
+    end
+  end
+
+  defp do_pause_step(instance, config, step_id, step_state, state) do
+    state =
+      case step_state["status"] do
+        "running" ->
+          stop_step_episode(step_state, "workflow_step_paused")
+          state
+
+        "retrying" ->
+          cancel_retry_timer(state, instance.id, step_id)
+      end
+
+    paused =
+      %{"status" => "paused", "attempts" => step_state["attempts"] || 1}
+      |> maybe_put("episode_id", step_state["episode_id"])
+
+    step_states = put_step_state(instance.step_states, step_id, paused)
+    WorkflowInstances.update_step_states(instance.id, step_states)
+    WorkflowInstances.update_status(instance.id, :blocked)
+
+    :telemetry.execute([:cyclium, :workflow, :step_paused], %{count: 1}, %{
+      workflow_id: config.workflow_id,
+      instance_id: instance.id,
+      step_id: String.to_existing_atom(step_id)
+    })
+
+    state
+  end
+
+  defp do_resume_step(instance, config, step_id, step_state, state) do
+    attempts = (step_state["attempts"] || 1) + 1
+
+    resumed =
+      %{"status" => "pending", "attempts" => attempts}
+      |> maybe_put("episode_id", step_state["episode_id"])
+
+    step_states = put_step_state(instance.step_states, step_id, resumed)
+    {:ok, instance} = WorkflowInstances.update_step_states(instance.id, step_states)
+
+    if not waiting_on_anything?(step_states, step_id) do
+      WorkflowInstances.update_status(instance.id, :running)
+    end
+
+    :telemetry.execute([:cyclium, :workflow, :step_resumed], %{count: 1}, %{
+      workflow_id: config.workflow_id,
+      instance_id: instance.id,
+      step_id: String.to_existing_atom(step_id),
+      attempt: attempts
+    })
+
+    do_start_step(instance, config, step_id, state)
+  end
+
+  defp do_cancel_workflow(instance, reason, state) do
+    Enum.each(instance.step_states, fn {_sid, step_state} ->
+      stop_step_episode(step_state, reason)
+
+      if step_state["status"] == "blocked" do
+        abandon_step_conversation(step_state, reason)
+      end
+    end)
+
+    step_states =
+      Map.new(instance.step_states, fn {sid, step_state} ->
+        if step_state["status"] in ["done", "failed", "canceled"] do
+          {sid, step_state}
+        else
+          {sid, Map.put(step_state, "status", "canceled")}
+        end
+      end)
+
+    WorkflowInstances.update_step_states(instance.id, step_states)
+
+    state = cancel_retry_timers(state, instance.id)
+    maybe_clear_workflow_findings(instance)
+    WorkflowInstances.update_status(instance.id, :canceled)
+
+    :telemetry.execute([:cyclium, :workflow, :canceled], %{count: 1}, %{
+      workflow_id: instance.workflow_id,
+      instance_id: instance.id,
+      reason: reason
+    })
+
+    Cyclium.Bus.broadcast("workflow.canceled", %{
+      workflow_id: instance.workflow_id,
+      instance_id: instance.id,
+      workflow_instance_id: instance.id,
+      conversation_id: instance.conversation_id,
+      reason: reason,
+      mode: instance.mode
+    })
+
+    state
+  end
+
+  defp maybe_put(map, _key, nil), do: map
+  defp maybe_put(map, key, value), do: Map.put(map, key, value)
 
   defp maybe_clear_workflow_findings(instance) do
     dry_run_opts = instance.dry_run_opts || %{}

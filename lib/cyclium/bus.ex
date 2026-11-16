@@ -63,7 +63,8 @@ defmodule Cyclium.Bus do
     "episode.canceled",
     "workflow.started",
     "workflow.completed",
-    "workflow.failed"
+    "workflow.failed",
+    "workflow.canceled"
   ]
 
   def runtime_events, do: @runtime_events

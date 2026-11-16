@@ -108,8 +108,11 @@ defmodule Cyclium.Telemetry do
       [:cyclium, :workflow, :step_retried]   — %{workflow_id, instance_id, step_id, attempt}
       [:cyclium, :workflow, :step_awaiting_approval] — %{workflow_id, instance_id, step_id}
       [:cyclium, :workflow, :step_approval_resolved] — %{workflow_id, instance_id, step_id, approved}
+      [:cyclium, :workflow, :step_paused]    — %{workflow_id, instance_id, step_id}
+      [:cyclium, :workflow, :step_resumed]   — %{workflow_id, instance_id, step_id, attempt}
       [:cyclium, :workflow, :completed]      — %{workflow_id, instance_id}
       [:cyclium, :workflow, :failed]         — %{workflow_id, instance_id, step_id}
+      [:cyclium, :workflow, :canceled]       — %{workflow_id, instance_id, reason}
       [:cyclium, :workflow, :duplicate_blocked] — %{count}, meta: %{workflow_id, subject_value, owner_node}
 
   ### Conversation events
@@ -226,6 +229,9 @@ defmodule Cyclium.Telemetry do
     [:cyclium, :workflow, :step_reused],
     [:cyclium, :workflow, :step_awaiting_approval],
     [:cyclium, :workflow, :step_approval_resolved],
+    [:cyclium, :workflow, :step_paused],
+    [:cyclium, :workflow, :step_resumed],
+    [:cyclium, :workflow, :canceled],
     [:cyclium, :workflow, :duplicate_blocked],
     # Conversations
     [:cyclium, :conversation, :started],
