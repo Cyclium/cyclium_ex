@@ -3,16 +3,25 @@ defmodule Cyclium.TriggerRequests.Poller do
   Polls `cyclium_trigger_requests` for pending rows and dispatches them
   to `Runner.OTP` for local execution.
 
-  Always started as part of the supervisor tree, but only polls when the
-  node-wide mode is `:full`. This allows runtime mode switches to
-  activate/deactivate polling without restarting processes.
+  Started as part of the supervisor tree, but only polls when the node-wide
+  mode is `:full`. This allows runtime mode switches to activate/deactivate
+  polling without restarting processes.
+
+  ## Configuration
+
+      # Poll interval. Default: 5_000 (5 s).
+      config :cyclium, :trigger_poll_interval_ms, 5_000
+
+      # Leave the poller out of Cyclium.Supervisor, for a host that never
+      # defers trigger requests or polls them itself. Default: true.
+      config :cyclium, :trigger_poller, false
   """
 
   use GenServer
 
   require Logger
 
-  @default_interval_ms :timer.minutes(1)
+  @default_interval_ms :timer.seconds(5)
   @default_batch_size 10
   @stale_expiry_seconds 3600
 

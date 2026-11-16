@@ -141,6 +141,8 @@ Key events:
 | `[:cyclium, :circuit_breaker, :rejected]` | actor_id, expectation_id |
 | `[:cyclium, :service_levels, :breach]` | actor_id, expectation_id, type, current, threshold |
 | `[:cyclium, :workflow, :step_reused]` | workflow_id, instance_id, step_id, reused_episode_id |
+| `[:cyclium, :workflow, :step_awaiting_approval]` | workflow_id, instance_id, step_id |
+| `[:cyclium, :workflow, :step_approval_resolved]` | workflow_id, instance_id, step_id, approved |
 
 ### Actor capacity and backlog
 

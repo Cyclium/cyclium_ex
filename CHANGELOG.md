@@ -6,6 +6,66 @@ All notable changes to Cyclium are recorded here. This project uses
 Entries are high-level, not exhaustive. Versions prior to `0.1.4` are
 reconstructed from git history and are summarized loosely.
 
+## [0.7.2] — 2026-11-16
+
+### Fixed
+- **A dynamic workflow step's episode takes its expectation's budget,
+  `log_strategy` and the actor's `spec_rev`.** A DB-defined step names its
+  actor by id string, and the engine only read these from an actor module, so
+  every dynamic step ran with the default budget (`max_wall_ms` 120 000,
+  `max_turns` 12) and the default log. The engine now reads what the actor
+  registered at boot; an actor id with no registration on the node keeps the
+  defaults.
+- **A manual workflow is registered.** The engine indexed workflows only by
+  trigger event, so a dynamic workflow with `trigger_type: "manual"` was not
+  found by `start_dynamic_workflow/4` (`{:error, :not_found}`), and an instance
+  of a compiled `trigger :manual` workflow never advanced past its first
+  steps. Manual workflows are now kept by `workflow_id`.
+- **`workflow_result/2` is called.** The runner calls the strategy's optional
+  callback at converge for a workflow step's episode and keeps the map in the
+  episode's `metadata["workflow_result"]`; the engine merges it into the
+  step's result, so downstream steps see its keys in `prior`. Until now
+  downstream steps only ever received `classification`, `summary` and
+  `confidence`.
+- **A step's `requires_approval` is enforced** (see Added), for compiled and
+  dynamic steps alike. It was accepted and ignored.
+- **Migration V26 runs on SQLite.** It `modify`s conversation columns, which
+  SQLite cannot do; like V11 and V17 it now skips them there (SQLite's TEXT has
+  no width to widen).
+
+### Added
+- **Approval gates on workflow steps.** A step with `requires_approval: true`
+  waits as `"awaiting_approval"` once its dependencies are done; the instance
+  is `:blocked` and `workflow.step_awaiting_approval` is broadcast.
+  `Cyclium.WorkflowEngine.approve_step/4` starts the step;
+  `reject_step/4` fails it with `error_class` `"approval_rejected"` through
+  its failure policy. Both take `principal:`, kept with the decision on the
+  step's `approval`. An approval holds for the rest of the instance, so a
+  retry does not ask again. New telemetry:
+  `[:cyclium, :workflow, :step_awaiting_approval]` and
+  `[:cyclium, :workflow, :step_approval_resolved]`.
+- **`config :cyclium, :trigger_poller, false`** leaves
+  `Cyclium.TriggerRequests.Poller` out of `Cyclium.Supervisor`. Default
+  `true`.
+
+### Changed
+- **`Cyclium.TriggerRequests.Poller` defaults to a 5 s interval.** The
+  supervisor already started it at 5 s while the module's own default was
+  1 min; both now use 5 s, set by `:trigger_poll_interval_ms`. A node's
+  polling is unchanged.
+- **A failing workflow cancels its awaiting-approval steps**, as it does
+  pending and retrying ones.
+
+### Upgrading
+- **A step declared with `requires_approval: true` now waits for
+  `approve_step/4`.** A workflow that set it without meaning to gate the step
+  removes it, or the step will hold its instance `:blocked`.
+- **Downstream `prior` gains the keys of `workflow_result/2`.** A step whose
+  strategy implements it (the agentic task and interactive templates do) now
+  passes those keys too; on a clash they replace `classification`, `summary`
+  or `confidence`.
+- No new migration.
+
 ## [0.7.1] — 2026-11-05
 
 ### Changed

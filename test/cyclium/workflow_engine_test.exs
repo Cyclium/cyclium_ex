@@ -815,4 +815,318 @@ defmodule Cyclium.WorkflowEngineTest do
       GenServer.stop(engine)
     end
   end
+
+  defp start_engine(workflows) do
+    {:ok, engine} =
+      WorkflowEngine.start_link(
+        name: :"engine_#{System.unique_integer([:positive])}",
+        workflows: workflows
+      )
+
+    Cyclium.FakeRunner.reset()
+    engine
+  end
+
+  defp complete_step(instance_id, step_id) do
+    instance = WorkflowInstances.get!(instance_id)
+
+    Cyclium.Bus.broadcast("episode.completed", %{
+      episode_id: instance.step_states[step_id]["episode_id"],
+      actor_id: "fake_actor",
+      status: :done,
+      workflow_instance_id: instance_id,
+      workflow_step_id: step_id
+    })
+
+    Process.sleep(50)
+  end
+
+  defp fail_step(instance_id, step_id) do
+    instance = WorkflowInstances.get!(instance_id)
+
+    Cyclium.Bus.broadcast("episode.failed", %{
+      episode_id: instance.step_states[step_id]["episode_id"],
+      actor_id: "fake_actor",
+      status: :failed,
+      error_class: "tool_error",
+      workflow_instance_id: instance_id,
+      workflow_step_id: step_id
+    })
+
+    Process.sleep(50)
+  end
+
+  defp dynamic_config(workflow_id, trigger, steps) do
+    %Cyclium.Workflow.Config{
+      workflow_id: "dynamic:#{workflow_id}",
+      trigger: trigger,
+      steps: Map.new(steps, &{&1.id, &1})
+    }
+  end
+
+  describe "dynamic step episodes" do
+    setup do
+      actor = :dyn_budget_actor
+      exp = :dyn_long_step
+
+      :persistent_term.put({:cyclium_expectation_budget, actor, exp}, %{
+        max_wall_ms: 2_700_000,
+        max_turns: 200
+      })
+
+      :persistent_term.put({:cyclium_expectation_log_strategy, actor, exp}, :full_debug)
+      :persistent_term.put({:cyclium_actor_spec_rev, actor}, "rev-7")
+
+      on_exit(fn ->
+        :persistent_term.erase({:cyclium_expectation_budget, actor, exp})
+        :persistent_term.erase({:cyclium_expectation_log_strategy, actor, exp})
+        :persistent_term.erase({:cyclium_actor_spec_rev, actor})
+      end)
+
+      :ok
+    end
+
+    test "take budget, log strategy and spec_rev from the actor's registered expectation",
+         %{engine: engine} do
+      config =
+        dynamic_config("long_steps", :manual, [
+          %Cyclium.Workflow.StepConfig{
+            id: :long,
+            actor: "dyn_budget_actor",
+            expectation: :dyn_long_step
+          }
+        ])
+
+      WorkflowEngine.register_dynamic_workflow(engine, config, %{})
+      {:ok, instance_id} = WorkflowEngine.start_dynamic_workflow(engine, "long_steps", %{})
+
+      episode_id = WorkflowInstances.get!(instance_id).step_states["long"]["episode_id"]
+      episode = Cyclium.Episodes.get(episode_id)
+
+      assert episode.budget == %{"max_wall_ms" => 2_700_000, "max_turns" => 200}
+      assert episode.log_strategy == "full_debug"
+      assert episode.spec_rev == "rev-7"
+    end
+
+    test "keep the defaults for an actor id nothing registered", %{engine: engine} do
+      config =
+        dynamic_config("unknown_actor_steps", :manual, [
+          %Cyclium.Workflow.StepConfig{
+            id: :only,
+            actor: "no_such_actor_#{System.unique_integer([:positive])}",
+            expectation: :dyn_long_step
+          }
+        ])
+
+      WorkflowEngine.register_dynamic_workflow(engine, config, %{})
+
+      {:ok, instance_id} =
+        WorkflowEngine.start_dynamic_workflow(engine, "unknown_actor_steps", %{})
+
+      episode_id = WorkflowInstances.get!(instance_id).step_states["only"]["episode_id"]
+      episode = Cyclium.Episodes.get(episode_id)
+
+      assert episode.budget == nil
+      assert episode.log_strategy == nil
+      assert episode.spec_rev == nil
+    end
+  end
+
+  describe "manual workflows" do
+    test "a manual dynamic workflow starts by id and advances", %{engine: engine} do
+      config =
+        dynamic_config("manual_review", :manual, [
+          %Cyclium.Workflow.StepConfig{id: :gather, actor: "fake_actor", expectation: :gather},
+          %Cyclium.Workflow.StepConfig{
+            id: :report,
+            actor: "fake_actor",
+            expectation: :report,
+            depends_on: [:gather]
+          }
+        ])
+
+      WorkflowEngine.register_dynamic_workflow(engine, config, %{})
+
+      assert {:ok, instance_id} =
+               WorkflowEngine.start_dynamic_workflow(engine, "manual_review", %{})
+
+      complete_step(instance_id, "gather")
+      assert WorkflowInstances.get!(instance_id).step_states["report"]["status"] == "running"
+
+      complete_step(instance_id, "report")
+      assert WorkflowInstances.get!(instance_id).status == :done
+    end
+
+    test "an unloaded manual dynamic workflow is not found", %{engine: engine} do
+      config =
+        dynamic_config("manual_gone", :manual, [
+          %Cyclium.Workflow.StepConfig{id: :only, actor: "fake_actor", expectation: :only}
+        ])
+
+      WorkflowEngine.register_dynamic_workflow(engine, config, %{})
+      WorkflowEngine.unregister_workflow(engine, "dynamic:manual_gone")
+
+      assert {:error, :not_found} =
+               WorkflowEngine.start_dynamic_workflow(engine, "manual_gone", %{})
+    end
+
+    test "a compiled manual workflow advances past its first step" do
+      engine = start_engine([TestWorkflows.ManualTwoStep])
+
+      {:ok, instance_id} =
+        WorkflowEngine.start_workflow(engine, TestWorkflows.ManualTwoStep, %{})
+
+      complete_step(instance_id, "first")
+      assert WorkflowInstances.get!(instance_id).step_states["second"]["status"] == "running"
+
+      complete_step(instance_id, "second")
+      assert WorkflowInstances.get!(instance_id).status == :done
+
+      GenServer.stop(engine)
+    end
+  end
+
+  describe "requires_approval" do
+    test "a step waits for approval once its dependencies are done" do
+      engine = start_engine([TestWorkflows.Approval])
+      Cyclium.Bus.subscribe()
+
+      {:ok, instance_id} = WorkflowEngine.start_workflow(engine, TestWorkflows.Approval, %{})
+      complete_step(instance_id, "plan")
+
+      instance = WorkflowInstances.get!(instance_id)
+      assert instance.status == :blocked
+      assert instance.step_states["apply"]["status"] == "awaiting_approval"
+      refute instance.step_states["apply"]["episode_id"]
+      assert length(Cyclium.FakeRunner.enqueued_episodes()) == 1
+
+      assert_receive {:bus, "workflow.step_awaiting_approval",
+                      %{workflow_instance_id: ^instance_id, step_id: :apply}}
+
+      GenServer.stop(engine)
+    end
+
+    test "approve_step/4 starts the step and unblocks the instance" do
+      engine = start_engine([TestWorkflows.Approval])
+
+      {:ok, instance_id} = WorkflowEngine.start_workflow(engine, TestWorkflows.Approval, %{})
+      complete_step(instance_id, "plan")
+
+      principal = %{"type" => "user", "id" => "u-1"}
+      assert :ok = WorkflowEngine.approve_step(engine, instance_id, :apply, principal: principal)
+
+      instance = WorkflowInstances.get!(instance_id)
+      assert instance.status == :running
+      assert instance.step_states["apply"]["status"] == "running"
+      assert instance.step_states["apply"]["approval"]["approved"] == true
+      assert instance.step_states["apply"]["approval"]["principal"] == principal
+      assert length(Cyclium.FakeRunner.enqueued_episodes()) == 2
+
+      complete_step(instance_id, "apply")
+      assert WorkflowInstances.get!(instance_id).status == :done
+
+      GenServer.stop(engine)
+    end
+
+    test "reject_step/4 fails the step through its failure policy" do
+      engine = start_engine([TestWorkflows.Approval])
+
+      {:ok, instance_id} = WorkflowEngine.start_workflow(engine, TestWorkflows.Approval, %{})
+      complete_step(instance_id, "plan")
+
+      assert :ok = WorkflowEngine.reject_step(engine, instance_id, "apply")
+
+      instance = WorkflowInstances.get!(instance_id)
+      assert instance.status == :failed
+      assert instance.step_states["apply"]["status"] == "failed"
+      assert instance.step_states["apply"]["approval"]["approved"] == false
+      assert length(Cyclium.FakeRunner.enqueued_episodes()) == 1
+
+      GenServer.stop(engine)
+    end
+
+    test "only a step that is waiting can be approved" do
+      engine = start_engine([TestWorkflows.Approval])
+
+      {:ok, instance_id} = WorkflowEngine.start_workflow(engine, TestWorkflows.Approval, %{})
+
+      assert {:error, :not_awaiting_approval} =
+               WorkflowEngine.approve_step(engine, instance_id, :apply)
+
+      assert {:error, :not_awaiting_approval} =
+               WorkflowEngine.approve_step(engine, instance_id, :plan)
+
+      assert {:error, :not_found} = WorkflowEngine.approve_step(engine, instance_id, :nope)
+
+      assert {:error, :not_found} =
+               WorkflowEngine.approve_step(engine, Ecto.UUID.generate(), :apply)
+
+      complete_step(instance_id, "plan")
+      WorkflowInstances.update_status(instance_id, :canceled)
+      assert {:error, :not_found} = WorkflowEngine.approve_step(engine, instance_id, :apply)
+
+      GenServer.stop(engine)
+    end
+
+    test "a retry of an approved step does not ask again" do
+      engine = start_engine([TestWorkflows.ApprovalRetry])
+
+      {:ok, instance_id} =
+        WorkflowEngine.start_workflow(engine, TestWorkflows.ApprovalRetry, %{})
+
+      assert WorkflowInstances.get!(instance_id).step_states["apply"]["status"] ==
+               "awaiting_approval"
+
+      :ok = WorkflowEngine.approve_step(engine, instance_id, :apply)
+      fail_step(instance_id, "apply")
+      Process.sleep(100)
+
+      instance = WorkflowInstances.get!(instance_id)
+      assert instance.step_states["apply"]["status"] == "running"
+      assert length(instance.step_states["apply"]["episode_ids"]) == 2
+
+      GenServer.stop(engine)
+    end
+
+    test "a retry after a rejection asks again" do
+      engine = start_engine([TestWorkflows.ApprovalRetry])
+
+      {:ok, instance_id} =
+        WorkflowEngine.start_workflow(engine, TestWorkflows.ApprovalRetry, %{})
+
+      :ok = WorkflowEngine.reject_step(engine, instance_id, :apply)
+      Process.sleep(100)
+
+      instance = WorkflowInstances.get!(instance_id)
+      assert instance.status == :blocked
+      assert instance.step_states["apply"]["status"] == "awaiting_approval"
+      assert Cyclium.FakeRunner.enqueued_episodes() == []
+
+      GenServer.stop(engine)
+    end
+  end
+
+  describe "step results" do
+    test "merge the strategy's workflow_result into what downstream steps receive",
+         %{engine: engine} do
+      {:ok, instance_id} =
+        WorkflowEngine.start_workflow(engine, TestWorkflows.TwoStep, %{"order_id" => "ORD-900"})
+
+      episode_id = WorkflowInstances.get!(instance_id).step_states["validate"]["episode_id"]
+
+      {:ok, _} =
+        Cyclium.Episodes.update_status(episode_id, :done,
+          summary: "validated",
+          confidence: 0.9,
+          metadata: %{"workflow_result" => %{"order_total" => 120, "summary" => "from callback"}}
+        )
+
+      complete_step(instance_id, "validate")
+
+      result = WorkflowInstances.get!(instance_id).step_states["validate"]["result"]
+      assert result["order_total"] == 120
+      assert result["summary"] == "from callback"
+      assert result["confidence"] == 0.9
+    end
+  end
 end

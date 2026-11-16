@@ -82,16 +82,45 @@ workflow do
 end
 ```
 
-**Cancellation cascade:** When a workflow fails, pending and retrying steps are
-automatically canceled. To also clear active findings raised by the workflow's
+**Approval gates:** a step declared with `requires_approval: true` does not
+start when its dependencies are done. It waits with status
+`"awaiting_approval"`, the instance becomes `:blocked`, and
+`workflow.step_awaiting_approval` is broadcast (with `workflow_instance_id`
+and `step_id`). `Cyclium.WorkflowEngine.approve_step/4` starts it;
+`reject_step/4` fails it with `error_class` `"approval_rejected"` through the
+step's failure policy (`:abort` fails the workflow, `:retry` asks again after
+the backoff unless `"approval_rejected"` is in `skip_on_error_class`). Pass
+`principal:` to record who decided; the decision is kept on the step's
+`approval`. An approval holds for the rest of the instance, so a retry of an
+approved step does not ask again.
+
+```elixir
+step :apply_change,
+  actor: :change_actor,
+  expectation: :apply_change,
+  depends_on: [:plan_change],
+  requires_approval: true
+
+# later, from the UI or an operator:
+Cyclium.WorkflowEngine.approve_step(instance_id, :apply_change,
+  principal: %{"type" => "user", "id" => user_id}
+)
+```
+
+**Cancellation cascade:** When a workflow fails, pending, retrying and
+awaiting-approval steps are automatically canceled. To also clear active findings raised by the workflow's
 episodes, set `clear_findings_on_cancel` in the workflow instance metadata.
 
 ## Passing data between steps
 
-When a workflow step completes, the engine calls the strategy's optional
-`workflow_result/2` callback to extract the data that downstream steps receive
-via `prior`. If `workflow_result/2` is not implemented, downstream steps receive
-`nil` for that step's prior.
+Downstream steps receive each completed step's result via `prior`. The result
+is the step episode's `classification`, `summary` and `confidence`. When the
+step's strategy implements the optional `workflow_result/2` callback, the
+runner calls it at converge and the map it returns is merged into that result;
+its keys win on a clash. The runner keeps the map in the episode's
+`metadata["workflow_result"]` (string keys), so it reaches the engine on
+whichever node handles the step's completion. A callback that raises or returns
+something other than a map leaves the step with the default result.
 
 ```elixir
 defmodule MyApp.Strategies.ResourceLimits do
@@ -170,7 +199,8 @@ Insert a row into `cyclium_workflow_definitions`:
       },
       "failure_policy" => "retry",
       "max_step_attempts" => 2,
-      "backoff_ms" => 30000
+      "backoff_ms" => 30000,
+      "requires_approval" => true
     }
   ]),
   enabled: true
@@ -212,9 +242,15 @@ Cyclium.WorkflowEngine.start_dynamic_workflow(
 )
 ```
 
-Dynamic workflows are event-triggered (via Bus) like compiled workflows. The
-Watcher also listens for `workflow_definition.created/updated/disabled` events for
-automatic refresh.
+A definition with `trigger_type: "event"` also starts on its `trigger_event`
+(via Bus), like a compiled workflow. One with `trigger_type: "manual"` starts
+only this way. The Watcher also listens for
+`workflow_definition.created/updated/disabled` events for automatic refresh.
+
+A dynamic step names its actor by id string. Its episode takes the budget,
+`log_strategy` and actor `spec_rev` that actor registered for the expectation
+when it booted, the same as a step of a compiled workflow; an actor id with no
+registration on the node keeps the defaults.
 
 ---
 

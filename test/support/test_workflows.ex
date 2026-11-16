@@ -146,3 +146,63 @@ defmodule TestWorkflows.Parallel do
     )
   end
 end
+
+defmodule TestWorkflows.ManualTwoStep do
+  use Cyclium.Workflow
+
+  workflow do
+    trigger(:manual)
+
+    step(:first,
+      actor: TestWorkflows.FakeActor,
+      expectation: :first_step,
+      input: fn _trigger, _prior -> %{} end
+    )
+
+    step(:second,
+      actor: TestWorkflows.FakeActor,
+      expectation: :second_step,
+      depends_on: [:first],
+      input: fn _trigger, prior -> %{first: prior[:first]} end
+    )
+  end
+end
+
+defmodule TestWorkflows.Approval do
+  use Cyclium.Workflow
+
+  workflow do
+    trigger({:event, "change.proposed"})
+
+    step(:plan,
+      actor: TestWorkflows.FakeActor,
+      expectation: :plan_change,
+      input: fn _trigger, _prior -> %{} end
+    )
+
+    step(:apply,
+      actor: TestWorkflows.FakeActor,
+      expectation: :apply_change,
+      depends_on: [:plan],
+      requires_approval: true,
+      input: fn _trigger, prior -> %{plan: prior[:plan]} end
+    )
+  end
+end
+
+defmodule TestWorkflows.ApprovalRetry do
+  use Cyclium.Workflow
+
+  workflow do
+    trigger({:event, "change.retried"})
+
+    step(:apply,
+      actor: TestWorkflows.FakeActor,
+      expectation: :apply_change,
+      requires_approval: true,
+      input: fn _trigger, _prior -> %{} end
+    )
+
+    on_failure(:apply, :retry, max_step_attempts: 3, backoff_ms: 20)
+  end
+end

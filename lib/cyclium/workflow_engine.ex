@@ -75,6 +75,45 @@ defmodule Cyclium.WorkflowEngine do
     GenServer.call(server, {:start_dynamic_workflow, workflow_id, trigger_data, opts})
   end
 
+  @doc """
+  Approve a step that is waiting on `requires_approval`, and start it.
+
+  A step declared with `requires_approval: true` does not start when its
+  dependencies are done: it waits as `"awaiting_approval"`, the instance is
+  `:blocked`, and `workflow.step_awaiting_approval` is broadcast. Approving it
+  starts its episode. The approval holds for the rest of the instance, so a
+  retry of the step under a `:retry` policy does not ask again.
+
+  ## Options
+
+    - `:principal` — who approved, stored on the step's `approval`.
+
+  Returns `:ok`, or `{:error, :not_found}` for an unknown step or an instance
+  that is unknown or no longer running or blocked, or
+  `{:error, :not_awaiting_approval}` when the step is not waiting.
+  """
+  @spec approve_step(GenServer.server(), binary(), atom() | binary(), keyword()) ::
+          :ok | {:error, :not_found | :not_awaiting_approval}
+  def approve_step(server \\ __MODULE__, instance_id, step_id, opts \\ []) do
+    GenServer.call(server, {:resolve_step_approval, instance_id, to_string(step_id), true, opts})
+  end
+
+  @doc """
+  Reject a step that is waiting on `requires_approval`.
+
+  The step fails with `error_class` `"approval_rejected"` and its failure
+  policy applies: `:abort` (the default) fails the workflow, `:pause` pauses
+  it, and `:retry` asks for approval again after the backoff (list
+  `"approval_rejected"` in `skip_on_error_class` to fail instead).
+
+  Takes the same options and returns the same values as `approve_step/4`.
+  """
+  @spec reject_step(GenServer.server(), binary(), atom() | binary(), keyword()) ::
+          :ok | {:error, :not_found | :not_awaiting_approval}
+  def reject_step(server \\ __MODULE__, instance_id, step_id, opts \\ []) do
+    GenServer.call(server, {:resolve_step_approval, instance_id, to_string(step_id), false, opts})
+  end
+
   # --- GenServer callbacks ---
 
   @impl true
@@ -83,6 +122,7 @@ defmodule Cyclium.WorkflowEngine do
 
     state = %{
       workflows: %{},
+      manual_workflows: %{},
       workflow_modules: MapSet.new(),
       retry_timers: %{},
       input_maps: %{},
@@ -126,6 +166,25 @@ defmodule Cyclium.WorkflowEngine do
           {:error, _} = err ->
             {:reply, err, state}
         end
+    end
+  end
+
+  @impl true
+  def handle_call({:resolve_step_approval, instance_id, step_id, approved?, opts}, _from, state) do
+    with %WorkflowInstance{status: status} = instance when status in [:running, :blocked] <-
+           WorkflowInstances.get(instance_id),
+         %Config{} = config <- resolve_config(instance.workflow_id, state),
+         true <- Enum.any?(Map.keys(config.steps), &(to_string(&1) == step_id)) do
+      case Map.get(instance.step_states, step_id, %{}) do
+        %{"status" => "awaiting_approval"} ->
+          new_state = resolve_step_approval(instance, config, step_id, approved?, opts, state)
+          {:reply, :ok, new_state}
+
+        _ ->
+          {:reply, {:error, :not_awaiting_approval}, state}
+      end
+    else
+      _ -> {:reply, {:error, :not_found}, state}
     end
   end
 
@@ -244,40 +303,53 @@ defmodule Cyclium.WorkflowEngine do
 
   defp do_register_workflow(module, state) do
     config = module.__workflow_config__()
-
-    workflows =
-      case config.trigger do
-        {:event, event_type} ->
-          existing = Map.get(state.workflows, event_type, [])
-          Map.put(state.workflows, event_type, [config | existing])
-
-        :manual ->
-          state.workflows
-      end
-
-    %{state | workflows: workflows, workflow_modules: MapSet.put(state.workflow_modules, module)}
+    state = index_config(config, state)
+    %{state | workflow_modules: MapSet.put(state.workflow_modules, module)}
   end
 
   defp do_register_dynamic_workflow(%Config{} = config, input_maps, state) do
-    workflows =
-      case config.trigger do
-        {:event, event_type} ->
-          existing = Map.get(state.workflows, event_type, [])
-          # Avoid duplicate registration
-          filtered = Enum.reject(existing, &(&1.workflow_id == config.workflow_id))
-          Map.put(state.workflows, event_type, [config | filtered])
-
-        :manual ->
-          state.workflows
-      end
-
+    state = index_config(config, state)
     input_maps_state = Map.put(state.input_maps, config.workflow_id, input_maps)
 
     Logger.info("Registered dynamic workflow",
       cyclium_workflow_id: config.workflow_id
     )
 
-    %{state | workflows: workflows, input_maps: input_maps_state}
+    %{state | input_maps: input_maps_state}
+  end
+
+  # An event-triggered workflow is indexed by its event type, so a Bus event
+  # finds it. A manual one has no event; it is kept by workflow_id so a start
+  # by id, and every later step of its instances, can still resolve its config.
+  # Registering the same workflow_id again replaces the earlier config.
+  defp index_config(%Config{workflow_id: workflow_id} = config, state) do
+    workflows =
+      state.workflows
+      |> Enum.map(fn {event_type, configs} ->
+        {event_type, Enum.reject(configs, &(&1.workflow_id == workflow_id))}
+      end)
+      |> Enum.reject(fn {_event_type, configs} -> configs == [] end)
+      |> Map.new()
+
+    manual_workflows = Map.delete(state.manual_workflows, workflow_id)
+
+    case config.trigger do
+      {:event, event_type} ->
+        existing = Map.get(workflows, event_type, [])
+
+        %{
+          state
+          | workflows: Map.put(workflows, event_type, [config | existing]),
+            manual_workflows: manual_workflows
+        }
+
+      :manual ->
+        %{
+          state
+          | workflows: workflows,
+            manual_workflows: Map.put(manual_workflows, workflow_id, config)
+        }
+    end
   end
 
   defp do_unregister_workflow(workflow_id, state) do
@@ -289,6 +361,7 @@ defmodule Cyclium.WorkflowEngine do
       |> Enum.reject(fn {_event_type, configs} -> configs == [] end)
       |> Enum.into(%{})
 
+    manual_workflows = Map.delete(state.manual_workflows, workflow_id)
     input_maps = Map.delete(state.input_maps, workflow_id)
 
     # Cancel debounce timers for this workflow
@@ -302,7 +375,13 @@ defmodule Cyclium.WorkflowEngine do
 
     Logger.info("Unregistered workflow", cyclium_workflow_id: workflow_id)
 
-    %{state | workflows: workflows, input_maps: input_maps, debounce_timers: debounce_timers}
+    %{
+      state
+      | workflows: workflows,
+        manual_workflows: manual_workflows,
+        input_maps: input_maps,
+        debounce_timers: debounce_timers
+    }
   end
 
   defp maybe_trigger_workflow(event_type, payload, state) do
@@ -462,6 +541,12 @@ defmodule Cyclium.WorkflowEngine do
   # ran, oldest first; `episode_id` stays the latest.
   defp put_step_state(step_states, step_id, step_state) do
     previous = Map.get(step_states, step_id, %{})
+
+    step_state =
+      case previous do
+        %{"approval" => approval} -> Map.put_new(step_state, "approval", approval)
+        _ -> step_state
+      end
 
     Map.put(
       step_states,
@@ -835,11 +920,100 @@ defmodule Cyclium.WorkflowEngine do
     step_atom = String.to_existing_atom(step_id)
     step_config = Map.fetch!(config.steps, step_atom)
 
-    if Map.get(step_config, :type) == :interactive_conversation do
-      do_start_interactive_step(instance, config, step_id, step_atom, step_config, state)
-    else
-      do_start_episode_step(instance, config, step_id, step_atom, step_config, state)
+    cond do
+      step_config.requires_approval and not step_approved?(instance, step_id) ->
+        await_step_approval(instance, config, step_id, step_atom, state)
+
+      Map.get(step_config, :type) == :interactive_conversation ->
+        do_start_interactive_step(instance, config, step_id, step_atom, step_config, state)
+
+      true ->
+        do_start_episode_step(instance, config, step_id, step_atom, step_config, state)
     end
+  end
+
+  # Re-read: parallel steps may have started (or been approved) since the
+  # caller's copy of the instance was loaded.
+  defp step_approved?(instance, step_id) do
+    fresh = WorkflowInstances.get!(instance.id)
+    get_in(fresh.step_states, [step_id, "approval", "approved"]) == true
+  end
+
+  defp await_step_approval(instance, config, step_id, step_atom, state) do
+    fresh_instance = WorkflowInstances.get!(instance.id)
+
+    step_states =
+      put_step_state(fresh_instance.step_states, step_id, %{
+        "status" => "awaiting_approval",
+        "attempts" => get_in(fresh_instance.step_states, [step_id, "attempts"]) || 0
+      })
+
+    WorkflowInstances.update_step_states(instance.id, step_states)
+    WorkflowInstances.update_status(instance.id, :blocked)
+
+    :telemetry.execute([:cyclium, :workflow, :step_awaiting_approval], %{count: 1}, %{
+      workflow_id: config.workflow_id,
+      instance_id: instance.id,
+      step_id: step_atom
+    })
+
+    Cyclium.Bus.broadcast("workflow.step_awaiting_approval", %{
+      workflow_id: config.workflow_id,
+      instance_id: instance.id,
+      workflow_instance_id: instance.id,
+      conversation_id: instance.conversation_id,
+      step_id: step_atom
+    })
+
+    state
+  end
+
+  defp resolve_step_approval(instance, config, step_id, approved?, opts, state) do
+    step_atom = String.to_existing_atom(step_id)
+
+    approval = %{
+      "approved" => approved?,
+      "principal" => Keyword.get(opts, :principal),
+      "resolved_at" => DateTime.utc_now() |> DateTime.to_iso8601()
+    }
+
+    step_state =
+      instance.step_states
+      |> Map.get(step_id, %{})
+      |> Map.put("approval", approval)
+
+    step_states = Map.put(instance.step_states, step_id, step_state)
+    {:ok, instance} = WorkflowInstances.update_step_states(instance.id, step_states)
+
+    :telemetry.execute([:cyclium, :workflow, :step_approval_resolved], %{count: 1}, %{
+      workflow_id: config.workflow_id,
+      instance_id: instance.id,
+      step_id: step_atom,
+      approved: approved?
+    })
+
+    if approved? do
+      if not waiting_on_anything?(step_states, step_id) do
+        WorkflowInstances.update_status(instance.id, :running)
+      end
+
+      do_start_step(instance, config, step_id, state)
+    else
+      handle_step_failed(
+        instance,
+        config,
+        step_id,
+        %{error_class: "approval_rejected"},
+        state
+      )
+    end
+  end
+
+  # True when a step other than `step_id` still holds the instance blocked.
+  defp waiting_on_anything?(step_states, step_id) do
+    Enum.any?(step_states, fn {sid, st} ->
+      sid != step_id and st["status"] in ["awaiting_approval", "blocked", "paused"]
+    end)
   end
 
   defp do_start_interactive_step(instance, config, step_id, step_atom, step_config, state) do
@@ -928,11 +1102,7 @@ defmodule Cyclium.WorkflowEngine do
             "episode_id" => episode_id,
             "reused" => true,
             "attempts" => 0,
-            "result" => %{
-              "classification" => Map.get(reused, :classification),
-              "summary" => Map.get(reused, :summary),
-              "confidence" => Map.get(reused, :confidence)
-            }
+            "result" => step_result(reused)
           })
 
         WorkflowInstances.update_step_states(instance.id, step_states)
@@ -1081,7 +1251,7 @@ defmodule Cyclium.WorkflowEngine do
               Cyclium.Episodes.cancel(episode_id, "workflow_aborted")
             end
 
-          status when status in ["pending", "retrying"] ->
+          status when status in ["pending", "retrying", "awaiting_approval"] ->
             # Mark pending/retrying steps as failed in step_states
             :ok
 
@@ -1099,7 +1269,7 @@ defmodule Cyclium.WorkflowEngine do
           sid == step_id ->
             {sid, Map.put(step_state, "status", "failed")}
 
-          step_state["status"] in ["pending", "retrying"] ->
+          step_state["status"] in ["pending", "retrying", "awaiting_approval"] ->
             {sid, Map.put(step_state, "status", "canceled")}
 
           true ->
@@ -1183,18 +1353,35 @@ defmodule Cyclium.WorkflowEngine do
   end
 
   defp extract_step_result(payload) do
-    episode =
-      case Cyclium.Episodes.get(payload.episode_id) do
-        nil -> %{}
-        ep -> ep
-      end
-
-    %{
-      "classification" => episode |> Map.get(:classification),
-      "summary" => episode |> Map.get(:summary),
-      "confidence" => episode |> Map.get(:confidence)
-    }
+    case Cyclium.Episodes.get(payload.episode_id) do
+      nil -> step_result(%{})
+      episode -> step_result(episode)
+    end
   end
+
+  # What downstream steps receive as `prior[step]`: the episode's
+  # classification, summary and confidence, merged with the map the strategy's
+  # `workflow_result/2` returned (stored by the runner in the episode's
+  # metadata), whose keys win on a clash.
+  defp step_result(episode) do
+    base = %{
+      "classification" => Map.get(episode, :classification),
+      "summary" => Map.get(episode, :summary),
+      "confidence" => Map.get(episode, :confidence)
+    }
+
+    case episode |> Map.get(:metadata) |> workflow_result_from_metadata() do
+      result when is_map(result) ->
+        Map.merge(base, Map.new(result, fn {k, v} -> {to_string(k), v} end))
+
+      _ ->
+        base
+    end
+  end
+
+  defp workflow_result_from_metadata(%{"workflow_result" => result}), do: result
+  defp workflow_result_from_metadata(%{workflow_result: result}), do: result
+  defp workflow_result_from_metadata(_metadata), do: nil
 
   defp build_prior_results(step_states) do
     step_states
@@ -1213,9 +1400,10 @@ defmodule Cyclium.WorkflowEngine do
   end
 
   defp resolve_config(workflow_id, state) do
-    Enum.find_value(state.workflows, fn {_event, configs} ->
-      Enum.find(configs, fn c -> c.workflow_id == workflow_id end)
-    end)
+    Map.get(state.manual_workflows, workflow_id) ||
+      Enum.find_value(state.workflows, fn {_event, configs} ->
+        Enum.find(configs, fn c -> c.workflow_id == workflow_id end)
+      end)
   end
 
   defp resolve_step_input(config, step_atom, trigger_ref, prior, state) do
@@ -1313,6 +1501,16 @@ defmodule Cyclium.WorkflowEngine do
     end
   end
 
+  # A DB-defined (dynamic) workflow names its step's actor by id string; the
+  # actor registered its spec_rev in persistent_term when it booted.
+  defp resolve_spec_rev(actor_id) when is_binary(actor_id) do
+    with {:ok, actor} <- Cyclium.AtomGuard.existing_atom(actor_id) do
+      :persistent_term.get({:cyclium_actor_spec_rev, actor}, nil)
+    else
+      _ -> nil
+    end
+  end
+
   defp resolve_spec_rev(_actor), do: nil
 
   defp resolve_expectation_budget(actor, expectation) when is_atom(actor) do
@@ -1330,6 +1528,13 @@ defmodule Cyclium.WorkflowEngine do
     end
   end
 
+  defp resolve_expectation_budget(actor_id, expectation) when is_binary(actor_id) do
+    case registered_expectation_term(:cyclium_expectation_budget, actor_id, expectation) do
+      budget when is_map(budget) -> Map.new(budget, fn {k, v} -> {to_string(k), v} end)
+      _ -> nil
+    end
+  end
+
   defp resolve_expectation_budget(_actor, _expectation), do: nil
 
   defp resolve_expectation_log_strategy(actor, expectation) when is_atom(actor) do
@@ -1341,7 +1546,29 @@ defmodule Cyclium.WorkflowEngine do
     end
   end
 
+  defp resolve_expectation_log_strategy(actor_id, expectation) when is_binary(actor_id) do
+    :cyclium_expectation_log_strategy
+    |> registered_expectation_term(actor_id, expectation)
+    |> to_string_or_nil()
+  end
+
   defp resolve_expectation_log_strategy(_actor, _expectation), do: nil
+
+  # Reads what Cyclium.Actor registers per expectation at boot, keyed by the
+  # actor's atom id. An id with no existing atom has no registration, so the
+  # lookup misses and the episode keeps the defaults.
+  defp registered_expectation_term(key, actor_id, expectation) do
+    with {:ok, actor} <- Cyclium.AtomGuard.existing_atom(actor_id),
+         {:ok, exp} <- existing_atom(expectation) do
+      :persistent_term.get({key, actor, exp}, nil)
+    else
+      _ -> nil
+    end
+  end
+
+  defp existing_atom(value) when is_atom(value), do: {:ok, value}
+  defp existing_atom(value) when is_binary(value), do: Cyclium.AtomGuard.existing_atom(value)
+  defp existing_atom(_value), do: :error
 
   defp to_string_or_nil(nil), do: nil
   defp to_string_or_nil(val), do: to_string(val)

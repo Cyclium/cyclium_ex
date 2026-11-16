@@ -660,12 +660,47 @@ defmodule Cyclium.EpisodeRunner do
 
     case strategy.converge(state, episode_ctx) do
       {:ok, converge_result} ->
+        record_workflow_result(episode, strategy, state, converge_result)
         post_converge(episode, converge_result)
 
       {:partial, converge_result, _failures} ->
+        record_workflow_result(episode, strategy, state, converge_result)
         post_converge(episode, converge_result)
     end
   end
+
+  # A workflow step's episode keeps what the strategy's optional
+  # `workflow_result/2` returns in `metadata["workflow_result"]`, written before
+  # the terminal event so the WorkflowEngine finds it when the step completes.
+  # A callback that raises or returns a non-map leaves the step with the
+  # default result (classification, summary, confidence).
+  defp record_workflow_result(%{workflow_instance_id: wf_id} = episode, strategy, state, result)
+       when not is_nil(wf_id) do
+    if function_exported?(strategy, :workflow_result, 2) do
+      case strategy.workflow_result(state, result) do
+        map when is_map(map) ->
+          workflow_result = Map.new(map, fn {k, v} -> {to_string(k), v} end)
+          Cyclium.Episodes.merge_metadata(episode.id, %{"workflow_result" => workflow_result})
+
+        other ->
+          Logger.warning(
+            "workflow_result/2 returned #{inspect(other)}, not a map; the step keeps its default result",
+            cyclium_episode_id: episode.id
+          )
+      end
+    end
+
+    :ok
+  rescue
+    e ->
+      Logger.warning("workflow_result/2 raised: #{Exception.message(e)}",
+        cyclium_episode_id: episode.id
+      )
+
+      :ok
+  end
+
+  defp record_workflow_result(_episode, _strategy, _state, _result), do: :ok
 
   defp post_converge(episode, converge_result) do
     dry_run? = episode.mode == "dry_run"

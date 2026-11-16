@@ -27,6 +27,9 @@ defmodule Cyclium.Migrations.V26 do
   call; if it ever needs widening it must coordinate dropping and recreating the
   host's computed columns.
 
+  SQLite has no ALTER COLUMN, and its TEXT columns have no width to widen, so
+  V26 is a no-op there (as V11 and V17 skip their `modify`s).
+
   Note on `down/0`: shrinking back to nvarchar(255) fails with the same 8152 on
   any row already holding a value longer than 255 characters. Down is a
   development affordance, not a safe rollback once large payloads exist.
@@ -37,18 +40,24 @@ defmodule Cyclium.Migrations.V26 do
   @json_columns [:goal, :origin, :audience_target, :result, :collected_fields]
 
   def up do
-    alter table(:cyclium_conversations) do
-      for column <- @json_columns do
-        modify(column, :string, size: :max, null: true)
+    unless sqlite?() do
+      alter table(:cyclium_conversations) do
+        for column <- @json_columns do
+          modify(column, :string, size: :max, null: true)
+        end
       end
     end
   end
 
   def down do
-    alter table(:cyclium_conversations) do
-      for column <- @json_columns do
-        modify(column, :string, size: 255, null: true)
+    unless sqlite?() do
+      alter table(:cyclium_conversations) do
+        for column <- @json_columns do
+          modify(column, :string, size: 255, null: true)
+        end
       end
     end
   end
+
+  defp sqlite?, do: repo().__adapter__() == Ecto.Adapters.SQLite3
 end

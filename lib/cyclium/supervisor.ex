@@ -43,7 +43,9 @@ defmodule Cyclium.Supervisor do
     Supervisor.init(children, strategy: :one_for_one)
   end
 
-  defp optional_children do
+  @doc false
+  # Public for tests: the children that depend on configuration.
+  def optional_children do
     reconciler =
       if Application.get_env(:cyclium, :reconciler, false) do
         [Cyclium.Reconciler]
@@ -75,18 +77,23 @@ defmodule Cyclium.Supervisor do
         []
       end
 
-    # source_env left unset here falls through to the poller's default of
-    # Cyclium.Env.current() (this node's env); set :trigger_poll_source_env only
-    # to poll a *different* env than the node runs as.
+    # Unset options fall through to the poller's own defaults: the interval to
+    # :trigger_poll_interval_ms (5 s), source_env to Cyclium.Env.current()
+    # (this node's env). Set :trigger_poll_source_env only to poll a
+    # *different* env than the node runs as.
     poller_opts =
       [
-        interval_ms: Application.get_env(:cyclium, :trigger_poll_interval_ms, 5_000),
         source_stack: Application.get_env(:cyclium, :trigger_poll_source_stack),
         source_env: Application.get_env(:cyclium, :trigger_poll_source_env)
       ]
       |> Enum.reject(fn {_k, v} -> is_nil(v) end)
 
-    trigger_poller = [{Cyclium.TriggerRequests.Poller, poller_opts}]
+    trigger_poller =
+      if Application.get_env(:cyclium, :trigger_poller, true) do
+        [{Cyclium.TriggerRequests.Poller, poller_opts}]
+      else
+        []
+      end
 
     reconciler ++ workflow_engine ++ work_claims ++ finding_sweep ++ trigger_poller
   end

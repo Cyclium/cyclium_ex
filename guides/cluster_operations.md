@@ -430,9 +430,14 @@ optionally `source_stack`.
 
 ```elixir
 config :cyclium, :mode, :trigger_only           # or :full / :disabled
-config :cyclium, :trigger_poll_interval_ms, 5_000
+config :cyclium, :trigger_poll_interval_ms, 5_000        # the default
 config :cyclium, :trigger_poll_source_stack, "stack_a"   # nil picks up every stack
+config :cyclium, :trigger_poller, false                  # leave the poller out entirely
 ```
+
+`:trigger_poller` defaults to `true`. Set it to `false` on a node that will
+never dispatch deferred requests (or whose host polls them itself) so the
+poller is not started at all.
 
 Request rows carry the episode id, actor and expectation, the deferring node's
 identity, `source_stack`, `source_env`, a `status` of `pending` / `claimed` /
